@@ -1,12 +1,10 @@
 import { useEffect } from 'react';
 import { clearBlockEventStore, publishBlockEvent } from '../data/trades/blockEventStore';
 import { BtcSpotCityDataEngine } from '../data/trades/BtcSpotCityDataEngine';
-import { clearCitySceneStore } from '../scene/citySceneStore';
 
 export function useBtcSpotCityDataEngine() {
   useEffect(() => {
     clearBlockEventStore();
-    clearCitySceneStore();
 
     const engine = new BtcSpotCityDataEngine({
       windowMs: 3000,
@@ -23,7 +21,6 @@ export function useBtcSpotCityDataEngine() {
       unsubscribe();
       engine.stop();
       clearBlockEventStore();
-      clearCitySceneStore();
     };
   }, []);
 }

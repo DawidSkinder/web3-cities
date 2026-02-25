@@ -140,3 +140,58 @@ canvas {
     gap: 8px;
   }
 }
+
+.minimal-viz {
+  position: fixed;
+  inset: 0;
+}
+
+.minimal-viz__overlay {
+  pointer-events: none;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 20;
+}
+
+.minimal-viz__panel {
+  min-width: 154px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(8, 12, 16, 0.58);
+  border: 1px solid rgba(108, 153, 204, 0.18);
+  box-shadow:
+    0 12px 28px rgba(0, 0, 0, 0.26),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.minimal-viz__title {
+  color: rgba(236, 244, 255, 0.92);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.minimal-viz__row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  margin-top: 4px;
+  align-items: center;
+  font-size: 12px;
+  color: rgba(213, 227, 242, 0.86);
+}
+
+.minimal-viz__row span:first-child {
+  color: rgba(166, 186, 208, 0.75);
+}
+
+.minimal-viz__row span:last-child {
+  text-align: right;
+  color: rgba(236, 247, 255, 0.92);
+  font-feature-settings: 'tnum' 1;
+}
