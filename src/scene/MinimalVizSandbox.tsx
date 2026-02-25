@@ -1,13 +1,15 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Group, Mesh } from 'three';
+import type { Group, InstancedMesh as ThreeInstancedMesh, Mesh } from 'three';
 import {
   AdditiveBlending,
   ACESFilmicToneMapping,
   BackSide,
   Color,
+  Matrix4,
   MathUtils,
   PlaneGeometry,
+  Quaternion,
   ShaderMaterial,
   SRGBColorSpace,
   Vector3
@@ -1540,57 +1542,91 @@ function TraceStrips({ traces }: { traces: TraceDatum[] }) {
 
 function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) {
   const { camera } = useThree();
-  const refs = useRef<Array<Mesh | null>>([]);
+  const instancedRef = useRef<ThreeInstancedMesh>(null);
+  const orientationQuats = useMemo(() => {
+    const forward = new Vector3(1, 0, 0);
+    const dir = new Vector3();
+    const result: Quaternion[] = [];
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (!p) {
+        result.push(new Quaternion());
+        continue;
+      }
+      dir.set(p.bx - p.ax, 0, p.bz - p.az);
+      if (dir.lengthSq() < 1e-8) {
+        result.push(new Quaternion());
+        continue;
+      }
+      dir.normalize();
+      result.push(new Quaternion().setFromUnitVectors(forward, dir));
+    }
+    return result;
+  }, [particles]);
+  const tempMatrixRef = useRef(new Matrix4());
+  const tempPosRef = useRef(new Vector3());
+  const tempScaleRef = useRef(new Vector3(1, 1, 1));
+  const identityQuatRef = useRef(new Quaternion());
+  const tempColorRef = useRef(new Color());
 
   useEffect(() => {
-    refs.current.length = particles.length;
-  }, [particles.length]);
+    const mesh = instancedRef.current;
+    if (!mesh) return;
+    mesh.count = particles.length;
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (!p) continue;
+      mesh.setColorAt(i, tempColorRef.current.set(p.color));
+    }
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.instanceMatrix.needsUpdate = true;
+  }, [particles, orientationQuats]);
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
     const sizeScale = MathUtils.lerp(1, 2.15, visCurve);
     const opacity = MathUtils.lerp(0.8, 0.95, visCurve);
+    const mesh = instancedRef.current;
+    if (!mesh) return;
+    const matrix = tempMatrixRef.current;
+    const pos = tempPosRef.current;
+    const scl = tempScaleRef.current;
     for (let i = 0; i < particles.length; i++) {
-      const mesh = refs.current[i];
       const p = particles[i];
       if (!mesh || !p) continue;
       const u = (p.phase + t * p.speed) % 1;
-      mesh.position.set(MathUtils.lerp(p.ax, p.bx, u), p.y, MathUtils.lerp(p.az, p.bz, u));
-      mesh.rotation.set(0, p.yaw, 0);
-      mesh.scale.set(sizeScale, MathUtils.lerp(1, 1.25, visCurve), sizeScale);
-      const mat = mesh.material as { opacity?: number } | undefined;
-      if (mat) mat.opacity = opacity;
+      pos.set(MathUtils.lerp(p.ax, p.bx, u), p.y, MathUtils.lerp(p.az, p.bz, u));
+      const len = Math.max(0.28, p.sizeZ) * sizeScale;
+      const h = Math.max(0.06, p.sizeY) * MathUtils.lerp(1, 1.18, visCurve);
+      const w = Math.max(0.1, p.sizeX) * MathUtils.lerp(1, 1.55, visCurve);
+      scl.set(len, h, w);
+      matrix.compose(pos, orientationQuats[i] ?? identityQuatRef.current, scl);
+      mesh.setMatrixAt(i, matrix);
     }
+    mesh.instanceMatrix.needsUpdate = true;
+    const mat = mesh.material as { opacity?: number } | undefined;
+    if (mat) mat.opacity = opacity;
   });
 
   return (
     <group>
       {/* Render band 5: traffic cues, still depth-tested so they do not draw through towers */}
-      {particles.map((p, i) => (
-        <mesh
-          key={p.id}
-          ref={(el) => {
-            refs.current[i] = el;
-          }}
-          position={[p.ax, p.y, p.az]}
-          renderOrder={5}
-        >
-          <boxGeometry args={[p.sizeX, p.sizeY, p.sizeZ]} />
-          <meshBasicMaterial
-            color={p.color}
-            transparent
-            opacity={0.74}
-            toneMapped={false}
-            depthWrite={false}
-            depthTest
-            polygonOffset
-            polygonOffsetFactor={-1}
-            polygonOffsetUnits={-2}
-            blending={AdditiveBlending}
-          />
-        </mesh>
-      ))}
+      <instancedMesh ref={instancedRef} args={[undefined, undefined, Math.max(1, particles.length)]} renderOrder={5} frustumCulled={false}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial
+          vertexColors
+          transparent
+          opacity={0.82}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+          polygonOffset
+          polygonOffsetFactor={-1}
+          polygonOffsetUnits={-2}
+          blending={AdditiveBlending}
+        />
+      </instancedMesh>
     </group>
   );
 }
@@ -1694,6 +1730,10 @@ export function MinimalVizSandbox() {
           <div className="minimal-viz__row">
             <span>Traffic</span>
             <span>{overlay.trafficCount}</span>
+          </div>
+          <div className="minimal-viz__row">
+            <span>TrafficMode</span>
+            <span>solid</span>
           </div>
           <div className="minimal-viz__row">
             <span>CityRadius</span>
