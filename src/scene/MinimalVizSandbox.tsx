@@ -4,8 +4,10 @@ import type { Group, InstancedMesh as ThreeInstancedMesh, Mesh } from 'three';
 import {
   AdditiveBlending,
   ACESFilmicToneMapping,
-  BackSide,
+  BoxGeometry,
   Color,
+  EdgesGeometry,
+  LineBasicMaterial,
   Matrix4,
   MathUtils,
   PlaneGeometry,
@@ -158,8 +160,6 @@ const BIRTH_GLOW_RAMP_MS = 700;
 const BIRTH_OVERSHOOT = 1.18;
 const GLOW_SHELL_SCALE = 1.022;
 const GLOW_EDGE_SCALE = 1.034;
-const STROKE_SHELL_SCALE = 1.014;
-const STROKE_SHELL_OPACITY = 0.66;
 const GLOW_SHELL_OPACITY = 0.24;
 const GLOW_EDGE_OPACITY = 0.62;
 const BAND_OPACITY = 0.55;
@@ -205,6 +205,7 @@ const GROUND_GRAPHIC_Y = GROUND_DECK_Y + 0.006;
 const TRACE_BASE_Y = GROUND_DECK_Y + 0.012;
 const TRACE_LAYER_STEP_Y = 0.00035;
 const TRAFFIC_BASE_OFFSET_Y = 0.005;
+const TRAFFIC_SOLID_RENDER_LIFT_Y = 0.015;
 
 const RADIAL_GLOW_VERTEX = `
 varying vec2 vUv;
@@ -978,6 +979,24 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
   const coreColor = useMemo(() => new Color(tower.coreColor), [tower.coreColor]);
   const strokeColor = BTC_SELL_WARM;
   const segments = useMemo(() => buildTowerSegments(tower), [tower]);
+  const outlineGeometries = useMemo(
+    () => segments.map((seg) => new EdgesGeometry(new BoxGeometry(seg.sx, seg.height, seg.sz))),
+    [segments]
+  );
+  const outlineMaterial = useMemo(() => {
+    const m = new LineBasicMaterial({
+      color: strokeColor,
+      transparent: true,
+      opacity: 0.72,
+      depthTest: true,
+      depthWrite: false
+    });
+    m.toneMapped = false;
+    m.polygonOffset = true;
+    m.polygonOffsetFactor = -3;
+    m.polygonOffsetUnits = -3;
+    return m;
+  }, [strokeColor]);
   const topSegment = segments[segments.length - 1] ?? null;
   const bandFractions = useMemo(() => {
     const base = [0.2, 0.42, 0.66, 0.86];
@@ -990,6 +1009,15 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
     edgeRefs.current.length = segments.length;
     bandRefs.current.length = bandFractions.length;
   }, [segments.length, bandFractions.length]);
+
+  useEffect(() => {
+    return () => {
+      for (let i = 0; i < outlineGeometries.length; i++) {
+        outlineGeometries[i]?.dispose();
+      }
+      outlineMaterial.dispose();
+    };
+  }, [outlineGeometries, outlineMaterial]);
 
   useFrame(() => {
     const group = groupRef.current;
@@ -1052,21 +1080,7 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
             depthWrite
           />
           </mesh>
-          <mesh scale={[STROKE_SHELL_SCALE, 1.004, STROKE_SHELL_SCALE]}>
-            <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
-            <meshBasicMaterial
-              color={strokeColor}
-              side={BackSide}
-              transparent
-              opacity={STROKE_SHELL_OPACITY}
-              toneMapped={false}
-              depthTest
-              depthWrite={false}
-              polygonOffset
-              polygonOffsetFactor={-1}
-              polygonOffsetUnits={-3}
-            />
-          </mesh>
+          <lineSegments scale={[1.002, 1.002, 1.002]} geometry={outlineGeometries[i]} material={outlineMaterial} renderOrder={6.05} />
           <mesh
             ref={(el) => {
               shellRefs.current[i] = el;
@@ -1572,7 +1586,8 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
   useEffect(() => {
     const mesh = instancedRef.current;
     if (!mesh) return;
-    mesh.count = particles.length;
+    const capacity = Math.max(1, mesh.instanceMatrix.count);
+    mesh.count = Math.min(particles.length, capacity);
     for (let i = 0; i < particles.length; i++) {
       const p = particles[i];
       if (!p) continue;
@@ -1585,18 +1600,22 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
-    const sizeScale = MathUtils.lerp(1, 2.15, visCurve);
-    const opacity = MathUtils.lerp(0.8, 0.95, visCurve);
+    const sizeScale = Math.max(0.6, MathUtils.lerp(1, 2.15, visCurve));
+    const opacity = Math.max(0.35, MathUtils.lerp(0.8, 0.95, visCurve));
     const mesh = instancedRef.current;
     if (!mesh) return;
+    const capacity = Math.max(1, mesh.instanceMatrix.count);
+    const instanceCount = Math.min(particles.length, capacity);
+    mesh.count = instanceCount;
     const matrix = tempMatrixRef.current;
     const pos = tempPosRef.current;
     const scl = tempScaleRef.current;
-    for (let i = 0; i < particles.length; i++) {
+    for (let i = 0; i < instanceCount; i++) {
       const p = particles[i];
       if (!mesh || !p) continue;
       const u = (p.phase + t * p.speed) % 1;
-      pos.set(MathUtils.lerp(p.ax, p.bx, u), p.y, MathUtils.lerp(p.az, p.bz, u));
+      pos.set(MathUtils.lerp(p.ax, p.bx, u), p.y + TRAFFIC_SOLID_RENDER_LIFT_Y, MathUtils.lerp(p.az, p.bz, u));
+      // Box geometry forward axis is +X, so quaternion(+X -> segment dir) aligns car length with the trace.
       const len = Math.max(0.28, p.sizeZ) * sizeScale;
       const h = Math.max(0.06, p.sizeY) * MathUtils.lerp(1, 1.18, visCurve);
       const w = Math.max(0.1, p.sizeX) * MathUtils.lerp(1, 1.55, visCurve);
@@ -1622,7 +1641,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
           depthWrite={false}
           depthTest
           polygonOffset
-          polygonOffsetFactor={-1}
+          polygonOffsetFactor={-2}
           polygonOffsetUnits={-2}
           blending={AdditiveBlending}
         />
