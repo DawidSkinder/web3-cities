@@ -18,6 +18,38 @@ type TowerDatum = {
   emittedAt: number;
 };
 
+type TraceDatum = {
+  id: string;
+  aSequence: number;
+  bSequence: number;
+  midX: number;
+  midZ: number;
+  length: number;
+  yaw: number;
+  y: number;
+  width: number;
+  glowWidth: number;
+  coreColor: string;
+  glowColor: string;
+};
+
+type TrafficParticleDatum = {
+  id: string;
+  traceId: string;
+  ax: number;
+  az: number;
+  bx: number;
+  bz: number;
+  yaw: number;
+  y: number;
+  speed: number;
+  phase: number;
+  color: string;
+  sizeX: number;
+  sizeY: number;
+  sizeZ: number;
+};
+
 type SandboxBounds = {
   radius: number;
   maxY: number;
@@ -26,6 +58,9 @@ type SandboxBounds = {
 type AccumState = {
   processedSequences: Set<number>;
   towers: TowerDatum[];
+  traces: TraceDatum[];
+  trafficParticles: TrafficParticleDatum[];
+  traceKeySet: Set<string>;
   lastSequence: number;
   bounds: SandboxBounds;
 };
@@ -62,6 +97,9 @@ const BTC_SELL_WARM = new Color('#F5F2E9');
 const BTC_PALE_AMBER = new Color('#FFD8A2');
 const CORE_GRAPHITE = new Color('#0c1016');
 const CORE_GRAPHITE_HI = new Color('#171e27');
+const TRACE_ORANGE = new Color('#F7931A');
+const TRACE_WARM = new Color('#F5F5F5');
+const TRACE_PALE = new Color('#FFD7A0');
 
 const desiredPosition = new Vector3();
 const desiredTarget = new Vector3();
@@ -86,16 +124,134 @@ function easeOutBack(t: number, overshoot = 1.1) {
   return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
 }
 
+function hash01(...values: number[]) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < values.length; i++) {
+    const v = Math.floor(values[i] * 1000) >>> 0;
+    h ^= v + 0x9e3779b9 + (h << 6) + (h >>> 2);
+    h = Math.imul(h, 16777619);
+  }
+  return ((h >>> 0) % 1_000_000) / 1_000_000;
+}
+
+function segmentFromPoints(ax: number, az: number, bx: number, bz: number) {
+  const dx = bx - ax;
+  const dz = bz - az;
+  const length = Math.hypot(dx, dz);
+  return {
+    length,
+    yaw: Math.atan2(dx, dz),
+    midX: (ax + bx) * 0.5,
+    midZ: (az + bz) * 0.5
+  };
+}
+
 function createEmptyAccum(): AccumState {
   return {
     processedSequences: new Set<number>(),
     towers: [],
+    traces: [],
+    trafficParticles: [],
+    traceKeySet: new Set<string>(),
     lastSequence: 0,
     bounds: {
       radius: 18,
       maxY: 10
     }
   };
+}
+
+function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
+  if (state.towers.length <= 1) return;
+
+  const existing = state.towers.slice(0, -1);
+  const maxLinkDistance =
+    RUNTIME_QUALITY_CONFIG.tier === 'low' ? 20 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 24 : 28;
+  const desiredLinks =
+    RUNTIME_QUALITY_CONFIG.tier === 'low' ? 2 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 3 : 4;
+
+  const candidates = existing
+    .map((other) => {
+      const dist = Math.hypot(tower.x - other.x, tower.z - other.z);
+      return { other, dist };
+    })
+    .filter((item) => item.dist > 0.001 && item.dist <= maxLinkDistance)
+    .sort((a, b) => a.dist - b.dist);
+
+  const picked = candidates.slice(0, Math.min(desiredLinks, candidates.length));
+  for (let i = 0; i < picked.length; i++) {
+    const neighbor = picked[i].other;
+    const aSeq = Math.min(tower.sequence, neighbor.sequence);
+    const bSeq = Math.max(tower.sequence, neighbor.sequence);
+    const traceKey = `${aSeq}:${bSeq}`;
+    if (state.traceKeySet.has(traceKey)) continue;
+
+    const seg = segmentFromPoints(tower.x, tower.z, neighbor.x, neighbor.z);
+    if (!Number.isFinite(seg.length) || seg.length < 0.8) continue;
+
+    state.traceKeySet.add(traceKey);
+    const warmBias = hash01(aSeq, bSeq, seg.length);
+    const imbalanceBias = hash01(tower.sequence, neighbor.sequence, 7);
+    const core = TRACE_ORANGE.clone().lerp(TRACE_PALE, 0.22 + warmBias * 0.22).lerp(TRACE_WARM, imbalanceBias > 0.82 ? 0.24 : 0);
+    const glow = TRACE_ORANGE.clone().lerp(TRACE_WARM, warmBias > 0.88 ? 0.35 : 0.12);
+    const width = 0.08 + hash01(aSeq, bSeq, 3) * 0.03;
+    const glowWidth = width * 2.6;
+    const y = 0.018 + i * 0.001;
+
+    const traceId = `T-${traceKey}`;
+    state.traces.push({
+      id: traceId,
+      aSequence: aSeq,
+      bSequence: bSeq,
+      midX: seg.midX,
+      midZ: seg.midZ,
+      length: Math.max(0.9, seg.length - TOWER_FOOTPRINT * 0.7),
+      yaw: seg.yaw,
+      y,
+      width,
+      glowWidth,
+      coreColor: `#${core.getHexString()}`,
+      glowColor: `#${glow.getHexString()}`
+    });
+
+    const densityScale =
+      (RUNTIME_QUALITY_CONFIG.tier === 'low' ? 0.6 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 1 : 1.35) *
+      (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.55 : 1);
+    const particleCount = Math.max(
+      RUNTIME_QUALITY_CONFIG.reducedMotion ? 1 : 2,
+      Math.round((1 + seg.length / 8) * densityScale)
+    );
+
+    for (let p = 0; p < particleCount; p++) {
+      const phase = hash01(aSeq, bSeq, p, 11);
+      const speedBase = 0.035 + hash01(aSeq, bSeq, p, 23) * 0.045;
+      const speed = speedBase * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.45 : 1);
+      const orangeBias = hash01(aSeq, bSeq, p, 31);
+      const particleColor =
+        orangeBias > 0.86
+          ? TRACE_ORANGE.clone()
+          : orangeBias > 0.52
+            ? TRACE_WARM.clone()
+            : TRACE_PALE.clone();
+
+      state.trafficParticles.push({
+        id: `${traceId}-P-${p}`,
+        traceId,
+        ax: tower.x,
+        az: tower.z,
+        bx: neighbor.x,
+        bz: neighbor.z,
+        yaw: seg.yaw,
+        y: y + 0.008,
+        speed,
+        phase,
+        color: `#${particleColor.getHexString()}`,
+        sizeX: 0.085 + hash01(aSeq, bSeq, p, 47) * 0.03,
+        sizeY: 0.05,
+        sizeZ: 0.18 + hash01(aSeq, bSeq, p, 59) * 0.08
+      });
+    }
+  }
 }
 
 function mapEventToTower(event: BlockEvent): TowerDatum {
@@ -158,6 +314,7 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
       if (target.processedSequences.has(event.sequence)) continue;
       const tower = mapEventToTower(event);
       target.towers.push(tower);
+      appendTracesForNewTower(target, tower);
       target.processedSequences.add(event.sequence);
       target.lastSequence = Math.max(target.lastSequence, event.sequence);
       target.bounds.radius = Math.max(target.bounds.radius, Math.hypot(tower.x, tower.z) + 8);
@@ -173,6 +330,8 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
   return {
     version,
     towers: accumRef.current.towers,
+    traces: accumRef.current.traces,
+    trafficParticles: accumRef.current.trafficParticles,
     bounds: accumRef.current.bounds
   };
 }
@@ -522,7 +681,152 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
   );
 }
 
-function SandboxScene({ towers, bounds }: { towers: TowerDatum[]; bounds: SandboxBounds }) {
+function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
+  const boardSize = MathUtils.clamp(Math.max(420, bounds.radius * 8 + 180), 420, 1400);
+  const panelStep = 24;
+  const arteryLen = Math.min(boardSize * 0.92, Math.max(140, bounds.radius * 3.6));
+  const panelOffsets = useMemo(() => {
+    const values: number[] = [];
+    const half = boardSize * 0.5;
+    for (let v = -half; v <= half; v += panelStep) {
+      values.push(v);
+    }
+    return values;
+  }, [boardSize]);
+
+  return (
+    <group>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.06, 0]} receiveShadow>
+        <planeGeometry args={[boardSize, boardSize]} />
+        <meshStandardMaterial color="#05070b" roughness={0.97} metalness={0.04} />
+      </mesh>
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.045, 0]}>
+        <planeGeometry args={[boardSize * 0.99, boardSize * 0.99]} />
+        <meshStandardMaterial color="#080c11" roughness={0.9} metalness={0.08} emissive="#10161f" emissiveIntensity={0.08} />
+      </mesh>
+
+      {panelOffsets.map((x) => (
+        <mesh key={`panel-v-${x}`} position={[x, -0.038, 0]}>
+          <boxGeometry args={[0.08, 0.006, boardSize * 0.94]} />
+          <meshBasicMaterial color="#101821" transparent opacity={0.26} toneMapped={false} />
+        </mesh>
+      ))}
+      {panelOffsets.map((z) => (
+        <mesh key={`panel-h-${z}`} position={[0, -0.038, z]}>
+          <boxGeometry args={[boardSize * 0.94, 0.006, 0.08]} />
+          <meshBasicMaterial color="#101821" transparent opacity={0.22} toneMapped={false} />
+        </mesh>
+      ))}
+
+      <gridHelper
+        args={[boardSize * 0.95, Math.max(48, Math.round(boardSize / 5)), new Color('#1f2833'), new Color('#121922')]}
+        position={[0, -0.03, 0]}
+        material-transparent
+        material-opacity={0.14}
+      />
+
+      <mesh position={[0, -0.024, 0]}>
+        <boxGeometry args={[0.18, 0.01, arteryLen]} />
+        <meshBasicMaterial color="#F7931A" transparent opacity={0.26} toneMapped={false} />
+      </mesh>
+      <mesh position={[0, -0.023, 0]}>
+        <boxGeometry args={[arteryLen * 0.72, 0.01, 0.16]} />
+        <meshBasicMaterial color="#f4e8d6" transparent opacity={0.14} toneMapped={false} />
+      </mesh>
+      <mesh rotation={[0, Math.PI / 4, 0]} position={[0, -0.022, 0]}>
+        <boxGeometry args={[0.12, 0.008, arteryLen * 0.8]} />
+        <meshBasicMaterial color="#F7931A" transparent opacity={0.12} toneMapped={false} />
+      </mesh>
+      <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, -0.022, 0]}>
+        <boxGeometry args={[0.12, 0.008, arteryLen * 0.62]} />
+        <meshBasicMaterial color="#ffe7c4" transparent opacity={0.09} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
+function TraceStrips({ traces }: { traces: TraceDatum[] }) {
+  return (
+    <group>
+      {traces.map((trace) => (
+        <group key={trace.id} position={[trace.midX, trace.y, trace.midZ]} rotation={[0, trace.yaw, 0]}>
+          <mesh>
+            <boxGeometry args={[trace.glowWidth, 0.012, trace.length]} />
+            <meshBasicMaterial
+              color={trace.glowColor}
+              transparent
+              opacity={0.2}
+              toneMapped={false}
+              depthWrite={false}
+              blending={AdditiveBlending}
+            />
+          </mesh>
+          <mesh position={[0, 0.004, 0]}>
+            <boxGeometry args={[trace.width, 0.014, trace.length]} />
+            <meshBasicMaterial color={trace.coreColor} transparent opacity={0.82} toneMapped={false} />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) {
+  const refs = useRef<Array<Mesh | null>>([]);
+
+  useEffect(() => {
+    refs.current.length = particles.length;
+  }, [particles.length]);
+
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    for (let i = 0; i < particles.length; i++) {
+      const mesh = refs.current[i];
+      const p = particles[i];
+      if (!mesh || !p) continue;
+      const u = (p.phase + t * p.speed) % 1;
+      mesh.position.set(MathUtils.lerp(p.ax, p.bx, u), p.y, MathUtils.lerp(p.az, p.bz, u));
+      mesh.rotation.set(0, p.yaw, 0);
+    }
+  });
+
+  return (
+    <group>
+      {particles.map((p, i) => (
+        <mesh
+          key={p.id}
+          ref={(el) => {
+            refs.current[i] = el;
+          }}
+          position={[p.ax, p.y, p.az]}
+        >
+          <boxGeometry args={[p.sizeX, p.sizeY, p.sizeZ]} />
+          <meshBasicMaterial
+            color={p.color}
+            transparent
+            opacity={0.98}
+            toneMapped={false}
+            depthWrite={false}
+            blending={AdditiveBlending}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function SandboxScene({
+  towers,
+  traces,
+  trafficParticles,
+  bounds
+}: {
+  towers: TowerDatum[];
+  traces: TraceDatum[];
+  trafficParticles: TrafficParticleDatum[];
+  bounds: SandboxBounds;
+}) {
   return (
     <Canvas
       camera={{ position: [20, 12, 20], fov: 50, near: 0.1, far: 500 }}
@@ -544,17 +848,9 @@ function SandboxScene({ towers, bounds }: { towers: TowerDatum[]; bounds: Sandbo
       <directionalLight position={[-14, 20, -10]} intensity={0.34} color="#7fd3ff" />
       <MinimalOrbitRig bounds={bounds} />
 
-      <group>
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.04, 0]} receiveShadow>
-          <planeGeometry args={[400, 400]} />
-          <meshStandardMaterial color="#070a0f" roughness={0.98} metalness={0.02} />
-        </mesh>
-        <gridHelper args={[360, 72, new Color('#1f3448'), new Color('#111a24')]} position={[0, -0.02, 0]} material-transparent material-opacity={0.26} />
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.018, 0]}>
-          <ringGeometry args={[2.5, 3.2, 48]} />
-          <meshBasicMaterial color="#2f7cb3" transparent opacity={0.2} toneMapped={false} />
-        </mesh>
-      </group>
+      <CircuitBoardGround bounds={bounds} />
+      <TraceStrips traces={traces} />
+      <TrafficParticles particles={trafficParticles} />
 
       <group>
         {towers.map((tower) => (
@@ -567,20 +863,22 @@ function SandboxScene({ towers, bounds }: { towers: TowerDatum[]; bounds: Sandbo
 
 export function MinimalVizSandbox() {
   const { events, latest } = useBlockEventStore();
-  const { towers, bounds } = useAppendOnlyTowers(events);
+  const { towers, traces, trafficParticles, bounds } = useAppendOnlyTowers(events);
 
   const overlay = useMemo(
     () => ({
       feedMode: latest?.feedMode ?? 'auto',
       latestSequence: latest?.sequence ?? 0,
-      towerCount: towers.length
+      towerCount: towers.length,
+      traceCount: traces.length,
+      trafficCount: trafficParticles.length
     }),
-    [latest, towers.length]
+    [latest, towers.length, traces.length, trafficParticles.length]
   );
 
   return (
     <div className="minimal-viz">
-      <SandboxScene towers={towers} bounds={bounds} />
+      <SandboxScene towers={towers} traces={traces} trafficParticles={trafficParticles} bounds={bounds} />
       <div className="minimal-viz__overlay" aria-hidden="true">
         <div className="minimal-viz__panel">
           <div className="minimal-viz__title">Sandbox</div>
@@ -595,6 +893,14 @@ export function MinimalVizSandbox() {
           <div className="minimal-viz__row">
             <span>Towers</span>
             <span>{overlay.towerCount}</span>
+          </div>
+          <div className="minimal-viz__row">
+            <span>Traces</span>
+            <span>{overlay.traceCount}</span>
+          </div>
+          <div className="minimal-viz__row">
+            <span>Traffic</span>
+            <span>{overlay.trafficCount}</span>
           </div>
         </div>
       </div>
