@@ -12,12 +12,11 @@ import {
 } from 'three';
 import { CameraRigV2 } from './CameraRigV2';
 import { clearHoveredTowerInstance, useCitySceneStore } from './citySceneStore';
-import { CitySystemV2 } from './CitySystemV2';
+import { HoloCitySystemV3 } from './HoloCitySystemV3';
 import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
 import { DEBUG_VIEW_ENABLED } from './viewFlags';
 
 function Atmosphere() {
-  const fogDensity = (DEBUG_VIEW_ENABLED ? 0.0175 : 0.024) * RUNTIME_QUALITY_CONFIG.fogDensityScale;
   const lightScale =
     RUNTIME_QUALITY_CONFIG.tier === 'low' ? 0.92 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 1 : 1.04;
   return (
@@ -178,7 +177,7 @@ export function BtcSpotCityScene() {
       <AdaptiveRendererExposure />
       <AdaptiveExposureLights />
       <CameraRigV2 />
-      <CitySystemV2 />
+      <HoloCitySystemV3 />
     </Canvas>
   );
 }
