@@ -142,10 +142,10 @@ const BIRTH_GLOW_RAMP_MS = 700;
 const BIRTH_OVERSHOOT = 1.18;
 const GLOW_SHELL_SCALE = 1.022;
 const GLOW_EDGE_SCALE = 1.034;
-const GLOW_SHELL_OPACITY = 0.28;
-const GLOW_EDGE_OPACITY = 0.8;
+const GLOW_SHELL_OPACITY = 0.24;
+const GLOW_EDGE_OPACITY = 0.62;
 const BAND_OPACITY = 0.55;
-const CROWN_OPACITY = 0.8;
+const CROWN_OPACITY = 0.68;
 const BTC_ORANGE = new Color('#F7931A');
 const BTC_SELL_WARM = new Color('#F5F2E9');
 const BTC_PALE_AMBER = new Color('#FFD8A2');
@@ -955,13 +955,16 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
         <group key={`${tower.sequence}-seg-${seg.id}-${i}`} position={[0, seg.y, 0]}>
           <mesh castShadow={RUNTIME_QUALITY_CONFIG.shadows} receiveShadow={RUNTIME_QUALITY_CONFIG.shadows}>
             <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
-            <meshStandardMaterial
-              color={coreColor}
-              roughness={0.38}
-              metalness={0.16}
-              emissive={coreColor}
-              emissiveIntensity={seg.isTop ? 0.055 : 0.045}
-            />
+          <meshStandardMaterial
+            color={coreColor}
+            transparent={false}
+            roughness={0.38}
+            metalness={0.16}
+            emissive={coreColor}
+            emissiveIntensity={seg.isTop ? 0.055 : 0.045}
+            depthTest
+            depthWrite
+          />
           </mesh>
           <mesh
             ref={(el) => {
@@ -975,6 +978,7 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
               transparent
               opacity={0}
               toneMapped={false}
+              depthTest
               depthWrite={false}
               blending={AdditiveBlending}
             />
@@ -992,6 +996,7 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
               transparent
               opacity={0}
               toneMapped={false}
+              depthTest
               depthWrite={false}
               blending={AdditiveBlending}
             />
@@ -1020,6 +1025,7 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
             transparent
             opacity={0}
             toneMapped={false}
+            depthTest
             depthWrite={false}
             blending={AdditiveBlending}
           />
@@ -1039,6 +1045,7 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
           transparent
           opacity={0}
           toneMapped={false}
+          depthTest
           depthWrite={false}
           blending={AdditiveBlending}
         />
@@ -1060,7 +1067,7 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
     () => ({
       uCenterColor: { value: new Color('#F5D8AE') },
       uRingColor: { value: new Color('#F7931A') },
-      uOpacity: { value: 1 }
+      uOpacity: { value: 0.86 }
     }),
     []
   );
@@ -1102,7 +1109,7 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
     const r = MathUtils.clamp(smoothGlowRadiusRef.current, 30, boardSize * 0.48);
     if (glowMeshRef.current) {
       glowMeshRef.current.scale.set(r * 2.2, r * 2.2, 1);
-      glowUniforms.uOpacity.value = 1;
+      glowUniforms.uOpacity.value = 0.86;
     }
     if (ringRef.current) {
       ringRef.current.scale.set(r * 0.9, r * 0.9, 1);
@@ -1155,13 +1162,13 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
       {panelOffsets.map((x) => (
         <mesh key={`panel-v-${x}`} position={[x, -0.038, 0]} renderOrder={2}>
           <boxGeometry args={[0.08, 0.006, boardSize * 0.94]} />
-          <meshBasicMaterial color="#101821" transparent opacity={0.26} toneMapped={false} depthWrite={false} depthTest={false} />
+          <meshBasicMaterial color="#101821" transparent opacity={0.26} toneMapped={false} depthWrite={false} depthTest />
         </mesh>
       ))}
       {panelOffsets.map((z) => (
         <mesh key={`panel-h-${z}`} position={[0, -0.038, z]} renderOrder={2}>
           <boxGeometry args={[boardSize * 0.94, 0.006, 0.08]} />
-          <meshBasicMaterial color="#101821" transparent opacity={0.22} toneMapped={false} depthWrite={false} depthTest={false} />
+          <meshBasicMaterial color="#101821" transparent opacity={0.22} toneMapped={false} depthWrite={false} depthTest />
         </mesh>
       ))}
 
@@ -1172,7 +1179,7 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
         material-transparent
         material-opacity={0.09}
         material-depthWrite={false}
-        material-depthTest={false}
+        material-depthTest={true}
         material-toneMapped={false}
         material-blending={AdditiveBlending}
       />
@@ -1191,26 +1198,26 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
           opacity={0.08}
           toneMapped={false}
           depthWrite={false}
-          depthTest={false}
+          depthTest
           blending={AdditiveBlending}
         />
       </mesh>
 
       <mesh position={[0, -0.024, 0]} renderOrder={3}>
         <boxGeometry args={[0.18, 0.01, arteryLen]} />
-        <meshBasicMaterial color="#F7931A" transparent opacity={0.26} toneMapped={false} depthWrite={false} depthTest={false} />
+        <meshBasicMaterial color="#F7931A" transparent opacity={0.22} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
       <mesh position={[0, -0.023, 0]} renderOrder={3}>
         <boxGeometry args={[arteryLen * 0.72, 0.01, 0.16]} />
-        <meshBasicMaterial color="#f4e8d6" transparent opacity={0.14} toneMapped={false} depthWrite={false} depthTest={false} />
+        <meshBasicMaterial color="#f4e8d6" transparent opacity={0.11} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
       <mesh rotation={[0, Math.PI / 4, 0]} position={[0, -0.022, 0]} renderOrder={3}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.8]} />
-        <meshBasicMaterial color="#F7931A" transparent opacity={0.12} toneMapped={false} depthWrite={false} depthTest={false} />
+        <meshBasicMaterial color="#F7931A" transparent opacity={0.09} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
       <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, -0.022, 0]} renderOrder={3}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.62]} />
-        <meshBasicMaterial color="#ffe7c4" transparent opacity={0.09} toneMapped={false} depthWrite={false} depthTest={false} />
+        <meshBasicMaterial color="#ffe7c4" transparent opacity={0.07} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
     </group>
   );
@@ -1226,10 +1233,10 @@ function TraceStrips({ traces }: { traces: TraceDatum[] }) {
             <meshBasicMaterial
               color={trace.glowColor}
               transparent
-              opacity={0.2}
+              opacity={0.11}
               toneMapped={false}
               depthWrite={false}
-              depthTest={false}
+              depthTest
               blending={AdditiveBlending}
             />
           </mesh>
@@ -1238,11 +1245,10 @@ function TraceStrips({ traces }: { traces: TraceDatum[] }) {
             <meshBasicMaterial
               color={trace.coreColor}
               transparent
-              opacity={0.82}
+              opacity={0.58}
               toneMapped={false}
               depthWrite={false}
-              depthTest={false}
-              blending={AdditiveBlending}
+              depthTest
             />
           </mesh>
         </group>
@@ -1285,10 +1291,10 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
           <meshBasicMaterial
             color={p.color}
             transparent
-            opacity={0.98}
+            opacity={0.74}
             toneMapped={false}
             depthWrite={false}
-            depthTest={false}
+            depthTest
             blending={AdditiveBlending}
           />
         </mesh>
