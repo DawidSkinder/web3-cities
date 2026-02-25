@@ -1,7 +1,16 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Group, Mesh } from 'three';
-import { AdditiveBlending, ACESFilmicToneMapping, Color, MathUtils, SRGBColorSpace, Vector3 } from 'three';
+import {
+  AdditiveBlending,
+  ACESFilmicToneMapping,
+  Color,
+  MathUtils,
+  PlaneGeometry,
+  ShaderMaterial,
+  SRGBColorSpace,
+  Vector3
+} from 'three';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import type { BlockEvent } from '../data/trades/types';
 import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
@@ -121,7 +130,7 @@ type OrbitState = {
 };
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-const SPIRAL_STEP = 2.85;
+const SPIRAL_STEP = 3.35;
 const MIN_HEIGHT = 2.5;
 const MAX_HEIGHT = 30;
 const HEIGHT_GAMMA = 1.15;
@@ -156,9 +165,9 @@ const SCORE_WEIGHT_VOL = 0.78;
 const SCORE_WEIGHT_INT = 0.22;
 const RADIAL_GLOW_RADIUS_MULT = 1.6;
 const RADIAL_GLOW_DAMP = 1.6;
-const MIN_BASE = 0.35;
-const MAX_BASE = 1.15;
-const BASE_GAMMA = 0.85;
+const MIN_BASE = 0.62;
+const MAX_BASE = 1.9;
+const BASE_GAMMA = 0.72;
 const ASPECT_MIN = 0.75;
 const ASPECT_MAX = 1.35;
 const TAPER_MAX = 0.18;
@@ -288,12 +297,17 @@ function buildTowerShapeParams(sequence: number, heightScore: number): {
 
   const scoreLike = MathUtils.clamp(heightScore, 0, 1);
   const baseRaw = MathUtils.lerp(MIN_BASE, MAX_BASE, Math.pow(scoreLike, BASE_GAMMA));
+  const superTallBoost =
+    scoreLike > 0.8 ? MathUtils.lerp(0, 0.34, MathUtils.clamp((scoreLike - 0.8) / 0.2, 0, 1)) : 0;
   const jitter = MathUtils.lerp(0.9, 1.1, hash01(sequence, 109));
-  const base = MathUtils.clamp(baseRaw * jitter, MIN_BASE, MAX_BASE);
-  const aspect = MathUtils.lerp(ASPECT_MIN, ASPECT_MAX, hash01(sequence, 111));
+  const base = MathUtils.clamp((baseRaw + superTallBoost) * jitter, MIN_BASE, MAX_BASE * 1.08);
+  const tallAspectBias = MathUtils.clamp((scoreLike - 0.65) / 0.35, 0, 1);
+  const aspectMin = MathUtils.lerp(ASPECT_MIN, 0.82, tallAspectBias);
+  const aspectMax = MathUtils.lerp(ASPECT_MAX, 1.48, tallAspectBias);
+  const aspect = MathUtils.lerp(aspectMin, aspectMax, hash01(sequence, 111));
   const sqrtAspect = Math.sqrt(aspect);
-  const baseW = MathUtils.clamp(base * sqrtAspect, MIN_BASE * 0.9, MAX_BASE * 1.35);
-  const baseD = MathUtils.clamp(base / sqrtAspect, MIN_BASE * 0.9, MAX_BASE * 1.35);
+  const baseW = MathUtils.clamp(base * sqrtAspect, MIN_BASE * 0.95, MAX_BASE * 1.25);
+  const baseD = MathUtils.clamp(base / sqrtAspect, MIN_BASE * 0.95, MAX_BASE * 1.25);
   const fx = baseW;
   const fz = baseD;
   const taper = Math.min(
@@ -435,8 +449,8 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   const idx = Math.max(0, Math.floor(event.sequence) - 1);
   const angle = idx * GOLDEN_ANGLE;
   const radius = Math.sqrt(idx) * SPIRAL_STEP;
-  const x = Math.cos(angle) * radius;
-  const z = Math.sin(angle) * radius;
+  let x = Math.cos(angle) * radius;
+  let z = Math.sin(angle) * radius;
 
   const intensity = MathUtils.clamp(clampFinite(event.metrics.intensity, 0), 0, 1);
   const totalVolume = Math.max(0, clampFinite(event.metrics.totalVolume, 0, 0, 10_000_000));
@@ -478,6 +492,29 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   const bandCount = (2 + Math.min(2, Math.floor(imbalance * 3))) as 2 | 3 | 4;
   const capGlowBoost = MathUtils.lerp(0.9, 1.35, Math.pow(score, 1.05));
   const shape = buildTowerShapeParams(event.sequence, score);
+
+  // Cheap deterministic local push-out to reduce overlap as footprints get wider.
+  if (state.towers.length > 0) {
+    const radialLen = Math.max(0.0001, Math.hypot(x, z));
+    const dirX = x / radialLen;
+    const dirZ = z / radialLen;
+    const sampleCount = Math.min(18, state.towers.length);
+    for (let i = 0; i < sampleCount; i++) {
+      const other = state.towers[state.towers.length - 1 - i];
+      if (!other) continue;
+      const dx = x - other.x;
+      const dz = z - other.z;
+      const dist = Math.hypot(dx, dz);
+      const otherR = Math.max(other.baseW, other.baseD) * 0.65;
+      const thisR = Math.max(shape.baseW, shape.baseD) * 0.68;
+      const minDist = otherR + thisR + 0.28;
+      if (dist < minDist) {
+        const push = minDist - dist + 0.04;
+        x += dirX * push;
+        z += dirZ * push;
+      }
+    }
+  }
 
   const nextLog = updateEma(ema.meanLogV, ema.varLogV, logV, EMA_ALPHA_VOL);
   ema.meanLogV = nextLog.mean;
@@ -1012,12 +1049,13 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
 
 function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
   const boardSize = MathUtils.clamp(Math.max(420, bounds.radius * 8 + 180), 420, 1400);
-  const targetGlowRadius = Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT);
+  const targetGlowRadius = clampFinite(Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT), 64, 30, boardSize * 0.48);
   const panelStep = 24;
   const arteryLen = Math.min(boardSize * 0.92, Math.max(140, bounds.radius * 3.6));
   const glowMeshRef = useRef<Mesh>(null);
   const ringRef = useRef<Mesh>(null);
   const smoothGlowRadiusRef = useRef(targetGlowRadius);
+  const glowGeometry = useMemo(() => new PlaneGeometry(1, 1, 1, 1), []);
   const glowUniforms = useMemo(
     () => ({
       uCenterColor: { value: new Color('#F5D8AE') },
@@ -1026,6 +1064,19 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
     }),
     []
   );
+  const glowMaterial = useMemo(() => {
+    const material = new ShaderMaterial({
+      uniforms: glowUniforms,
+      vertexShader: RADIAL_GLOW_VERTEX,
+      fragmentShader: RADIAL_GLOW_FRAGMENT,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      blending: AdditiveBlending
+    });
+    material.toneMapped = false;
+    return material;
+  }, [glowUniforms]);
   const panelOffsets = useMemo(() => {
     const values: number[] = [];
     const half = boardSize * 0.5;
@@ -1035,11 +1086,23 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
     return values;
   }, [boardSize]);
 
+  useEffect(() => {
+    return () => {
+      glowGeometry.dispose();
+      glowMaterial.dispose();
+    };
+  }, [glowGeometry, glowMaterial]);
+
   useFrame(({ clock }, delta) => {
-    smoothGlowRadiusRef.current = MathUtils.damp(smoothGlowRadiusRef.current, targetGlowRadius, RADIAL_GLOW_DAMP, delta);
-    const r = smoothGlowRadiusRef.current;
+    const safeTarget = clampFinite(targetGlowRadius, smoothGlowRadiusRef.current || 64, 30, boardSize * 0.48);
+    if (!Number.isFinite(smoothGlowRadiusRef.current)) {
+      smoothGlowRadiusRef.current = safeTarget;
+    }
+    smoothGlowRadiusRef.current = MathUtils.damp(smoothGlowRadiusRef.current, safeTarget, RADIAL_GLOW_DAMP, delta);
+    const r = MathUtils.clamp(smoothGlowRadiusRef.current, 30, boardSize * 0.48);
     if (glowMeshRef.current) {
       glowMeshRef.current.scale.set(r * 2.2, r * 2.2, 1);
+      glowUniforms.uOpacity.value = 1;
     }
     if (ringRef.current) {
       ringRef.current.scale.set(r * 0.9, r * 0.9, 1);
@@ -1053,37 +1116,34 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
 
   return (
     <group>
-      <mesh ref={glowMeshRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.052, 0]} scale={[targetGlowRadius * 2.2, targetGlowRadius * 2.2, 1]}>
-        <planeGeometry args={[1, 1, 1, 1]} />
-        <shaderMaterial
-          uniforms={glowUniforms}
-          vertexShader={RADIAL_GLOW_VERTEX}
-          fragmentShader={RADIAL_GLOW_FRAGMENT}
-          transparent
-          depthWrite={false}
-          toneMapped={false}
-          blending={AdditiveBlending}
-        />
-      </mesh>
+      <mesh
+        ref={glowMeshRef}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, -0.042, 0]}
+        scale={[targetGlowRadius * 2.2, targetGlowRadius * 2.2, 1]}
+        renderOrder={-2}
+        geometry={glowGeometry}
+        material={glowMaterial}
+      />
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.06, 0]} receiveShadow>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.06, 0]} receiveShadow renderOrder={-6}>
         <planeGeometry args={[boardSize, boardSize]} />
         <meshStandardMaterial color="#05070b" roughness={0.97} metalness={0.04} />
       </mesh>
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.045, 0]}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.045, 0]} renderOrder={-5}>
         <planeGeometry args={[boardSize * 0.99, boardSize * 0.99]} />
         <meshStandardMaterial color="#080c11" roughness={0.9} metalness={0.08} emissive="#10161f" emissiveIntensity={0.05} />
       </mesh>
 
       {panelOffsets.map((x) => (
-        <mesh key={`panel-v-${x}`} position={[x, -0.038, 0]}>
+        <mesh key={`panel-v-${x}`} position={[x, -0.038, 0]} renderOrder={-4}>
           <boxGeometry args={[0.08, 0.006, boardSize * 0.94]} />
           <meshBasicMaterial color="#101821" transparent opacity={0.26} toneMapped={false} />
         </mesh>
       ))}
       {panelOffsets.map((z) => (
-        <mesh key={`panel-h-${z}`} position={[0, -0.038, z]}>
+        <mesh key={`panel-h-${z}`} position={[0, -0.038, z]} renderOrder={-4}>
           <boxGeometry args={[boardSize * 0.94, 0.006, 0.08]} />
           <meshBasicMaterial color="#101821" transparent opacity={0.22} toneMapped={false} />
         </mesh>
@@ -1092,28 +1152,35 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
       <gridHelper
         args={[boardSize * 0.95, Math.max(48, Math.round(boardSize / 5)), new Color('#1f2833'), new Color('#121922')]}
         position={[0, -0.03, 0]}
+        renderOrder={-3}
         material-transparent
         material-opacity={0.09}
       />
 
-      <mesh ref={ringRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.026, 0]} scale={[targetGlowRadius * 0.9, targetGlowRadius * 0.9, 1]}>
+      <mesh
+        ref={ringRef}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, -0.026, 0]}
+        scale={[targetGlowRadius * 0.9, targetGlowRadius * 0.9, 1]}
+        renderOrder={-1}
+      >
         <ringGeometry args={[0.96, 1, 96]} />
         <meshBasicMaterial color="#F7931A" transparent opacity={0.08} toneMapped={false} depthWrite={false} blending={AdditiveBlending} />
       </mesh>
 
-      <mesh position={[0, -0.024, 0]}>
+      <mesh position={[0, -0.024, 0]} renderOrder={-1}>
         <boxGeometry args={[0.18, 0.01, arteryLen]} />
         <meshBasicMaterial color="#F7931A" transparent opacity={0.26} toneMapped={false} />
       </mesh>
-      <mesh position={[0, -0.023, 0]}>
+      <mesh position={[0, -0.023, 0]} renderOrder={-1}>
         <boxGeometry args={[arteryLen * 0.72, 0.01, 0.16]} />
         <meshBasicMaterial color="#f4e8d6" transparent opacity={0.14} toneMapped={false} />
       </mesh>
-      <mesh rotation={[0, Math.PI / 4, 0]} position={[0, -0.022, 0]}>
+      <mesh rotation={[0, Math.PI / 4, 0]} position={[0, -0.022, 0]} renderOrder={-1}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.8]} />
         <meshBasicMaterial color="#F7931A" transparent opacity={0.12} toneMapped={false} />
       </mesh>
-      <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, -0.022, 0]}>
+      <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, -0.022, 0]} renderOrder={-1}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.62]} />
         <meshBasicMaterial color="#ffe7c4" transparent opacity={0.09} toneMapped={false} />
       </mesh>
@@ -1204,7 +1271,7 @@ function SandboxScene({
 }) {
   return (
     <Canvas
-      camera={{ position: [20, 12, 20], fov: 50, near: 0.1, far: 500 }}
+      camera={{ position: [20, 12, 20], fov: 50, near: 0.15, far: 420 }}
       dpr={[1, RUNTIME_QUALITY_CONFIG.dprCap]}
       gl={{ antialias: RUNTIME_QUALITY_CONFIG.antialias, alpha: false, powerPreference: 'high-performance' }}
       onCreated={({ scene, gl }) => {
