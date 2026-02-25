@@ -4,7 +4,9 @@ import type { Group, Mesh } from 'three';
 import {
   AdditiveBlending,
   ACESFilmicToneMapping,
+  BufferGeometry,
   Color,
+  Float32BufferAttribute,
   MathUtils,
   PlaneGeometry,
   ShaderMaterial,
@@ -387,7 +389,7 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
     const glow = TRACE_ORANGE.clone().lerp(TRACE_WARM, warmBias > 0.88 ? 0.35 : 0.12);
     const width = 0.08 + hash01(aSeq, bSeq, 3) * 0.03;
     const glowWidth = width * 2.6;
-    const y = 0.018 + i * 0.001;
+    const y = 0.02 + i * 0.0015;
 
     const traceId = `T-${traceKey}`;
     state.traces.push({
@@ -433,12 +435,12 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
         bx: neighbor.x,
         bz: neighbor.z,
         yaw: seg.yaw,
-        y: y + 0.008,
+        y: y + 0.016,
         speed,
         phase,
         color: `#${particleColor.getHexString()}`,
         sizeX: 0.085 + hash01(aSeq, bSeq, p, 47) * 0.03,
-        sizeY: 0.05,
+        sizeY: 0.028,
         sizeZ: 0.18 + hash01(aSeq, bSeq, p, 59) * 0.08
       });
     }
@@ -1054,15 +1056,78 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
   );
 }
 
+function buildLineSegmentsGeometry(segments: Array<[number, number, number, number, number, number]>) {
+  const positions = new Float32Array(segments.length * 6);
+  let offset = 0;
+  for (let i = 0; i < segments.length; i++) {
+    const s = segments[i];
+    if (!s) continue;
+    positions[offset++] = s[0];
+    positions[offset++] = s[1];
+    positions[offset++] = s[2];
+    positions[offset++] = s[3];
+    positions[offset++] = s[4];
+    positions[offset++] = s[5];
+  }
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+  return geometry;
+}
+
+function buildGridSegments(extent: number, step: number) {
+  const segments: Array<[number, number, number, number, number, number]> = [];
+  const half = extent * 0.5;
+  for (let v = -half; v <= half + 0.001; v += step) {
+    segments.push([-half, 0, v, half, 0, v]);
+    segments.push([v, 0, -half, v, 0, half]);
+  }
+  return segments;
+}
+
+function buildWindRoseSegments(radius: number) {
+  const segments: Array<[number, number, number, number, number, number]> = [];
+  const dirs = [
+    [1, 0],
+    [0, 1],
+    [-1, 0],
+    [0, -1],
+    [Math.SQRT1_2, Math.SQRT1_2],
+    [-Math.SQRT1_2, Math.SQRT1_2],
+    [-Math.SQRT1_2, -Math.SQRT1_2],
+    [Math.SQRT1_2, -Math.SQRT1_2]
+  ] as const;
+
+  for (let i = 0; i < dirs.length; i++) {
+    const [dx, dz] = dirs[i];
+    const inner = i < 4 ? radius * 0.08 : radius * 0.12;
+    const outer = i < 4 ? radius : radius * 0.92;
+    segments.push([dx * inner, 0, dz * inner, dx * outer, 0, dz * outer]);
+  }
+
+  // short crosshair accents near center
+  const c = radius * 0.18;
+  segments.push([-c, 0, 0, c, 0, 0]);
+  segments.push([0, 0, -c, 0, 0, c]);
+  return segments;
+}
+
 function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
   const boardSize = MathUtils.clamp(Math.max(420, bounds.radius * 8 + 180), 420, 1400);
   const targetGlowRadius = clampFinite(Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT), 64, 30, boardSize * 0.48);
   const panelStep = 24;
   const arteryLen = Math.min(boardSize * 0.92, Math.max(140, bounds.radius * 3.6));
+  const groundGraphicY = 0.01;
+  const lineExtent = MathUtils.clamp(Math.max(180, bounds.radius * 4.2), 180, boardSize * 0.94);
+  const minorGridStep = RUNTIME_QUALITY_CONFIG.tier === 'low' ? 20 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 16 : 14;
+  const majorGridStep = minorGridStep * 4;
+  const windRoseRadius = MathUtils.clamp(Math.max(68, bounds.radius * 2.35), 68, lineExtent * 0.62);
   const glowMeshRef = useRef<Mesh>(null);
   const ringRef = useRef<Mesh>(null);
   const smoothGlowRadiusRef = useRef(targetGlowRadius);
   const glowGeometry = useMemo(() => new PlaneGeometry(1, 1, 1, 1), []);
+  const gridMinorGeometry = useMemo(() => buildLineSegmentsGeometry(buildGridSegments(lineExtent, minorGridStep)), [lineExtent, minorGridStep]);
+  const gridMajorGeometry = useMemo(() => buildLineSegmentsGeometry(buildGridSegments(lineExtent, majorGridStep)), [lineExtent, majorGridStep]);
+  const windRoseGeometry = useMemo(() => buildLineSegmentsGeometry(buildWindRoseSegments(windRoseRadius)), [windRoseRadius]);
   const glowUniforms = useMemo(
     () => ({
       uCenterColor: { value: new Color('#F5D8AE') },
@@ -1096,9 +1161,12 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
   useEffect(() => {
     return () => {
       glowGeometry.dispose();
+      gridMinorGeometry.dispose();
+      gridMajorGeometry.dispose();
+      windRoseGeometry.dispose();
       glowMaterial.dispose();
     };
-  }, [glowGeometry, glowMaterial]);
+  }, [glowGeometry, gridMinorGeometry, gridMajorGeometry, windRoseGeometry, glowMaterial]);
 
   useFrame(({ clock }, delta) => {
     const safeTarget = clampFinite(targetGlowRadius, smoothGlowRadiusRef.current || 64, 30, boardSize * 0.48);
@@ -1121,19 +1189,20 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
     }
   });
 
-  return (
+    return (
     <group>
+      {/* Layer stack: 0=deck, 1=radial glow (only depthTest off), 2=grid/wind-rose, 3=guide lines */}
       <mesh
         ref={glowMeshRef}
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, -0.05, 0]}
+        position={[0, -0.06, 0]}
         scale={[targetGlowRadius * 2.2, targetGlowRadius * 2.2, 1]}
         renderOrder={1}
         geometry={glowGeometry}
         material={glowMaterial}
       />
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.065, 0]} receiveShadow renderOrder={0}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.03, 0]} receiveShadow renderOrder={0}>
         <planeGeometry args={[boardSize, boardSize]} />
         <meshStandardMaterial
           color="#05070b"
@@ -1145,7 +1214,7 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
         />
       </mesh>
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.04, 0]} renderOrder={0}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} renderOrder={0}>
         <planeGeometry args={[boardSize * 0.99, boardSize * 0.99]} />
         <meshStandardMaterial
           color="#080c11"
@@ -1160,42 +1229,53 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
       </mesh>
 
       {panelOffsets.map((x) => (
-        <mesh key={`panel-v-${x}`} position={[x, -0.038, 0]} renderOrder={2}>
+        <mesh key={`panel-v-${x}`} position={[x, 0.004, 0]} renderOrder={2}>
           <boxGeometry args={[0.08, 0.006, boardSize * 0.94]} />
           <meshBasicMaterial color="#101821" transparent opacity={0.26} toneMapped={false} depthWrite={false} depthTest />
         </mesh>
       ))}
       {panelOffsets.map((z) => (
-        <mesh key={`panel-h-${z}`} position={[0, -0.038, z]} renderOrder={2}>
+        <mesh key={`panel-h-${z}`} position={[0, 0.004, z]} renderOrder={2}>
           <boxGeometry args={[boardSize * 0.94, 0.006, 0.08]} />
           <meshBasicMaterial color="#101821" transparent opacity={0.22} toneMapped={false} depthWrite={false} depthTest />
         </mesh>
       ))}
 
-      <gridHelper
-        args={[boardSize * 0.95, Math.max(48, Math.round(boardSize / 5)), new Color('#1f2833'), new Color('#121922')]}
-        position={[0, -0.03, 0]}
-        renderOrder={2}
-        material-transparent
-        material-opacity={0.09}
-        material-depthWrite={false}
-        material-depthTest={true}
-        material-toneMapped={false}
-        material-blending={AdditiveBlending}
-      />
+      <lineSegments geometry={gridMinorGeometry} position={[0, groundGraphicY, 0]} renderOrder={2}>
+        <lineBasicMaterial color="#18222d" transparent opacity={0.07} toneMapped={false} depthWrite={false} depthTest />
+      </lineSegments>
+      <lineSegments geometry={gridMajorGeometry} position={[0, groundGraphicY + 0.0005, 0]} renderOrder={2}>
+        <lineBasicMaterial color="#263341" transparent opacity={0.14} toneMapped={false} depthWrite={false} depthTest />
+      </lineSegments>
+
+      <lineSegments geometry={windRoseGeometry} position={[0, groundGraphicY + 0.0012, 0]} renderOrder={2}>
+        <lineBasicMaterial color="#F0D2A2" transparent opacity={0.13} toneMapped={false} depthWrite={false} depthTest />
+      </lineSegments>
 
       <mesh
         ref={ringRef}
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, -0.026, 0]}
-        scale={[targetGlowRadius * 0.9, targetGlowRadius * 0.9, 1]}
-        renderOrder={3}
+        position={[0, groundGraphicY + 0.0015, 0]}
+        scale={[windRoseRadius * 0.92, windRoseRadius * 0.92, 1]}
+        renderOrder={2}
       >
         <ringGeometry args={[0.96, 1, 96]} />
         <meshBasicMaterial
           color="#F7931A"
           transparent
-          opacity={0.08}
+          opacity={0.11}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+          blending={AdditiveBlending}
+        />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, groundGraphicY + 0.001, 0]} scale={[windRoseRadius * 0.62, windRoseRadius * 0.62, 1]} renderOrder={2}>
+        <ringGeometry args={[0.985, 1, 96]} />
+        <meshBasicMaterial
+          color="#F5E8D1"
+          transparent
+          opacity={0.045}
           toneMapped={false}
           depthWrite={false}
           depthTest
@@ -1203,21 +1283,21 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
         />
       </mesh>
 
-      <mesh position={[0, -0.024, 0]} renderOrder={3}>
+      <mesh position={[0, groundGraphicY + 0.002, 0]} renderOrder={3}>
         <boxGeometry args={[0.18, 0.01, arteryLen]} />
         <meshBasicMaterial color="#F7931A" transparent opacity={0.22} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
-      <mesh position={[0, -0.023, 0]} renderOrder={3}>
+      <mesh position={[0, groundGraphicY + 0.0025, 0]} renderOrder={3}>
         <boxGeometry args={[arteryLen * 0.72, 0.01, 0.16]} />
         <meshBasicMaterial color="#f4e8d6" transparent opacity={0.11} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
-      <mesh rotation={[0, Math.PI / 4, 0]} position={[0, -0.022, 0]} renderOrder={3}>
+      <mesh rotation={[0, Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.8]} />
-        <meshBasicMaterial color="#F7931A" transparent opacity={0.09} toneMapped={false} depthWrite={false} depthTest />
+        <meshBasicMaterial color="#F7931A" transparent opacity={0.12} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
-      <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, -0.022, 0]} renderOrder={3}>
+      <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.62]} />
-        <meshBasicMaterial color="#ffe7c4" transparent opacity={0.07} toneMapped={false} depthWrite={false} depthTest />
+        <meshBasicMaterial color="#ffe7c4" transparent opacity={0.095} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
     </group>
   );
@@ -1226,9 +1306,10 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
 function TraceStrips({ traces }: { traces: TraceDatum[] }) {
   return (
     <group>
+      {/* Render band 4: depth-tested traces above ground graphics, below traffic/towers */}
       {traces.map((trace) => (
         <group key={trace.id} position={[trace.midX, trace.y, trace.midZ]} rotation={[0, trace.yaw, 0]} renderOrder={4}>
-          <mesh renderOrder={4}>
+          <mesh position={[0, -0.0025, 0]} renderOrder={4}>
             <boxGeometry args={[trace.glowWidth, 0.012, trace.length]} />
             <meshBasicMaterial
               color={trace.glowColor}
@@ -1240,7 +1321,7 @@ function TraceStrips({ traces }: { traces: TraceDatum[] }) {
               blending={AdditiveBlending}
             />
           </mesh>
-          <mesh position={[0, 0.004, 0]} renderOrder={4}>
+          <mesh position={[0, 0.0035, 0]} renderOrder={4}>
             <boxGeometry args={[trace.width, 0.014, trace.length]} />
             <meshBasicMaterial
               color={trace.coreColor}
@@ -1278,6 +1359,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
 
   return (
     <group>
+      {/* Render band 5: traffic cues, still depth-tested so they do not draw through towers */}
       {particles.map((p, i) => (
         <mesh
           key={p.id}
@@ -1339,6 +1421,7 @@ function SandboxScene({
       <TraceStrips traces={traces} />
       <TrafficParticles particles={trafficParticles} />
 
+      {/* Render band 6: tower bodies and holo layers remain the top visual anchors */}
       <group renderOrder={6}>
         {towers.map((tower) => (
           <AnimatedHoloTower key={tower.sequence} tower={tower} />
