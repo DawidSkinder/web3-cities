@@ -1,6 +1,6 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Group, Mesh } from 'three';
+import type { Group, LineSegments as ThreeLineSegments, Mesh } from 'three';
 import {
   AdditiveBlending,
   ACESFilmicToneMapping,
@@ -35,6 +35,8 @@ type TowerDatum = {
   glowStrength: number;
   bandCount: 2 | 3 | 4;
   heightScore: number;
+  isHero: boolean;
+  heroMult: number;
   capGlowBoost: number;
   emittedAt: number;
 };
@@ -102,12 +104,19 @@ type HeightDebugSnapshot = {
   scoreI: number;
   score: number;
   height: number;
+  isHero: boolean;
+  heroMult: number;
   baseW: number;
   baseD: number;
   meanLogV: number;
   stdLogV: number;
   meanI: number;
   stdI: number;
+};
+
+type CameraDebugSnapshot = {
+  camDist: number;
+  visCurve: number;
 };
 
 type AccumState = {
@@ -134,7 +143,8 @@ type OrbitState = {
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const SPIRAL_STEP = 3.35;
 const MIN_HEIGHT = 2.5;
-const MAX_HEIGHT = 30;
+const MAX_HEIGHT = 36;
+const HERO_MAX_HEIGHT = 72;
 const HEIGHT_GAMMA = 1.15;
 const TOWER_FOOTPRINT = 1.1;
 const IDLE_DELAY_MS = 6000;
@@ -173,6 +183,21 @@ const BASE_GAMMA = 0.72;
 const ASPECT_MIN = 0.75;
 const ASPECT_MAX = 1.35;
 const TAPER_MAX = 0.18;
+const HERO_SCORE_MIN = 0.88;
+const HERO_PROB_BASE = 0.032;
+const HERO_HEIGHT_MULT_MIN = 1.8;
+const HERO_HEIGHT_MULT_MAX = 2.45;
+const HERO_BASE_MULT_MIN = 1.35;
+const HERO_BASE_MULT_MAX = 1.9;
+const VIS_NEAR_DIST = 34;
+const VIS_FAR_DIST = 170;
+
+const GROUND_GLOW_Y = -0.05;
+const GROUND_SLAB_Y = -0.03;
+const GROUND_DECK_Y = -0.02;
+const GROUND_GRAPHIC_Y = -0.015;
+const TRACE_BASE_Y = -0.005;
+const TRAFFIC_BASE_OFFSET_Y = 0.002;
 
 const RADIAL_GLOW_VERTEX = `
 varying vec2 vUv;
@@ -240,6 +265,12 @@ function easeOutBack(t: number, overshoot = 1.1) {
 function smoothstep01(v: number) {
   const x = MathUtils.clamp(v, 0, 1);
   return x * x * (3 - 2 * x);
+}
+
+function distanceVisibilityCurve(cameraDistance: number) {
+  const t = MathUtils.clamp((cameraDistance - VIS_NEAR_DIST) / Math.max(1, VIS_FAR_DIST - VIS_NEAR_DIST), 0, 1);
+  const s = smoothstep01(t);
+  return MathUtils.clamp(Math.pow(s, 0.82), 0, 1);
 }
 
 function remapClamped(value: number, inMin: number, inMax: number) {
@@ -389,7 +420,7 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
     const glow = TRACE_ORANGE.clone().lerp(TRACE_WARM, warmBias > 0.88 ? 0.35 : 0.12);
     const width = 0.08 + hash01(aSeq, bSeq, 3) * 0.03;
     const glowWidth = width * 2.6;
-    const y = 0.02 + i * 0.0015;
+    const y = TRACE_BASE_Y + i * 0.0009;
 
     const traceId = `T-${traceKey}`;
     state.traces.push({
@@ -435,12 +466,12 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
         bx: neighbor.x,
         bz: neighbor.z,
         yaw: seg.yaw,
-        y: y + 0.016,
+        y: y + TRAFFIC_BASE_OFFSET_Y,
         speed,
         phase,
         color: `#${particleColor.getHexString()}`,
         sizeX: 0.085 + hash01(aSeq, bSeq, p, 47) * 0.03,
-        sizeY: 0.028,
+        sizeY: 0.024,
         sizeZ: 0.18 + hash01(aSeq, bSeq, p, 59) * 0.08
       });
     }
@@ -483,17 +514,39 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   }
   score = MathUtils.clamp(score, 0, 1);
 
-  const height = MathUtils.clamp(MIN_HEIGHT + (MAX_HEIGHT - MIN_HEIGHT) * Math.pow(score, HEIGHT_GAMMA), MIN_HEIGHT, MAX_HEIGHT);
+  let height = MathUtils.clamp(MIN_HEIGHT + (MAX_HEIGHT - MIN_HEIGHT) * Math.pow(score, HEIGHT_GAMMA), MIN_HEIGHT, MAX_HEIGHT);
 
   const dominance = MathUtils.clamp(clampFinite(event.metrics.imbalance, 0), -1, 1);
   const imbalance = Math.abs(dominance);
   const dominance01 = (dominance + 1) * 0.5;
   const glow = BTC_SELL_WARM.clone().lerp(BTC_PALE_AMBER, 0.38).lerp(BTC_ORANGE, dominance01);
   const core = CORE_GRAPHITE.clone().lerp(CORE_GRAPHITE_HI, 0.2 + imbalance * 0.22);
-  const glowStrength = MathUtils.clamp(0.7 + intensity * 0.45 + imbalance * 0.55, 0.75, 1.55);
-  const bandCount = (2 + Math.min(2, Math.floor(imbalance * 3))) as 2 | 3 | 4;
-  const capGlowBoost = MathUtils.lerp(0.9, 1.35, Math.pow(score, 1.05));
+  let glowStrength = MathUtils.clamp(0.7 + intensity * 0.45 + imbalance * 0.55, 0.75, 1.55);
+  let bandCount = (2 + Math.min(2, Math.floor(imbalance * 3))) as 2 | 3 | 4;
+  let capGlowBoost = MathUtils.lerp(0.9, 1.35, Math.pow(score, 1.05));
+  const heroRoll = hash01(event.sequence, 1901);
+  const heroProbBoost = MathUtils.clamp((score - HERO_SCORE_MIN) / Math.max(0.0001, 1 - HERO_SCORE_MIN), 0, 1);
+  const heroProb = HERO_PROB_BASE * MathUtils.lerp(0.75, 1.85, heroProbBoost);
+  const isHero = score > HERO_SCORE_MIN && heroRoll < heroProb;
+  const heroMult = isHero
+    ? MathUtils.lerp(HERO_HEIGHT_MULT_MIN, HERO_HEIGHT_MULT_MAX, hash01(event.sequence, 1907))
+    : 1;
+  const heroBaseMult = isHero ? MathUtils.lerp(HERO_BASE_MULT_MIN, HERO_BASE_MULT_MAX, hash01(event.sequence, 1913)) : 1;
+  height = MathUtils.clamp(height * heroMult, MIN_HEIGHT, HERO_MAX_HEIGHT);
+
   const shape = buildTowerShapeParams(event.sequence, score);
+  if (isHero) {
+    shape.baseW = MathUtils.clamp(shape.baseW * heroBaseMult, MIN_BASE * 0.95, MAX_BASE * 2.35);
+    shape.baseD = MathUtils.clamp(shape.baseD * heroBaseMult, MIN_BASE * 0.95, MAX_BASE * 2.35);
+    shape.footprintX = MathUtils.clamp(shape.footprintX * heroBaseMult, MIN_BASE * 0.95, MAX_BASE * 2.2);
+    shape.footprintZ = MathUtils.clamp(shape.footprintZ * heroBaseMult, MIN_BASE * 0.95, MAX_BASE * 2.2);
+    shape.taper = MathUtils.clamp(shape.taper + 0.02 + hash01(event.sequence, 1931) * 0.05, 0, TAPER_MAX);
+    shape.podiumRatio = MathUtils.clamp(shape.podiumRatio + 0.03, 0.1, 0.32);
+    shape.crownRatio = MathUtils.clamp(shape.crownRatio + 0.02, 0.06, 0.2);
+    glowStrength = MathUtils.clamp(glowStrength * 1.14, 0.75, 1.85);
+    capGlowBoost *= 1.16;
+    bandCount = (Math.min(4, bandCount + 1) as 2 | 3 | 4);
+  }
 
   // Cheap deterministic local push-out to reduce overlap as footprints get wider.
   if (state.towers.length > 0) {
@@ -534,6 +587,8 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     scoreI,
     score,
     height,
+    isHero,
+    heroMult,
     baseW: shape.baseW,
     baseD: shape.baseD,
     meanLogV: ema.meanLogV,
@@ -560,6 +615,8 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     glowStrength,
     bandCount,
     heightScore: score,
+    isHero,
+    heroMult,
     capGlowBoost,
     emittedAt: Math.max(0, clampFinite(event.emittedAt, Date.now()))
   };
@@ -615,7 +672,13 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
   };
 }
 
-function MinimalOrbitRig({ bounds }: { bounds: SandboxBounds }) {
+function MinimalOrbitRig({
+  bounds,
+  onCameraDebug
+}: {
+  bounds: SandboxBounds;
+  onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
+}) {
   const { camera, gl } = useThree();
   const initializedRef = useRef(false);
   const modeRef = useRef<CameraMode>('auto');
@@ -627,6 +690,7 @@ function MinimalOrbitRig({ bounds }: { bounds: SandboxBounds }) {
 
   const keysRef = useRef<Record<string, boolean>>({});
   const dragRef = useRef({ dragging: false, pointerId: -1, lastX: 0, lastY: 0 });
+  const debugEmitAtRef = useRef(0);
 
   useEffect(() => {
     const canvas = gl.domElement;
@@ -826,6 +890,18 @@ function MinimalOrbitRig({ bounds }: { bounds: SandboxBounds }) {
 
     camera.position.copy(smoothPosition);
     camera.lookAt(smoothTarget);
+
+    if (onCameraDebug) {
+      const nowMs = performance.now();
+      if (nowMs - debugEmitAtRef.current > 160) {
+        debugEmitAtRef.current = nowMs;
+        const camDist = camera.position.length();
+        onCameraDebug({
+          camDist,
+          visCurve: distanceVisibilityCurve(camDist)
+        });
+      }
+    }
   });
 
   return null;
@@ -1112,17 +1188,26 @@ function buildWindRoseSegments(radius: number) {
 }
 
 function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
+  const { camera } = useThree();
   const boardSize = MathUtils.clamp(Math.max(420, bounds.radius * 8 + 180), 420, 1400);
   const targetGlowRadius = clampFinite(Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT), 64, 30, boardSize * 0.48);
   const panelStep = 24;
   const arteryLen = Math.min(boardSize * 0.92, Math.max(140, bounds.radius * 3.6));
-  const groundGraphicY = 0.01;
+  const groundGraphicY = GROUND_GRAPHIC_Y;
   const lineExtent = MathUtils.clamp(Math.max(180, bounds.radius * 4.2), 180, boardSize * 0.94);
   const minorGridStep = RUNTIME_QUALITY_CONFIG.tier === 'low' ? 20 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 16 : 14;
   const majorGridStep = minorGridStep * 4;
   const windRoseRadius = MathUtils.clamp(Math.max(68, bounds.radius * 2.35), 68, lineExtent * 0.62);
   const glowMeshRef = useRef<Mesh>(null);
   const ringRef = useRef<Mesh>(null);
+  const innerRingRef = useRef<Mesh>(null);
+  const arteryMainRef = useRef<Mesh>(null);
+  const arteryCrossRef = useRef<Mesh>(null);
+  const arteryDiagARef = useRef<Mesh>(null);
+  const arteryDiagBRef = useRef<Mesh>(null);
+  const gridMinorRef = useRef<ThreeLineSegments>(null);
+  const gridMajorRef = useRef<ThreeLineSegments>(null);
+  const windRoseRef = useRef<ThreeLineSegments>(null);
   const smoothGlowRadiusRef = useRef(targetGlowRadius);
   const glowGeometry = useMemo(() => new PlaneGeometry(1, 1, 1, 1), []);
   const gridMinorGeometry = useMemo(() => buildLineSegmentsGeometry(buildGridSegments(lineExtent, minorGridStep)), [lineExtent, minorGridStep]);
@@ -1169,6 +1254,7 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
   }, [glowGeometry, gridMinorGeometry, gridMajorGeometry, windRoseGeometry, glowMaterial]);
 
   useFrame(({ clock }, delta) => {
+    const visCurve = distanceVisibilityCurve(camera.position.length());
     const safeTarget = clampFinite(targetGlowRadius, smoothGlowRadiusRef.current || 64, 30, boardSize * 0.48);
     if (!Number.isFinite(smoothGlowRadiusRef.current)) {
       smoothGlowRadiusRef.current = safeTarget;
@@ -1180,12 +1266,50 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
       glowUniforms.uOpacity.value = 0.86;
     }
     if (ringRef.current) {
-      ringRef.current.scale.set(r * 0.9, r * 0.9, 1);
+      const ringScaleVis = MathUtils.lerp(1, 1.04, visCurve);
+      ringRef.current.scale.set(windRoseRadius * 0.92 * ringScaleVis, windRoseRadius * 0.92 * ringScaleVis, 1);
       const pulse = RUNTIME_QUALITY_CONFIG.reducedMotion ? 0 : Math.sin(clock.getElapsedTime() * 0.22) * 0.02;
       const mat = ringRef.current.material as { opacity?: number } | undefined;
       if (mat) {
-        mat.opacity = 0.08 + pulse;
+        mat.opacity = 0.09 + visCurve * 0.1 + pulse;
       }
+    }
+    if (innerRingRef.current) {
+      const innerScaleVis = MathUtils.lerp(1, 1.03, visCurve);
+      innerRingRef.current.scale.set(windRoseRadius * 0.62 * innerScaleVis, windRoseRadius * 0.62 * innerScaleVis, 1);
+      const mat = innerRingRef.current.material as { opacity?: number } | undefined;
+      if (mat) {
+        mat.opacity = 0.04 + visCurve * 0.06;
+      }
+    }
+    const gridMinorMat = gridMinorRef.current?.material as { opacity?: number } | undefined;
+    if (gridMinorMat) gridMinorMat.opacity = MathUtils.lerp(0.07, 0.16, visCurve);
+    const gridMajorMat = gridMajorRef.current?.material as { opacity?: number } | undefined;
+    if (gridMajorMat) gridMajorMat.opacity = MathUtils.lerp(0.14, 0.28, visCurve);
+    const windRoseMat = windRoseRef.current?.material as { opacity?: number } | undefined;
+    if (windRoseMat) windRoseMat.opacity = MathUtils.lerp(0.13, 0.26, visCurve);
+
+    const axisWidthScale = MathUtils.lerp(1, 1.9, visCurve);
+    const crossWidthScale = MathUtils.lerp(1, 1.7, visCurve);
+    if (arteryMainRef.current) {
+      arteryMainRef.current.scale.set(axisWidthScale, 1, 1);
+      const mat = arteryMainRef.current.material as { opacity?: number } | undefined;
+      if (mat) mat.opacity = MathUtils.lerp(0.22, 0.36, visCurve);
+    }
+    if (arteryCrossRef.current) {
+      arteryCrossRef.current.scale.set(1, 1, axisWidthScale);
+      const mat = arteryCrossRef.current.material as { opacity?: number } | undefined;
+      if (mat) mat.opacity = MathUtils.lerp(0.11, 0.22, visCurve);
+    }
+    if (arteryDiagARef.current) {
+      arteryDiagARef.current.scale.set(crossWidthScale, 1, 1);
+      const mat = arteryDiagARef.current.material as { opacity?: number } | undefined;
+      if (mat) mat.opacity = MathUtils.lerp(0.12, 0.22, visCurve);
+    }
+    if (arteryDiagBRef.current) {
+      arteryDiagBRef.current.scale.set(crossWidthScale, 1, 1);
+      const mat = arteryDiagBRef.current.material as { opacity?: number } | undefined;
+      if (mat) mat.opacity = MathUtils.lerp(0.095, 0.18, visCurve);
     }
   });
 
@@ -1195,14 +1319,14 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
       <mesh
         ref={glowMeshRef}
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, -0.06, 0]}
+        position={[0, GROUND_GLOW_Y, 0]}
         scale={[targetGlowRadius * 2.2, targetGlowRadius * 2.2, 1]}
         renderOrder={1}
         geometry={glowGeometry}
         material={glowMaterial}
       />
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.03, 0]} receiveShadow renderOrder={0}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, GROUND_SLAB_Y, 0]} receiveShadow renderOrder={0}>
         <planeGeometry args={[boardSize, boardSize]} />
         <meshStandardMaterial
           color="#05070b"
@@ -1214,7 +1338,7 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
         />
       </mesh>
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} renderOrder={0}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, GROUND_DECK_Y, 0]} renderOrder={0}>
         <planeGeometry args={[boardSize * 0.99, boardSize * 0.99]} />
         <meshStandardMaterial
           color="#080c11"
@@ -1229,26 +1353,26 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
       </mesh>
 
       {panelOffsets.map((x) => (
-        <mesh key={`panel-v-${x}`} position={[x, 0.004, 0]} renderOrder={2}>
+        <mesh key={`panel-v-${x}`} position={[x, GROUND_GRAPHIC_Y - 0.0015, 0]} renderOrder={2}>
           <boxGeometry args={[0.08, 0.006, boardSize * 0.94]} />
           <meshBasicMaterial color="#101821" transparent opacity={0.26} toneMapped={false} depthWrite={false} depthTest />
         </mesh>
       ))}
       {panelOffsets.map((z) => (
-        <mesh key={`panel-h-${z}`} position={[0, 0.004, z]} renderOrder={2}>
+        <mesh key={`panel-h-${z}`} position={[0, GROUND_GRAPHIC_Y - 0.0015, z]} renderOrder={2}>
           <boxGeometry args={[boardSize * 0.94, 0.006, 0.08]} />
           <meshBasicMaterial color="#101821" transparent opacity={0.22} toneMapped={false} depthWrite={false} depthTest />
         </mesh>
       ))}
 
-      <lineSegments geometry={gridMinorGeometry} position={[0, groundGraphicY, 0]} renderOrder={2}>
+      <lineSegments ref={gridMinorRef} geometry={gridMinorGeometry} position={[0, groundGraphicY, 0]} renderOrder={2}>
         <lineBasicMaterial color="#18222d" transparent opacity={0.07} toneMapped={false} depthWrite={false} depthTest />
       </lineSegments>
-      <lineSegments geometry={gridMajorGeometry} position={[0, groundGraphicY + 0.0005, 0]} renderOrder={2}>
+      <lineSegments ref={gridMajorRef} geometry={gridMajorGeometry} position={[0, groundGraphicY + 0.0005, 0]} renderOrder={2}>
         <lineBasicMaterial color="#263341" transparent opacity={0.14} toneMapped={false} depthWrite={false} depthTest />
       </lineSegments>
 
-      <lineSegments geometry={windRoseGeometry} position={[0, groundGraphicY + 0.0012, 0]} renderOrder={2}>
+      <lineSegments ref={windRoseRef} geometry={windRoseGeometry} position={[0, groundGraphicY + 0.0012, 0]} renderOrder={2}>
         <lineBasicMaterial color="#F0D2A2" transparent opacity={0.13} toneMapped={false} depthWrite={false} depthTest />
       </lineSegments>
 
@@ -1270,7 +1394,13 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
           blending={AdditiveBlending}
         />
       </mesh>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, groundGraphicY + 0.001, 0]} scale={[windRoseRadius * 0.62, windRoseRadius * 0.62, 1]} renderOrder={2}>
+      <mesh
+        ref={innerRingRef}
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, groundGraphicY + 0.001, 0]}
+        scale={[windRoseRadius * 0.62, windRoseRadius * 0.62, 1]}
+        renderOrder={2}
+      >
         <ringGeometry args={[0.985, 1, 96]} />
         <meshBasicMaterial
           color="#F5E8D1"
@@ -1283,19 +1413,19 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
         />
       </mesh>
 
-      <mesh position={[0, groundGraphicY + 0.002, 0]} renderOrder={3}>
+      <mesh ref={arteryMainRef} position={[0, groundGraphicY + 0.002, 0]} renderOrder={3}>
         <boxGeometry args={[0.18, 0.01, arteryLen]} />
         <meshBasicMaterial color="#F7931A" transparent opacity={0.22} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
-      <mesh position={[0, groundGraphicY + 0.0025, 0]} renderOrder={3}>
+      <mesh ref={arteryCrossRef} position={[0, groundGraphicY + 0.0025, 0]} renderOrder={3}>
         <boxGeometry args={[arteryLen * 0.72, 0.01, 0.16]} />
         <meshBasicMaterial color="#f4e8d6" transparent opacity={0.11} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
-      <mesh rotation={[0, Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
+      <mesh ref={arteryDiagARef} rotation={[0, Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.8]} />
         <meshBasicMaterial color="#F7931A" transparent opacity={0.12} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
-      <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
+      <mesh ref={arteryDiagBRef} rotation={[0, -Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.62]} />
         <meshBasicMaterial color="#ffe7c4" transparent opacity={0.095} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
@@ -1304,12 +1434,49 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
 }
 
 function TraceStrips({ traces }: { traces: TraceDatum[] }) {
+  const { camera } = useThree();
+  const glowRefs = useRef<Array<Mesh | null>>([]);
+  const coreRefs = useRef<Array<Mesh | null>>([]);
+
+  useEffect(() => {
+    glowRefs.current.length = traces.length;
+    coreRefs.current.length = traces.length;
+  }, [traces.length]);
+
+  useFrame(() => {
+    const visCurve = distanceVisibilityCurve(camera.position.length());
+    const glowWidthScale = MathUtils.lerp(1, 2.4, visCurve);
+    const coreWidthScale = MathUtils.lerp(1, 1.95, visCurve);
+    const glowOpacity = MathUtils.lerp(0.11, 0.2, visCurve);
+    const coreOpacity = MathUtils.lerp(0.58, 0.78, visCurve);
+    for (let i = 0; i < traces.length; i++) {
+      const glow = glowRefs.current[i];
+      const core = coreRefs.current[i];
+      if (glow) {
+        glow.scale.set(glowWidthScale, 1, 1);
+        const mat = glow.material as { opacity?: number } | undefined;
+        if (mat) mat.opacity = glowOpacity;
+      }
+      if (core) {
+        core.scale.set(coreWidthScale, 1, 1);
+        const mat = core.material as { opacity?: number } | undefined;
+        if (mat) mat.opacity = coreOpacity;
+      }
+    }
+  });
+
   return (
     <group>
       {/* Render band 4: depth-tested traces above ground graphics, below traffic/towers */}
-      {traces.map((trace) => (
+      {traces.map((trace, i) => (
         <group key={trace.id} position={[trace.midX, trace.y, trace.midZ]} rotation={[0, trace.yaw, 0]} renderOrder={4}>
-          <mesh position={[0, -0.0025, 0]} renderOrder={4}>
+          <mesh
+            position={[0, -0.0016, 0]}
+            renderOrder={4}
+            ref={(el) => {
+              glowRefs.current[i] = el;
+            }}
+          >
             <boxGeometry args={[trace.glowWidth, 0.012, trace.length]} />
             <meshBasicMaterial
               color={trace.glowColor}
@@ -1318,10 +1485,19 @@ function TraceStrips({ traces }: { traces: TraceDatum[] }) {
               toneMapped={false}
               depthWrite={false}
               depthTest
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-1}
               blending={AdditiveBlending}
             />
           </mesh>
-          <mesh position={[0, 0.0035, 0]} renderOrder={4}>
+          <mesh
+            position={[0, 0.0022, 0]}
+            renderOrder={4.1}
+            ref={(el) => {
+              coreRefs.current[i] = el;
+            }}
+          >
             <boxGeometry args={[trace.width, 0.014, trace.length]} />
             <meshBasicMaterial
               color={trace.coreColor}
@@ -1330,6 +1506,9 @@ function TraceStrips({ traces }: { traces: TraceDatum[] }) {
               toneMapped={false}
               depthWrite={false}
               depthTest
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-2}
             />
           </mesh>
         </group>
@@ -1339,6 +1518,7 @@ function TraceStrips({ traces }: { traces: TraceDatum[] }) {
 }
 
 function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) {
+  const { camera } = useThree();
   const refs = useRef<Array<Mesh | null>>([]);
 
   useEffect(() => {
@@ -1347,6 +1527,9 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
+    const visCurve = distanceVisibilityCurve(camera.position.length());
+    const sizeScale = MathUtils.lerp(1, 2.15, visCurve);
+    const opacity = MathUtils.lerp(0.74, 0.94, visCurve);
     for (let i = 0; i < particles.length; i++) {
       const mesh = refs.current[i];
       const p = particles[i];
@@ -1354,6 +1537,9 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
       const u = (p.phase + t * p.speed) % 1;
       mesh.position.set(MathUtils.lerp(p.ax, p.bx, u), p.y, MathUtils.lerp(p.az, p.bz, u));
       mesh.rotation.set(0, p.yaw, 0);
+      mesh.scale.set(sizeScale, MathUtils.lerp(1, 1.25, visCurve), sizeScale);
+      const mat = mesh.material as { opacity?: number } | undefined;
+      if (mat) mat.opacity = opacity;
     }
   });
 
@@ -1377,6 +1563,9 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
             toneMapped={false}
             depthWrite={false}
             depthTest
+            polygonOffset
+            polygonOffsetFactor={-1}
+            polygonOffsetUnits={-2}
             blending={AdditiveBlending}
           />
         </mesh>
@@ -1389,12 +1578,14 @@ function SandboxScene({
   towers,
   traces,
   trafficParticles,
-  bounds
+  bounds,
+  onCameraDebug
 }: {
   towers: TowerDatum[];
   traces: TraceDatum[];
   trafficParticles: TrafficParticleDatum[];
   bounds: SandboxBounds;
+  onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
 }) {
   return (
     <Canvas
@@ -1415,7 +1606,7 @@ function SandboxScene({
       <hemisphereLight args={['#9cc4ee', '#090b10', 0.34]} />
       <directionalLight position={[10, 18, 8]} intensity={0.72} color="#d6e8ff" castShadow={RUNTIME_QUALITY_CONFIG.shadows} />
       <directionalLight position={[-14, 20, -10]} intensity={0.34} color="#7fd3ff" />
-      <MinimalOrbitRig bounds={bounds} />
+      <MinimalOrbitRig bounds={bounds} onCameraDebug={onCameraDebug} />
 
       <CircuitBoardGround bounds={bounds} />
       <TraceStrips traces={traces} />
@@ -1434,6 +1625,7 @@ function SandboxScene({
 export function MinimalVizSandbox() {
   const { events, latest } = useBlockEventStore();
   const { towers, traces, trafficParticles, bounds, latestHeightDebug } = useAppendOnlyTowers(events);
+  const [cameraDebug, setCameraDebug] = useState<CameraDebugSnapshot>({ camDist: 0, visCurve: 0 });
 
   const overlay = useMemo(
     () => ({
@@ -1443,14 +1635,22 @@ export function MinimalVizSandbox() {
       traceCount: traces.length,
       trafficCount: trafficParticles.length,
       cityRadius: bounds.radius,
-      glowRadius: Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT)
+      glowRadius: Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT),
+      camDist: cameraDebug.camDist,
+      visCurve: cameraDebug.visCurve
     }),
-    [latest, towers.length, traces.length, trafficParticles.length, bounds.radius]
+    [latest, towers.length, traces.length, trafficParticles.length, bounds.radius, cameraDebug.camDist, cameraDebug.visCurve]
   );
 
   return (
     <div className="minimal-viz">
-      <SandboxScene towers={towers} traces={traces} trafficParticles={trafficParticles} bounds={bounds} />
+      <SandboxScene
+        towers={towers}
+        traces={traces}
+        trafficParticles={trafficParticles}
+        bounds={bounds}
+        onCameraDebug={setCameraDebug}
+      />
       <div className="minimal-viz__overlay" aria-hidden="true">
         <div className="minimal-viz__panel">
           <div className="minimal-viz__title">Sandbox</div>
@@ -1482,6 +1682,14 @@ export function MinimalVizSandbox() {
             <span>GlowRadius</span>
             <span>{fmtFixed(overlay.glowRadius, 1)}</span>
           </div>
+          <div className="minimal-viz__row">
+            <span>CamDist</span>
+            <span>{fmtFixed(overlay.camDist, 1)}</span>
+          </div>
+          <div className="minimal-viz__row">
+            <span>VisCurve</span>
+            <span>{fmtFixed(overlay.visCurve, 2)}</span>
+          </div>
           {latestHeightDebug ? (
             <>
               <div className="minimal-viz__row">
@@ -1499,6 +1707,14 @@ export function MinimalVizSandbox() {
               <div className="minimal-viz__row">
                 <span>Height</span>
                 <span>{fmtFixed(latestHeightDebug.height, 1)}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>Hero</span>
+                <span>{latestHeightDebug.isHero ? 'yes' : 'no'}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>HeroMult</span>
+                <span>{fmtFixed(latestHeightDebug.heroMult, 2)}</span>
               </div>
               <div className="minimal-viz__row">
                 <span>BaseW</span>
