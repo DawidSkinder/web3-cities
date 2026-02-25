@@ -2,10 +2,11 @@ import { useFrame } from '@react-three/fiber';
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import type { RefObject } from 'react';
 import type { InstancedMesh } from 'three';
-import { Color, MathUtils, Object3D } from 'three';
+import { AdditiveBlending, Color, MathUtils, Object3D } from 'three';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import type { BlockEvent } from '../data/trades/types';
 import { getSpineTransformFromSequence } from './cityGrowthPath';
+import { DEBUG_VIEW_ENABLED } from './viewFlags';
 
 type DistrictBaseInstance = {
   position: [number, number, number];
@@ -51,6 +52,7 @@ const MAX_GLOW_INSTANCES = 1400;
 const tempObject = new Object3D();
 let invalidInstanceWarnCount = 0;
 let invalidEventWarnCount = 0;
+let instanceBudgetWarned = false;
 
 function pseudoRandom(seed: number) {
   const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453123;
@@ -216,26 +218,31 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
     const sizeSignal = MathUtils.clamp(Math.log1p(averageTradeSize * 1200) / 4, 0, 1);
     const volumeSignal = MathUtils.clamp(Math.log1p(totalVolume * 140) / 6, 0, 1);
 
-    const footprint = clampFinite(0.85 + volumeSignal * 2.35 + intensity * 0.85, 1.2, 0.6, 7.5);
-    const plateauHeight = clampFinite(
-      0.12 + intensity * 0.22 + volumeSignal * 0.16,
-      0.2,
-      0.08,
-      1.2
+    const footprint = clampFinite(
+      1.45 + volumeSignal * 2.9 + intensity * 1.15,
+      2.2,
+      1.2,
+      9.5
     );
-    const density = Math.round(5 + tradeDensity * 10 + volumeSignal * 4);
-    const baseCount = Math.max(5, Math.min(20, clampFinite(density, 8, 5, 20)));
+    const plateauHeight = clampFinite(
+      0.18 + intensity * 0.32 + volumeSignal * 0.22,
+      0.34,
+      0.14,
+      1.8
+    );
+    const density = Math.round(8 + tradeDensity * 12 + volumeSignal * 6);
+    const baseCount = Math.max(8, Math.min(24, clampFinite(density, 11, 8, 24)));
 
     const buyTint = new Color('#44c8ff');
     const sellTint = new Color('#ff7b42');
     const neutralTint = new Color('#99afc3');
 
     const dominanceColor = sellTint.clone().lerp(buyTint, (dominance + 1) * 0.5);
-    const towerColor = new Color('#0a0d12').lerp(new Color('#16202a'), 0.15 + intensity * 0.2);
+    const towerColor = new Color('#11171f').lerp(new Color('#243443'), 0.22 + intensity * 0.28);
     const glowColor = neutralTint.clone().lerp(dominanceColor, 0.35 + intensity * 0.55);
-    const baseColor = new Color('#07090d').lerp(dominanceColor, 0.03 + intensity * 0.08);
+    const baseColor = new Color('#11161d').lerp(dominanceColor, 0.08 + intensity * 0.12);
 
-    const massiveness = clampFinite(0.9 + intensity * 1.2 + sizeSignal * 0.75, 1.2, 0.6, 4.8);
+    const massiveness = clampFinite(1.15 + intensity * 1.45 + sizeSignal * 0.9, 1.8, 0.85, 5.8);
     const verticalBias = clampFinite(
       1 + dominance * 0.55 + Math.sign(priceChange || 0) * 0.08,
       1,
@@ -243,10 +250,10 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       2.4
     );
     const centralCoreHeight = clampFinite(
-      (1.5 + footprint * 0.9 + intensity * 1.8) * massiveness,
-      2.5,
-      0.35,
-      24
+      (2.4 + footprint * 1.05 + intensity * 2.6) * massiveness,
+      4.8,
+      1.2,
+      34
     );
 
     validateAndPushBase(event.sequence, {
@@ -275,36 +282,36 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       const [rx, rz] = rotateLocalPoint(lx, lz, yaw);
 
       const width = clampFinite(
-        0.18 + pseudoRandom(seed + 5) * 0.42 + intensity * 0.12,
-        0.28,
-        0.08,
-        1.8
+        0.22 + pseudoRandom(seed + 5) * 0.5 + intensity * 0.18,
+        0.42,
+        0.16,
+        2.4
       );
       const depth = clampFinite(
-        0.18 + pseudoRandom(seed + 6) * 0.36 + volumeSignal * 0.09,
-        0.24,
-        0.08,
-        1.8
+        0.2 + pseudoRandom(seed + 6) * 0.42 + volumeSignal * 0.14,
+        0.38,
+        0.14,
+        2.4
       );
 
       const radialWeight = 1 - Math.min(1, radial / (footprint * 1.2));
       const spireBias = i === 0 ? 1.4 : 1;
       const height =
-        (0.55 +
+        (1.05 +
           radialWeight * centralCoreHeight * (0.45 + pseudoRandom(seed + 7) * 0.9) * spireBias +
-          intensity * 1.15 +
-          tradeDensity * 0.5) *
+          intensity * 1.85 +
+          tradeDensity * 0.95) *
         Math.max(0.42, verticalBias);
 
-      const actualHeight = clampFinite(Math.max(0.2, height), 0.6, 0.12, 34);
+      const actualHeight = clampFinite(Math.max(0.9, height), 1.6, 0.75, 42);
       const y = clampFinite(plateauHeight + actualHeight * 0.5, 0.4, -1, 60);
       const towerLocalColor = towerColor
         .clone()
         .lerp(dominanceColor, radialWeight * 0.05 + intensity * 0.08);
 
-      const riseDelayMs = Math.floor(clampFinite(i * (26 + intensity * 35), 0, 0, 2400));
+      const riseDelayMs = Math.floor(clampFinite(i * (22 + intensity * 28), 0, 0, 2000));
       const riseDurationMs = Math.floor(
-        clampFinite(850 + (1 - radialWeight) * 450 + intensity * 350, 950, 320, 2600)
+        clampFinite(760 + (1 - radialWeight) * 420 + intensity * 280, 860, 320, 2200)
       );
 
       validateAndPushTower(event.sequence, {
@@ -319,15 +326,18 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
 
       const shouldGlow = i === 0 || pseudoRandom(seed + 9) > 0.67 - intensity * 0.2;
       if (shouldGlow) {
-        const stripHeight = Math.min(actualHeight * (0.22 + intensity * 0.4), actualHeight * 0.88);
+        const stripHeight = Math.max(
+          0.22,
+          Math.min(actualHeight * (0.28 + intensity * 0.45), actualHeight * 0.92)
+        );
         const stripY = plateauHeight + actualHeight - stripHeight * 0.5;
-        const glowWidth = Math.max(0.045, Math.min(width, depth) * (0.24 + intensity * 0.16));
-        const glowDepth = Math.max(0.045, glowWidth * (0.9 + pseudoRandom(seed + 11) * 0.4));
+        const glowWidth = Math.max(0.09, Math.min(width, depth) * (0.3 + intensity * 0.22));
+        const glowDepth = Math.max(0.08, glowWidth * (0.95 + pseudoRandom(seed + 11) * 0.4));
         const glowOpacity = clampFinite(
-          0.22 + intensity * 0.38 + Math.abs(dominance) * 0.16,
-          0.35,
-          0.08,
-          0.95
+          0.38 + intensity * 0.42 + Math.abs(dominance) * 0.18,
+          0.55,
+          0.24,
+          1
         );
 
         validateAndPushGlow(event.sequence, {
@@ -335,7 +345,7 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
           rotationY: yaw,
           size: [glowWidth, stripHeight, glowDepth],
           color: glowColor.clone(),
-          opacity: MathUtils.clamp(glowOpacity, 0.18, 0.9),
+          opacity: MathUtils.clamp(glowOpacity, 0.28, 1),
           birthAtMs: Math.max(0, clampFinite(event.emittedAt, Date.now())),
           riseDelayMs: riseDelayMs + 120,
           riseDurationMs: Math.max(380, riseDurationMs - 160)
@@ -343,14 +353,19 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       }
     }
 
-    const crownHeight = 0.18 + intensity * 0.42 + Math.abs(dominance) * 0.25;
+    const crownHeight = clampFinite(
+      0.28 + intensity * 0.62 + Math.abs(dominance) * 0.32,
+      0.5,
+      0.2,
+      2.4
+    );
     if (glows.length < MAX_GLOW_INSTANCES) {
       validateAndPushGlow(event.sequence, {
       position: [cx, plateauHeight + crownHeight * 0.5 + 0.06, cz],
       rotationY: yaw,
-      size: [footprint * 1.05, crownHeight, footprint * 0.85],
-      color: glowColor.clone().multiplyScalar(0.95 + intensity * 0.4),
-      opacity: 0.1 + intensity * 0.25,
+      size: [footprint * 1.15, crownHeight, footprint * 0.95],
+      color: glowColor.clone().multiplyScalar(1.15 + intensity * 0.55),
+      opacity: 0.26 + intensity * 0.34,
       birthAtMs: Math.max(0, clampFinite(event.emittedAt, Date.now())),
       riseDelayMs: 90,
       riseDurationMs: 900
@@ -461,7 +476,10 @@ export function ProceduralCityGrowth() {
   const baseColors = useMemo(() => visualData.bases.map((item) => item.color), [visualData.bases]);
   const towerColors = useMemo(() => visualData.towers.map((item) => item.color), [visualData.towers]);
   const glowColors = useMemo(
-    () => visualData.glows.map((item) => item.color.clone().multiplyScalar(item.opacity)),
+    () =>
+      visualData.glows.map((item) =>
+        item.color.clone().multiplyScalar(DEBUG_VIEW_ENABLED ? 1.35 : 0.95 + item.opacity * 0.95)
+      ),
     [visualData.glows]
   );
   const latestAnimationEndMs = useMemo(() => {
@@ -480,7 +498,11 @@ export function ProceduralCityGrowth() {
 
   const totalInstances =
     visualData.bases.length + visualData.towers.length + visualData.glows.length;
-  if (totalInstances > MAX_GLOW_INSTANCES + MAX_TOWER_INSTANCES + MAX_BASE_INSTANCES) {
+  if (
+    !instanceBudgetWarned &&
+    totalInstances > MAX_GLOW_INSTANCES + MAX_TOWER_INSTANCES + MAX_BASE_INSTANCES
+  ) {
+    instanceBudgetWarned = true;
     console.warn('[BTC Spot City][city] instance budget exceeded, trimming visuals.');
   }
 
@@ -530,11 +552,11 @@ export function ProceduralCityGrowth() {
         <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial
           vertexColors
-          color="#0a0d10"
-          roughness={0.96}
-          metalness={0.12}
-          emissive="#0b1017"
-          emissiveIntensity={0.1}
+          color={DEBUG_VIEW_ENABLED ? '#18212b' : '#121a23'}
+          roughness={0.9}
+          metalness={0.18}
+          emissive="#1b2b3a"
+          emissiveIntensity={DEBUG_VIEW_ENABLED ? 0.42 : 0.28}
         />
       </instancedMesh>
 
@@ -547,11 +569,11 @@ export function ProceduralCityGrowth() {
         <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial
           vertexColors
-          color="#0b0f14"
-          roughness={0.88}
-          metalness={0.18}
-          emissive="#101e2a"
-          emissiveIntensity={0.16}
+          color={DEBUG_VIEW_ENABLED ? '#1d2b37' : '#18232e'}
+          roughness={0.76}
+          metalness={0.22}
+          emissive="#26455f"
+          emissiveIntensity={DEBUG_VIEW_ENABLED ? 0.85 : 0.55}
         />
       </instancedMesh>
 
@@ -561,7 +583,14 @@ export function ProceduralCityGrowth() {
         frustumCulled={false}
       >
         <boxGeometry args={[1, 1, 1]} />
-        <meshBasicMaterial vertexColors transparent opacity={0.95} />
+        <meshBasicMaterial
+          vertexColors
+          transparent
+          opacity={DEBUG_VIEW_ENABLED ? 1 : 0.95}
+          depthWrite={false}
+          toneMapped={false}
+          blending={AdditiveBlending}
+        />
       </instancedMesh>
     </group>
   );
