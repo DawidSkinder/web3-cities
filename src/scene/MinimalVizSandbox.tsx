@@ -12,6 +12,8 @@ type TowerDatum = {
   z: number;
   height: number;
   archetypeId: 0 | 1 | 2 | 3;
+  baseW: number;
+  baseD: number;
   footprintX: number;
   footprintZ: number;
   taper: number;
@@ -89,6 +91,8 @@ type HeightDebugSnapshot = {
   scoreI: number;
   score: number;
   height: number;
+  baseW: number;
+  baseD: number;
   meanLogV: number;
   stdLogV: number;
   meanI: number;
@@ -152,6 +156,12 @@ const SCORE_WEIGHT_VOL = 0.78;
 const SCORE_WEIGHT_INT = 0.22;
 const RADIAL_GLOW_RADIUS_MULT = 1.6;
 const RADIAL_GLOW_DAMP = 1.6;
+const MIN_BASE = 0.35;
+const MAX_BASE = 1.15;
+const BASE_GAMMA = 0.85;
+const ASPECT_MIN = 0.75;
+const ASPECT_MAX = 1.35;
+const TAPER_MAX = 0.18;
 
 const RADIAL_GLOW_VERTEX = `
 varying vec2 vUv;
@@ -264,6 +274,8 @@ function segmentFromPoints(ax: number, az: number, bx: number, bz: number) {
 
 function buildTowerShapeParams(sequence: number, heightScore: number): {
   archetypeId: 0 | 1 | 2 | 3;
+  baseW: number;
+  baseD: number;
   footprintX: number;
   footprintZ: number;
   taper: number;
@@ -274,14 +286,27 @@ function buildTowerShapeParams(sequence: number, heightScore: number): {
   const archetypeId: 0 | 1 | 2 | 3 =
     archetypePick < 0.34 ? 0 : archetypePick < 0.62 ? 1 : archetypePick < 0.84 ? 2 : 3;
 
-  const fx = TOWER_FOOTPRINT * MathUtils.lerp(0.82, 1.26, hash01(sequence, 111));
-  const fz = TOWER_FOOTPRINT * MathUtils.lerp(0.82, 1.26, hash01(sequence, 113));
-  const taper = MathUtils.lerp(0.06, 0.18, hash01(sequence, 127)) * (0.8 + heightScore * 0.35);
+  const scoreLike = MathUtils.clamp(heightScore, 0, 1);
+  const baseRaw = MathUtils.lerp(MIN_BASE, MAX_BASE, Math.pow(scoreLike, BASE_GAMMA));
+  const jitter = MathUtils.lerp(0.9, 1.1, hash01(sequence, 109));
+  const base = MathUtils.clamp(baseRaw * jitter, MIN_BASE, MAX_BASE);
+  const aspect = MathUtils.lerp(ASPECT_MIN, ASPECT_MAX, hash01(sequence, 111));
+  const sqrtAspect = Math.sqrt(aspect);
+  const baseW = MathUtils.clamp(base * sqrtAspect, MIN_BASE * 0.9, MAX_BASE * 1.35);
+  const baseD = MathUtils.clamp(base / sqrtAspect, MIN_BASE * 0.9, MAX_BASE * 1.35);
+  const fx = baseW;
+  const fz = baseD;
+  const taper = Math.min(
+    TAPER_MAX,
+    MathUtils.lerp(0.02, TAPER_MAX, hash01(sequence, 127)) * (0.72 + heightScore * 0.42)
+  );
   const podiumRatio = MathUtils.lerp(0.12, 0.25, hash01(sequence, 131));
   const crownRatio = MathUtils.lerp(0.07, 0.16, hash01(sequence, 137));
 
   return {
     archetypeId,
+    baseW,
+    baseD,
     footprintX: fx,
     footprintZ: fz,
     taper,
@@ -470,6 +495,8 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     scoreI,
     score,
     height,
+    baseW: shape.baseW,
+    baseD: shape.baseD,
     meanLogV: ema.meanLogV,
     stdLogV: emaStd(ema.varLogV),
     meanI: ema.meanI,
@@ -482,6 +509,8 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     z,
     height,
     archetypeId: shape.archetypeId,
+    baseW: shape.baseW,
+    baseD: shape.baseD,
     footprintX: shape.footprintX,
     footprintZ: shape.footprintZ,
     taper: shape.taper,
@@ -1275,6 +1304,14 @@ export function MinimalVizSandbox() {
               <div className="minimal-viz__row">
                 <span>Height</span>
                 <span>{fmtFixed(latestHeightDebug.height, 1)}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>BaseW</span>
+                <span>{fmtFixed(latestHeightDebug.baseW, 2)}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>BaseD</span>
+                <span>{fmtFixed(latestHeightDebug.baseD, 2)}</span>
               </div>
               <div className="minimal-viz__row">
                 <span>EMA V</span>
