@@ -9,9 +9,9 @@ export type SpineTransform = {
 
 function pointAtIndex(index: number): [number, number, number] {
   const i = Math.max(0, index);
-  const forward = i * 1.28;
-  const lateral = Math.sin(i * 0.52) * (1.6 + i * 0.06) + Math.sin(i * 0.15) * 0.7;
-  const subtleWave = Math.cos(i * 0.31) * 0.85;
+  const forward = i * 1.72;
+  const lateral = Math.sin(i * 0.46) * (2.1 + i * 0.08) + Math.sin(i * 0.14) * 1.05;
+  const subtleWave = Math.cos(i * 0.28) * 1.05;
 
   return [lateral, 0, -forward + subtleWave];
 }
@@ -47,4 +47,3 @@ export function getSpineCameraAnchor(sequence: number) {
 
   return { pos, tangent, normal };
 }
-

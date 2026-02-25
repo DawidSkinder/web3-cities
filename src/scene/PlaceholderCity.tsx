@@ -1,7 +1,10 @@
+import { useFrame } from '@react-three/fiber';
 import { useLayoutEffect, useMemo, useRef } from 'react';
-import type { InstancedMesh } from 'three';
+import type { InstancedMesh, Mesh } from 'three';
 import { Color, Object3D } from 'three';
+import { useBlockEventStore } from '../data/trades/blockEventStore';
 import { ProceduralCityGrowth } from './ProceduralCityGrowth';
+import { DEBUG_VIEW_ENABLED } from './viewFlags';
 
 type Block = {
   position: [number, number, number];
@@ -142,12 +145,58 @@ function DepthColumns() {
   );
 }
 
+function HazeBands() {
+  const refs = useRef<Array<Mesh | null>>([]);
+
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    refs.current.forEach((mesh, i) => {
+      if (!mesh) {
+        return;
+      }
+      mesh.position.x = Math.sin(t * (0.035 + i * 0.01) + i * 1.3) * (0.4 + i * 0.2);
+      mesh.position.y = 1.2 + i * 1.65 + Math.cos(t * (0.05 + i * 0.015) + i) * 0.08;
+    });
+  });
+
+  return (
+    <group>
+      {[
+        { z: -18, y: 1.2, w: 95, h: 5.5, o: DEBUG_VIEW_ENABLED ? 0.085 : 0.06, c: '#0d1823' },
+        { z: -58, y: 2.9, w: 135, h: 8.5, o: DEBUG_VIEW_ENABLED ? 0.075 : 0.05, c: '#0b1420' },
+        { z: -118, y: 4.7, w: 180, h: 13, o: DEBUG_VIEW_ENABLED ? 0.065 : 0.04, c: '#09121d' }
+      ].map((band, i) => (
+        <mesh
+          key={i}
+          ref={(node) => {
+            refs.current[i] = node;
+          }}
+          position={[0, band.y, band.z]}
+        >
+          <planeGeometry args={[band.w, band.h]} />
+          <meshBasicMaterial
+            color={band.c}
+            transparent
+            opacity={band.o}
+            depthWrite={false}
+            toneMapped={false}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 export function PlaceholderCity() {
+  const { events } = useBlockEventStore();
+  const showFallbackBackdrop = events.length === 0;
+
   return (
     <group>
       <Ground />
+      <HazeBands />
       <DepthColumns />
-      <LegacyBackdropBlocks />
+      {showFallbackBackdrop ? <LegacyBackdropBlocks /> : null}
       <ProceduralCityGrowth />
     </group>
   );

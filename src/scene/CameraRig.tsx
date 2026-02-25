@@ -41,7 +41,7 @@ export function CameraRig() {
   useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime();
     const targetFrontierSeq = Math.max(1, latest?.sequence ?? 1);
-    const recentCount = DEBUG_VIEW_ENABLED ? 18 : 14;
+    const recentCount = DEBUG_VIEW_ENABLED ? 16 : 12;
     const start = Math.max(0, events.length - recentCount);
     const sampleCount = Math.max(0, events.length - start);
     let weightedSeqSum = 0;
@@ -121,7 +121,7 @@ export function CameraRig() {
 
     const smoothedFrontierSeq = smoothedFrontierSeqRef.current;
     const smoothedCenterSeq = smoothedCenterSeqRef.current;
-    const historySpan = DEBUG_VIEW_ENABLED ? 15 : 12;
+    const historySpan = DEBUG_VIEW_ENABLED ? 13 : 10;
     const historySeq = Math.max(1, smoothedFrontierSeq - historySpan);
 
     const latestTransform = getSpineTransformFromSequence(smoothedFrontierSeq);
@@ -150,9 +150,9 @@ export function CameraRig() {
     const drift = DEBUG_VIEW_ENABLED ? 0 : Math.sin(t * 0.1) * 0.14;
     const hover = DEBUG_VIEW_ENABLED ? 0.02 : Math.cos(t * 0.15) * 0.08;
     const side = DEBUG_VIEW_ENABLED ? 0.06 : Math.sin(t * 0.09) * 0.18;
-    const cameraDistance = (DEBUG_VIEW_ENABLED ? 17.5 : 16.4) + heightSignal * 1.8;
-    const backOffset = (DEBUG_VIEW_ENABLED ? -13.4 : -12.1) - heightSignal * 0.8;
-    const cameraElevation = (DEBUG_VIEW_ENABLED ? 8.5 : 7.8) + heightSignal * 1.35;
+    const cameraDistance = (DEBUG_VIEW_ENABLED ? 20.5 : 18.8) + heightSignal * 2.2;
+    const backOffset = (DEBUG_VIEW_ENABLED ? -15.8 : -14.1) - heightSignal * 1.05;
+    const cameraElevation = (DEBUG_VIEW_ENABLED ? 10.2 : 9.2) + heightSignal * 1.9;
 
     desiredPosition
       .copy(corridorCenter)
@@ -174,19 +174,19 @@ export function CameraRig() {
       );
 
     desiredPosition.x = MathUtils.clamp(desiredPosition.x, -52, 52);
-    desiredPosition.y = MathUtils.clamp(desiredPosition.y, 5.6, 18);
-    desiredPosition.z = MathUtils.clamp(desiredPosition.z, -280, 28);
+    desiredPosition.y = MathUtils.clamp(desiredPosition.y, 6.6, 22);
+    desiredPosition.z = MathUtils.clamp(desiredPosition.z, -340, 34);
 
     desiredLookTarget
       .copy(corridorCenter)
       .addScaledVector(frontierTangent, 1.15)
       .addScaledVector(frontierNormal, DEBUG_VIEW_ENABLED ? -0.35 : -0.5)
-      .setY((DEBUG_VIEW_ENABLED ? 2.35 : 2.05) + heightSignal * 1.05)
+      .setY((DEBUG_VIEW_ENABLED ? 3.9 : 3.35) + heightSignal * 1.8)
       .add(lookPointerOffset.set(pointer.x * (DEBUG_VIEW_ENABLED ? 0.08 : 0.12), 0, 0));
 
     desiredLookTarget.x = MathUtils.clamp(desiredLookTarget.x, -48, 48);
-    desiredLookTarget.y = MathUtils.clamp(desiredLookTarget.y, 1.2, 11);
-    desiredLookTarget.z = MathUtils.clamp(desiredLookTarget.z, -280, 24);
+    desiredLookTarget.y = MathUtils.clamp(desiredLookTarget.y, 1.8, 18);
+    desiredLookTarget.z = MathUtils.clamp(desiredLookTarget.z, -340, 30);
 
     if (initializedRef.current && smoothedCameraPosVec.lengthSq() === 0 && smoothedLookTargetVec.lengthSq() === 0) {
       smoothedCameraPosVec.copy(desiredPosition);
