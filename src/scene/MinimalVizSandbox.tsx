@@ -1071,7 +1071,7 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
       fragmentShader: RADIAL_GLOW_FRAGMENT,
       transparent: true,
       depthWrite: false,
-      depthTest: true,
+      depthTest: false,
       blending: AdditiveBlending
     });
     material.toneMapped = false;
@@ -1119,42 +1119,62 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
       <mesh
         ref={glowMeshRef}
         rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, -0.042, 0]}
+        position={[0, -0.05, 0]}
         scale={[targetGlowRadius * 2.2, targetGlowRadius * 2.2, 1]}
-        renderOrder={-2}
+        renderOrder={1}
         geometry={glowGeometry}
         material={glowMaterial}
       />
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.06, 0]} receiveShadow renderOrder={-6}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.065, 0]} receiveShadow renderOrder={0}>
         <planeGeometry args={[boardSize, boardSize]} />
-        <meshStandardMaterial color="#05070b" roughness={0.97} metalness={0.04} />
+        <meshStandardMaterial
+          color="#05070b"
+          roughness={0.97}
+          metalness={0.04}
+          polygonOffset
+          polygonOffsetFactor={-1}
+          polygonOffsetUnits={-1}
+        />
       </mesh>
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.045, 0]} renderOrder={-5}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.04, 0]} renderOrder={0}>
         <planeGeometry args={[boardSize * 0.99, boardSize * 0.99]} />
-        <meshStandardMaterial color="#080c11" roughness={0.9} metalness={0.08} emissive="#10161f" emissiveIntensity={0.05} />
+        <meshStandardMaterial
+          color="#080c11"
+          roughness={0.9}
+          metalness={0.08}
+          emissive="#10161f"
+          emissiveIntensity={0.05}
+          polygonOffset
+          polygonOffsetFactor={-1}
+          polygonOffsetUnits={-1}
+        />
       </mesh>
 
       {panelOffsets.map((x) => (
-        <mesh key={`panel-v-${x}`} position={[x, -0.038, 0]} renderOrder={-4}>
+        <mesh key={`panel-v-${x}`} position={[x, -0.038, 0]} renderOrder={2}>
           <boxGeometry args={[0.08, 0.006, boardSize * 0.94]} />
-          <meshBasicMaterial color="#101821" transparent opacity={0.26} toneMapped={false} />
+          <meshBasicMaterial color="#101821" transparent opacity={0.26} toneMapped={false} depthWrite={false} depthTest={false} />
         </mesh>
       ))}
       {panelOffsets.map((z) => (
-        <mesh key={`panel-h-${z}`} position={[0, -0.038, z]} renderOrder={-4}>
+        <mesh key={`panel-h-${z}`} position={[0, -0.038, z]} renderOrder={2}>
           <boxGeometry args={[boardSize * 0.94, 0.006, 0.08]} />
-          <meshBasicMaterial color="#101821" transparent opacity={0.22} toneMapped={false} />
+          <meshBasicMaterial color="#101821" transparent opacity={0.22} toneMapped={false} depthWrite={false} depthTest={false} />
         </mesh>
       ))}
 
       <gridHelper
         args={[boardSize * 0.95, Math.max(48, Math.round(boardSize / 5)), new Color('#1f2833'), new Color('#121922')]}
         position={[0, -0.03, 0]}
-        renderOrder={-3}
+        renderOrder={2}
         material-transparent
         material-opacity={0.09}
+        material-depthWrite={false}
+        material-depthTest={false}
+        material-toneMapped={false}
+        material-blending={AdditiveBlending}
       />
 
       <mesh
@@ -1162,27 +1182,35 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
         rotation={[-Math.PI / 2, 0, 0]}
         position={[0, -0.026, 0]}
         scale={[targetGlowRadius * 0.9, targetGlowRadius * 0.9, 1]}
-        renderOrder={-1}
+        renderOrder={3}
       >
         <ringGeometry args={[0.96, 1, 96]} />
-        <meshBasicMaterial color="#F7931A" transparent opacity={0.08} toneMapped={false} depthWrite={false} blending={AdditiveBlending} />
+        <meshBasicMaterial
+          color="#F7931A"
+          transparent
+          opacity={0.08}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest={false}
+          blending={AdditiveBlending}
+        />
       </mesh>
 
-      <mesh position={[0, -0.024, 0]} renderOrder={-1}>
+      <mesh position={[0, -0.024, 0]} renderOrder={3}>
         <boxGeometry args={[0.18, 0.01, arteryLen]} />
-        <meshBasicMaterial color="#F7931A" transparent opacity={0.26} toneMapped={false} />
+        <meshBasicMaterial color="#F7931A" transparent opacity={0.26} toneMapped={false} depthWrite={false} depthTest={false} />
       </mesh>
-      <mesh position={[0, -0.023, 0]} renderOrder={-1}>
+      <mesh position={[0, -0.023, 0]} renderOrder={3}>
         <boxGeometry args={[arteryLen * 0.72, 0.01, 0.16]} />
-        <meshBasicMaterial color="#f4e8d6" transparent opacity={0.14} toneMapped={false} />
+        <meshBasicMaterial color="#f4e8d6" transparent opacity={0.14} toneMapped={false} depthWrite={false} depthTest={false} />
       </mesh>
-      <mesh rotation={[0, Math.PI / 4, 0]} position={[0, -0.022, 0]} renderOrder={-1}>
+      <mesh rotation={[0, Math.PI / 4, 0]} position={[0, -0.022, 0]} renderOrder={3}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.8]} />
-        <meshBasicMaterial color="#F7931A" transparent opacity={0.12} toneMapped={false} />
+        <meshBasicMaterial color="#F7931A" transparent opacity={0.12} toneMapped={false} depthWrite={false} depthTest={false} />
       </mesh>
-      <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, -0.022, 0]} renderOrder={-1}>
+      <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, -0.022, 0]} renderOrder={3}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.62]} />
-        <meshBasicMaterial color="#ffe7c4" transparent opacity={0.09} toneMapped={false} />
+        <meshBasicMaterial color="#ffe7c4" transparent opacity={0.09} toneMapped={false} depthWrite={false} depthTest={false} />
       </mesh>
     </group>
   );
@@ -1192,8 +1220,8 @@ function TraceStrips({ traces }: { traces: TraceDatum[] }) {
   return (
     <group>
       {traces.map((trace) => (
-        <group key={trace.id} position={[trace.midX, trace.y, trace.midZ]} rotation={[0, trace.yaw, 0]}>
-          <mesh>
+        <group key={trace.id} position={[trace.midX, trace.y, trace.midZ]} rotation={[0, trace.yaw, 0]} renderOrder={4}>
+          <mesh renderOrder={4}>
             <boxGeometry args={[trace.glowWidth, 0.012, trace.length]} />
             <meshBasicMaterial
               color={trace.glowColor}
@@ -1201,12 +1229,21 @@ function TraceStrips({ traces }: { traces: TraceDatum[] }) {
               opacity={0.2}
               toneMapped={false}
               depthWrite={false}
+              depthTest={false}
               blending={AdditiveBlending}
             />
           </mesh>
-          <mesh position={[0, 0.004, 0]}>
+          <mesh position={[0, 0.004, 0]} renderOrder={4}>
             <boxGeometry args={[trace.width, 0.014, trace.length]} />
-            <meshBasicMaterial color={trace.coreColor} transparent opacity={0.82} toneMapped={false} />
+            <meshBasicMaterial
+              color={trace.coreColor}
+              transparent
+              opacity={0.82}
+              toneMapped={false}
+              depthWrite={false}
+              depthTest={false}
+              blending={AdditiveBlending}
+            />
           </mesh>
         </group>
       ))}
@@ -1242,6 +1279,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
             refs.current[i] = el;
           }}
           position={[p.ax, p.y, p.az]}
+          renderOrder={5}
         >
           <boxGeometry args={[p.sizeX, p.sizeY, p.sizeZ]} />
           <meshBasicMaterial
@@ -1250,6 +1288,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
             opacity={0.98}
             toneMapped={false}
             depthWrite={false}
+            depthTest={false}
             blending={AdditiveBlending}
           />
         </mesh>
@@ -1294,7 +1333,7 @@ function SandboxScene({
       <TraceStrips traces={traces} />
       <TrafficParticles particles={trafficParticles} />
 
-      <group>
+      <group renderOrder={6}>
         {towers.map((tower) => (
           <AnimatedHoloTower key={tower.sequence} tower={tower} />
         ))}
