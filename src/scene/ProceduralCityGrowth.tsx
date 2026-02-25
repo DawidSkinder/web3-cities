@@ -1,11 +1,18 @@
 import { useFrame } from '@react-three/fiber';
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import type { RefObject } from 'react';
+import type { ThreeEvent } from '@react-three/fiber';
 import type { InstancedMesh } from 'three';
 import { AdditiveBlending, Color, MathUtils, Object3D } from 'three';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import type { BlockEvent } from '../data/trades/types';
 import { getSpineTransformFromSequence } from './cityGrowthPath';
+import {
+  clearHoveredTowerInstance,
+  publishCitySceneData,
+  setHoveredTowerInstance,
+  useCitySceneStore
+} from './citySceneStore';
 import { DEBUG_VIEW_ENABLED } from './viewFlags';
 
 type SolidInstance = {
@@ -29,14 +36,41 @@ type LightInstance = SolidInstance & {
   slidePhase?: number;
 };
 
+type TowerMassMeta = {
+  buildingId: string;
+  districtId: string;
+  sequence: number;
+  tier: 'podium' | 'shaft' | 'spire';
+  tierHeight: number;
+  totalHeight: number;
+  buyVolume: number;
+  sellVolume: number;
+  intensity: number;
+  tradeCount: number;
+  dominance: number;
+  timestamp: number;
+  source: string;
+};
+
 type CityVisualData = {
   plots: SolidInstance[];
   streetDecks: SolidInstance[];
   towerMasses: SolidInstance[];
+  towerMassMeta: TowerMassMeta[];
   laneLights: LightInstance[];
   detailLights: LightInstance[];
   haloGlows: LightInstance[];
   flowLights: LightInstance[];
+  bounds: {
+    minX: number;
+    maxX: number;
+    minZ: number;
+    maxZ: number;
+    maxY: number;
+    frontierX: number;
+    frontierZ: number;
+    frontierSeq: number;
+  } | null;
 };
 
 const HISTORY_CAP = 42;
@@ -139,13 +173,21 @@ function validateLight(
   return true;
 }
 
-function pushSolid(target: SolidInstance[], kind: 'plot' | 'street' | 'tower', sequence: number, item: SolidInstance, maxCount: number) {
+function pushSolid(
+  target: SolidInstance[],
+  kind: 'plot' | 'street' | 'tower',
+  sequence: number,
+  item: SolidInstance,
+  maxCount: number
+) {
   if (target.length >= maxCount) {
-    return;
+    return false;
   }
   if (validateSolid(kind, sequence, item)) {
     target.push(item);
+    return true;
   }
+  return false;
 }
 
 function pushLight(
@@ -156,11 +198,13 @@ function pushLight(
   maxCount: number
 ) {
   if (target.length >= maxCount) {
-    return;
+    return false;
   }
   if (validateLight(kind, sequence, item)) {
     target.push(item);
+    return true;
   }
+  return false;
 }
 
 function rotateLocalPoint(x: number, z: number, yaw: number): [number, number] {
@@ -188,6 +232,7 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
   const plots: SolidInstance[] = [];
   const streetDecks: SolidInstance[] = [];
   const towerMasses: SolidInstance[] = [];
+  const towerMassMeta: TowerMassMeta[] = [];
   const laneLights: LightInstance[] = [];
   const detailLights: LightInstance[] = [];
   const haloGlows: LightInstance[] = [];
@@ -195,6 +240,14 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
 
   let prevDistrictCenter: [number, number, number] | null = null;
   let prevDistrictPlotSpan = 0;
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  let maxY = 0;
+  let frontierX = 0;
+  let frontierZ = 0;
+  let frontierSeq = 1;
 
   for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
     const event = events[eventIndex];
@@ -264,6 +317,14 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       riseDelayMs: 0,
       riseDurationMs: 780
     }, MAX_PLOT_INSTANCES);
+    minX = Math.min(minX, cx - plotSpanX * 0.5);
+    maxX = Math.max(maxX, cx + plotSpanX * 0.5);
+    minZ = Math.min(minZ, cz - plotSpanZ * 0.5);
+    maxZ = Math.max(maxZ, cz + plotSpanZ * 0.5);
+    maxY = Math.max(maxY, plotHeight);
+    frontierX = cx;
+    frontierZ = cz;
+    frontierSeq = event.sequence;
 
     // Streets carved into the plot (cross-lanes)
     const streetDeckY = plotHeight + 0.015;
@@ -479,6 +540,9 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       const podiumY = plotHeight + podiumH * 0.5;
       const shaftY = plotHeight + podiumH + shaftH * 0.5;
       const spireY = plotHeight + podiumH + shaftH + spireH * 0.5;
+      const districtId = `D-${event.sequence}`;
+      const buildingId = `${districtId}-B-${i}`;
+      const totalTowerHeight = podiumH + shaftH + spireH;
 
       const baseTint = towerBaseColor.clone().lerp(dominanceColor, 0.03 + recencyCurve * 0.05);
       const shaftTint = baseTint.clone().multiplyScalar(0.95 + centerWeight * 0.22);
@@ -488,38 +552,115 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       const riseDurationMs = Math.floor(clampFinite(720 + (1 - centerWeight) * 420 + intensity * 260, 880, 340, 2200));
 
       // Podium tier
-      pushSolid(towerMasses, 'tower', event.sequence, {
+      const podiumSize: [number, number, number] = [footprintW * 1.15, podiumH, footprintD * 1.15];
+      const podiumAdded = pushSolid(towerMasses, 'tower', event.sequence, {
         position: [worldX, podiumY, worldZ],
         rotationY: towerYaw,
-        size: [footprintW * 1.15, podiumH, footprintD * 1.15],
+        size: podiumSize,
         color: baseTint,
         birthAtMs: eventBirthAt,
         riseDelayMs,
         riseDurationMs: Math.max(400, riseDurationMs - 180)
       }, MAX_TOWER_MASS_INSTANCES);
+      if (podiumAdded) {
+        towerMassMeta.push({
+          buildingId,
+          districtId,
+          sequence: event.sequence,
+          tier: 'podium',
+          tierHeight: podiumH,
+          totalHeight: totalTowerHeight,
+          buyVolume: m.buyVolume,
+          sellVolume: m.sellVolume,
+          intensity,
+          tradeCount,
+          dominance,
+          timestamp: event.windowEnd,
+          source: event.source
+        });
+        minX = Math.min(minX, worldX - podiumSize[0] * 0.5);
+        maxX = Math.max(maxX, worldX + podiumSize[0] * 0.5);
+        minZ = Math.min(minZ, worldZ - podiumSize[2] * 0.5);
+        maxZ = Math.max(maxZ, worldZ + podiumSize[2] * 0.5);
+        maxY = Math.max(maxY, podiumY + podiumSize[1] * 0.5);
+      }
 
       // Mid shaft tier
-      pushSolid(towerMasses, 'tower', event.sequence, {
+      const shaftSize: [number, number, number] = [
+        footprintW * (0.72 + pseudoRandom(seed + 8) * 0.18),
+        shaftH,
+        footprintD * (0.72 + pseudoRandom(seed + 9) * 0.18)
+      ];
+      const shaftAdded = pushSolid(towerMasses, 'tower', event.sequence, {
         position: [worldX, shaftY, worldZ],
         rotationY: towerYaw,
-        size: [footprintW * (0.72 + pseudoRandom(seed + 8) * 0.18), shaftH, footprintD * (0.72 + pseudoRandom(seed + 9) * 0.18)],
+        size: shaftSize,
         color: shaftTint,
         birthAtMs: eventBirthAt,
         riseDelayMs: riseDelayMs + 40,
         riseDurationMs
       }, MAX_TOWER_MASS_INSTANCES);
+      if (shaftAdded) {
+        towerMassMeta.push({
+          buildingId,
+          districtId,
+          sequence: event.sequence,
+          tier: 'shaft',
+          tierHeight: shaftH,
+          totalHeight: totalTowerHeight,
+          buyVolume: m.buyVolume,
+          sellVolume: m.sellVolume,
+          intensity,
+          tradeCount,
+          dominance,
+          timestamp: event.windowEnd,
+          source: event.source
+        });
+        minX = Math.min(minX, worldX - shaftSize[0] * 0.5);
+        maxX = Math.max(maxX, worldX + shaftSize[0] * 0.5);
+        minZ = Math.min(minZ, worldZ - shaftSize[2] * 0.5);
+        maxZ = Math.max(maxZ, worldZ + shaftSize[2] * 0.5);
+        maxY = Math.max(maxY, shaftY + shaftSize[1] * 0.5);
+      }
 
       // Spire tier (optional) to improve silhouette rhythm
       if (addSpire && spireH > 0.2) {
-        pushSolid(towerMasses, 'tower', event.sequence, {
+        const spireSize: [number, number, number] = [
+          Math.max(0.14, footprintW * 0.34),
+          spireH,
+          Math.max(0.14, footprintD * 0.34)
+        ];
+        const spireAdded = pushSolid(towerMasses, 'tower', event.sequence, {
           position: [worldX, spireY, worldZ],
           rotationY: towerYaw,
-          size: [Math.max(0.14, footprintW * 0.34), spireH, Math.max(0.14, footprintD * 0.34)],
+          size: spireSize,
           color: spireTint,
           birthAtMs: eventBirthAt,
           riseDelayMs: riseDelayMs + 80,
           riseDurationMs: Math.max(360, riseDurationMs - 120)
         }, MAX_TOWER_MASS_INSTANCES);
+        if (spireAdded) {
+          towerMassMeta.push({
+            buildingId,
+            districtId,
+            sequence: event.sequence,
+            tier: 'spire',
+            tierHeight: spireH,
+            totalHeight: totalTowerHeight,
+            buyVolume: m.buyVolume,
+            sellVolume: m.sellVolume,
+            intensity,
+            tradeCount,
+            dominance,
+            timestamp: event.windowEnd,
+            source: event.source
+          });
+          minX = Math.min(minX, worldX - spireSize[0] * 0.5);
+          maxX = Math.max(maxX, worldX + spireSize[0] * 0.5);
+          minZ = Math.min(minZ, worldZ - spireSize[2] * 0.5);
+          maxZ = Math.max(maxZ, worldZ + spireSize[2] * 0.5);
+          maxY = Math.max(maxY, spireY + spireSize[1] * 0.5);
+        }
       }
 
       // Lightweight detail language: vertical strips + occasional bands + crown markers.
@@ -623,10 +764,24 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
     plots: plots.slice(0, MAX_PLOT_INSTANCES),
     streetDecks: streetDecks.slice(0, MAX_STREET_INSTANCES),
     towerMasses: towerMasses.slice(0, MAX_TOWER_MASS_INSTANCES),
+    towerMassMeta: towerMassMeta.slice(0, MAX_TOWER_MASS_INSTANCES),
     laneLights: laneLights.slice(0, MAX_LANE_LIGHT_INSTANCES),
     detailLights: detailLights.slice(0, MAX_DETAIL_LIGHT_INSTANCES),
     haloGlows: haloGlows.slice(0, MAX_HALO_GLOW_INSTANCES),
-    flowLights: flowLights.slice(0, MAX_FLOW_LIGHT_INSTANCES)
+    flowLights: flowLights.slice(0, MAX_FLOW_LIGHT_INSTANCES),
+    bounds:
+      minX === Number.POSITIVE_INFINITY
+        ? null
+        : {
+            minX,
+            maxX,
+            minZ,
+            maxZ,
+            maxY,
+            frontierX,
+            frontierZ,
+            frontierSeq
+          }
   };
 }
 
@@ -779,6 +934,7 @@ function InstancedColorSetup<T extends { color: Color; opacity?: number }>({
 
 export function ProceduralCityGrowth() {
   const { events } = useBlockEventStore();
+  const { hoveredBuildingId } = useCitySceneStore();
   const visibleEvents = useMemo(() => events.slice(-HISTORY_CAP), [events]);
   const visualData = useMemo(() => buildCityVisualData(visibleEvents), [visibleEvents]);
 
@@ -790,6 +946,24 @@ export function ProceduralCityGrowth() {
   const haloGlowMeshRef = useRef<InstancedMesh>(null);
   const flowLightMeshRef = useRef<InstancedMesh>(null);
   const matricesSettledRef = useRef(false);
+
+  const towerColorItems = useMemo(
+    () =>
+      visualData.towerMasses.map((item, i) => {
+        const meta = visualData.towerMassMeta[i];
+        if (!meta || !hoveredBuildingId || meta.buildingId !== hoveredBuildingId) {
+          return item;
+        }
+
+        const highlightBoost =
+          meta.tier === 'spire' ? 1.42 : meta.tier === 'shaft' ? 1.28 : 1.18;
+        return {
+          ...item,
+          color: item.color.clone().multiplyScalar(highlightBoost)
+        };
+      }),
+    [visualData.towerMasses, visualData.towerMassMeta, hoveredBuildingId]
+  );
 
   const latestAnimationEndMs = useMemo(() => {
     let maxMs = 0;
@@ -835,6 +1009,28 @@ export function ProceduralCityGrowth() {
   }
 
   useLayoutEffect(() => {
+    const bounds = visualData.bounds
+      ? {
+          ...visualData.bounds,
+          centerX: (visualData.bounds.minX + visualData.bounds.maxX) * 0.5,
+          centerZ: (visualData.bounds.minZ + visualData.bounds.maxZ) * 0.5,
+          radius:
+            Math.max(
+              visualData.bounds.maxX - visualData.bounds.minX,
+              visualData.bounds.maxZ - visualData.bounds.minZ
+            ) * 0.5
+        }
+      : null;
+
+    publishCitySceneData(
+      bounds,
+      visualData.towerMassMeta.map((meta, instanceId) => ({
+        instanceId,
+        height: meta.tierHeight,
+        ...meta
+      }))
+    );
+
     matricesSettledRef.current = false;
     const now = Date.now();
     applySolidInstances(plotMeshRef.current, visualData.plots, now);
@@ -845,6 +1041,19 @@ export function ProceduralCityGrowth() {
     applyLightInstances(haloGlowMeshRef.current, visualData.haloGlows, now);
     applyLightInstances(flowLightMeshRef.current, visualData.flowLights, now);
   }, [visualData, latestAnimationEndMs]);
+
+  const handleTowerPointerMove = (event: ThreeEvent<PointerEvent>) => {
+    if (event.instanceId == null) {
+      clearHoveredTowerInstance();
+      return;
+    }
+    setHoveredTowerInstance(event.instanceId);
+    event.stopPropagation();
+  };
+
+  const handleTowerPointerOut = () => {
+    clearHoveredTowerInstance();
+  };
 
   useFrame(() => {
     const now = Date.now();
@@ -880,7 +1089,7 @@ export function ProceduralCityGrowth() {
     <group>
       <InstancedColorSetup meshRef={plotMeshRef} items={visualData.plots} />
       <InstancedColorSetup meshRef={streetMeshRef} items={visualData.streetDecks} />
-      <InstancedColorSetup meshRef={towerMeshRef} items={visualData.towerMasses} />
+      <InstancedColorSetup meshRef={towerMeshRef} items={towerColorItems} />
       <InstancedColorSetup meshRef={laneLightMeshRef} items={visualData.laneLights} brightnessScale={1.1} />
       <InstancedColorSetup meshRef={detailLightMeshRef} items={visualData.detailLights} brightnessScale={1.08} />
       <InstancedColorSetup meshRef={haloGlowMeshRef} items={visualData.haloGlows} brightnessScale={1.18} />
@@ -910,7 +1119,14 @@ export function ProceduralCityGrowth() {
         />
       </instancedMesh>
 
-      <instancedMesh ref={towerMeshRef} args={[undefined, undefined, Math.max(1, visualData.towerMasses.length)]} castShadow receiveShadow>
+      <instancedMesh
+        ref={towerMeshRef}
+        args={[undefined, undefined, Math.max(1, visualData.towerMasses.length)]}
+        castShadow
+        receiveShadow
+        onPointerMove={handleTowerPointerMove}
+        onPointerOut={handleTowerPointerOut}
+      >
         <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial
           vertexColors

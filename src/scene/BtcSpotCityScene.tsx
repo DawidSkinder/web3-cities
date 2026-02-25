@@ -1,6 +1,7 @@
 import { Canvas } from '@react-three/fiber';
 import { Color, FogExp2 } from 'three';
 import { CameraRig } from './CameraRig';
+import { clearHoveredTowerInstance } from './citySceneStore';
 import { PlaceholderCity } from './PlaceholderCity';
 import { DEBUG_VIEW_ENABLED } from './viewFlags';
 
@@ -68,6 +69,9 @@ export function BtcSpotCityScene() {
         antialias: true,
         alpha: false,
         powerPreference: 'high-performance'
+      }}
+      onPointerMissed={() => {
+        clearHoveredTowerInstance();
       }}
       onCreated={({ scene, gl }) => {
         scene.background = new Color('#05070b');

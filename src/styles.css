@@ -17,6 +17,12 @@ body,
 
 body {
   overflow: hidden;
+  font-family:
+    'IBM Plex Sans',
+    'SF Pro Text',
+    'Segoe UI',
+    system-ui,
+    sans-serif;
   background:
     radial-gradient(circle at 15% 15%, rgba(34, 40, 54, 0.28), transparent 52%),
     radial-gradient(circle at 85% 30%, rgba(16, 22, 34, 0.3), transparent 48%),
@@ -28,4 +34,109 @@ canvas {
   width: 100% !important;
   height: 100% !important;
   touch-action: none;
+}
+
+.btc-overlay {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 14px;
+  gap: 14px;
+}
+
+.btc-overlay__stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.btc-overlay__panel {
+  min-width: 172px;
+  max-width: min(320px, 44vw);
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(8, 11, 16, 0.58);
+  border: 1px solid rgba(126, 168, 214, 0.16);
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.btc-overlay__legend {
+  width: min(210px, 42vw);
+}
+
+.btc-overlay__hover {
+  width: min(320px, 48vw);
+}
+
+.btc-overlay__title {
+  margin-bottom: 8px;
+  color: rgba(236, 246, 255, 0.92);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.btc-overlay__row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: center;
+  margin-top: 5px;
+  color: rgba(214, 228, 242, 0.84);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.btc-overlay__row span:first-child {
+  color: rgba(166, 186, 208, 0.74);
+  letter-spacing: 0.01em;
+}
+
+.btc-overlay__row span:last-child {
+  text-align: right;
+  color: rgba(231, 242, 255, 0.9);
+  font-feature-settings: 'tnum' 1, 'ss01' 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btc-overlay__hint {
+  margin-top: 8px;
+  color: rgba(167, 190, 214, 0.7);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+@media (max-width: 700px) {
+  .btc-overlay {
+    padding: 10px;
+    gap: 10px;
+  }
+
+  .btc-overlay__panel {
+    min-width: 146px;
+    padding: 9px 10px;
+    max-width: 52vw;
+  }
+
+  .btc-overlay__hover {
+    max-width: 58vw;
+  }
+
+  .btc-overlay__row {
+    font-size: 11px;
+    gap: 8px;
+  }
 }
