@@ -5,15 +5,14 @@ import {
   AmbientLight,
   Color,
   DirectionalLight,
-  FogExp2,
   MathUtils,
   PointLight,
   SRGBColorSpace,
   Vector3
 } from 'three';
-import { CameraRig } from './CameraRig';
+import { CameraRigV2 } from './CameraRigV2';
 import { clearHoveredTowerInstance, useCitySceneStore } from './citySceneStore';
-import { PlaceholderCity } from './PlaceholderCity';
+import { CitySystemV2 } from './CitySystemV2';
 import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
 import { DEBUG_VIEW_ENABLED } from './viewFlags';
 
@@ -24,7 +23,6 @@ function Atmosphere() {
   return (
     <>
       <color attach="background" args={['#05070b']} />
-      <fogExp2 attach="fog" args={['#06080c', fogDensity]} />
       <hemisphereLight
         args={['#7e99b8', '#090c11', (DEBUG_VIEW_ENABLED ? 0.4 : 0.32) * lightScale]}
         position={[0, 10, 0]}
@@ -169,10 +167,7 @@ export function BtcSpotCityScene() {
       }}
       onCreated={({ scene, gl }) => {
         scene.background = new Color('#05070b');
-        scene.fog = new FogExp2(
-          '#06080c',
-          (DEBUG_VIEW_ENABLED ? 0.0175 : 0.024) * RUNTIME_QUALITY_CONFIG.fogDensityScale
-        );
+        scene.fog = null;
         gl.outputColorSpace = SRGBColorSpace;
         gl.toneMapping = ACESFilmicToneMapping;
         gl.toneMappingExposure = 1.04;
@@ -182,8 +177,8 @@ export function BtcSpotCityScene() {
       <Atmosphere />
       <AdaptiveRendererExposure />
       <AdaptiveExposureLights />
-      <CameraRig />
-      <PlaceholderCity />
+      <CameraRigV2 />
+      <CitySystemV2 />
     </Canvas>
   );
 }
