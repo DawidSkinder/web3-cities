@@ -11,6 +11,12 @@ type TowerDatum = {
   x: number;
   z: number;
   height: number;
+  archetypeId: 0 | 1 | 2 | 3;
+  footprintX: number;
+  footprintZ: number;
+  taper: number;
+  podiumRatio: number;
+  crownRatio: number;
   coreColor: string;
   glowColor: string;
   glowStrength: number;
@@ -55,6 +61,15 @@ type TrafficParticleDatum = {
 type SandboxBounds = {
   radius: number;
   maxY: number;
+};
+
+type TowerSegmentSpec = {
+  id: string;
+  y: number;
+  height: number;
+  sx: number;
+  sz: number;
+  isTop: boolean;
 };
 
 type EmaStats = {
@@ -135,6 +150,33 @@ const ZI_MIN = -2.5;
 const ZI_MAX = 3.5;
 const SCORE_WEIGHT_VOL = 0.78;
 const SCORE_WEIGHT_INT = 0.22;
+const RADIAL_GLOW_RADIUS_MULT = 1.6;
+const RADIAL_GLOW_DAMP = 1.6;
+
+const RADIAL_GLOW_VERTEX = `
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+const RADIAL_GLOW_FRAGMENT = `
+varying vec2 vUv;
+uniform vec3 uCenterColor;
+uniform vec3 uRingColor;
+uniform float uOpacity;
+void main() {
+  vec2 p = vUv - 0.5;
+  float r = length(p) * 2.0;
+  float center = pow(1.0 - smoothstep(0.02, 0.72, r), 2.2);
+  float mid = 1.0 - smoothstep(0.18, 0.95, r);
+  float ring = smoothstep(0.28, 0.45, r) * (1.0 - smoothstep(0.66, 0.9, r));
+  vec3 col = uCenterColor * center + uRingColor * ring * 0.95 + uCenterColor * mid * 0.08;
+  float alpha = center * 0.16 + ring * 0.1 + mid * 0.03;
+  gl_FragColor = vec4(col, alpha * uOpacity);
+}
+`;
 
 const desiredPosition = new Vector3();
 const desiredTarget = new Vector3();
@@ -217,6 +259,34 @@ function segmentFromPoints(ax: number, az: number, bx: number, bz: number) {
     yaw: Math.atan2(dx, dz),
     midX: (ax + bx) * 0.5,
     midZ: (az + bz) * 0.5
+  };
+}
+
+function buildTowerShapeParams(sequence: number, heightScore: number): {
+  archetypeId: 0 | 1 | 2 | 3;
+  footprintX: number;
+  footprintZ: number;
+  taper: number;
+  podiumRatio: number;
+  crownRatio: number;
+} {
+  const archetypePick = hash01(sequence, 101);
+  const archetypeId: 0 | 1 | 2 | 3 =
+    archetypePick < 0.34 ? 0 : archetypePick < 0.62 ? 1 : archetypePick < 0.84 ? 2 : 3;
+
+  const fx = TOWER_FOOTPRINT * MathUtils.lerp(0.82, 1.26, hash01(sequence, 111));
+  const fz = TOWER_FOOTPRINT * MathUtils.lerp(0.82, 1.26, hash01(sequence, 113));
+  const taper = MathUtils.lerp(0.06, 0.18, hash01(sequence, 127)) * (0.8 + heightScore * 0.35);
+  const podiumRatio = MathUtils.lerp(0.12, 0.25, hash01(sequence, 131));
+  const crownRatio = MathUtils.lerp(0.07, 0.16, hash01(sequence, 137));
+
+  return {
+    archetypeId,
+    footprintX: fx,
+    footprintZ: fz,
+    taper,
+    podiumRatio,
+    crownRatio
   };
 }
 
@@ -382,6 +452,7 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   const glowStrength = MathUtils.clamp(0.7 + intensity * 0.45 + imbalance * 0.55, 0.75, 1.55);
   const bandCount = (2 + Math.min(2, Math.floor(imbalance * 3))) as 2 | 3 | 4;
   const capGlowBoost = MathUtils.lerp(0.9, 1.35, Math.pow(score, 1.05));
+  const shape = buildTowerShapeParams(event.sequence, score);
 
   const nextLog = updateEma(ema.meanLogV, ema.varLogV, logV, EMA_ALPHA_VOL);
   ema.meanLogV = nextLog.mean;
@@ -410,6 +481,12 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     x,
     z,
     height,
+    archetypeId: shape.archetypeId,
+    footprintX: shape.footprintX,
+    footprintZ: shape.footprintZ,
+    taper: shape.taper,
+    podiumRatio: shape.podiumRatio,
+    crownRatio: shape.crownRatio,
     coreColor: `#${core.getHexString()}`,
     glowColor: `#${glow.getHexString()}`,
     glowStrength,
@@ -686,21 +763,81 @@ function MinimalOrbitRig({ bounds }: { bounds: SandboxBounds }) {
   return null;
 }
 
+function buildTowerSegments(tower: TowerDatum): TowerSegmentSpec[] {
+  const h = Math.max(MIN_HEIGHT, tower.height);
+  const fx = tower.footprintX;
+  const fz = tower.footprintZ;
+  const taperAmt = MathUtils.clamp(tower.taper, 0, 0.22);
+  const segments: TowerSegmentSpec[] = [];
+  let cursor = 0;
+
+  const pushSegment = (id: string, segH: number, sx: number, sz: number) => {
+    const height = Math.max(0.12, segH);
+    segments.push({
+      id,
+      y: cursor + height * 0.5,
+      height,
+      sx: Math.max(0.14, sx),
+      sz: Math.max(0.14, sz),
+      isTop: false
+    });
+    cursor += height;
+  };
+
+  if (tower.archetypeId === 0) {
+    pushSegment('shaft', h, fx, fz);
+  } else if (tower.archetypeId === 1) {
+    const podiumH = MathUtils.clamp(h * tower.podiumRatio, 0.35, h * 0.28);
+    const shaftH = Math.max(0.4, h - podiumH);
+    pushSegment('podium', podiumH, fx * 1.18, fz * 1.18);
+    pushSegment('shaft', shaftH, fx * (0.84 - taperAmt * 0.25), fz * (0.84 - taperAmt * 0.25));
+  } else if (tower.archetypeId === 2) {
+    const h1 = h * 0.42;
+    const h2 = h * 0.34;
+    const h3 = Math.max(0.35, h - h1 - h2);
+    pushSegment('taper-a', h1, fx, fz);
+    pushSegment('taper-b', h2, fx * (1 - taperAmt * 0.55), fz * (1 - taperAmt * 0.55));
+    pushSegment('taper-c', h3, fx * (1 - taperAmt), fz * (1 - taperAmt));
+  } else {
+    const crownH = MathUtils.clamp(h * tower.crownRatio, 0.35, h * 0.18);
+    const shaftH = Math.max(0.6, h - crownH);
+    const lowerH = shaftH * 0.68;
+    const upperH = Math.max(0.4, shaftH - lowerH);
+    pushSegment('lower', lowerH, fx * 1.04, fz * 1.04);
+    pushSegment('upper', upperH, fx * (0.92 - taperAmt * 0.35), fz * (0.92 - taperAmt * 0.35));
+    pushSegment('crown-block', crownH, fx * (0.72 - taperAmt * 0.2), fz * (0.72 - taperAmt * 0.2));
+  }
+
+  if (segments.length > 0) {
+    segments[segments.length - 1].isTop = true;
+  }
+
+  return segments;
+}
+
 function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
   const groupRef = useRef<Group>(null);
-  const shellRef = useRef<Mesh>(null);
-  const edgeRef = useRef<Mesh>(null);
+  const shellRefs = useRef<Array<Mesh | null>>([]);
+  const edgeRefs = useRef<Array<Mesh | null>>([]);
   const crownRef = useRef<Mesh>(null);
   const bandRefs = useRef<Array<Mesh | null>>([]);
   const settledRef = useRef(false);
 
   const glowColor = useMemo(() => new Color(tower.glowColor), [tower.glowColor]);
   const coreColor = useMemo(() => new Color(tower.coreColor), [tower.coreColor]);
+  const segments = useMemo(() => buildTowerSegments(tower), [tower]);
+  const topSegment = segments[segments.length - 1] ?? null;
   const bandFractions = useMemo(() => {
     const base = [0.2, 0.42, 0.66, 0.86];
     const wobble = ((tower.sequence % 17) - 8) * 0.0025;
     return base.map((v, i) => MathUtils.clamp(v + wobble * (i + 1), 0.12, 0.92));
   }, [tower.sequence]);
+
+  useEffect(() => {
+    shellRefs.current.length = segments.length;
+    edgeRefs.current.length = segments.length;
+    bandRefs.current.length = bandFractions.length;
+  }, [segments.length, bandFractions.length]);
 
   useFrame(() => {
     const group = groupRef.current;
@@ -716,13 +853,18 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
     const glowT = MathUtils.clamp((elapsed - BIRTH_GLOW_DELAY_MS) / BIRTH_GLOW_RAMP_MS, 0, 1);
     const glowAlpha = easeOutCubic(glowT);
 
-    const shellMat = shellRef.current?.material as { opacity?: number } | undefined;
-    const edgeMat = edgeRef.current?.material as { opacity?: number } | undefined;
     const crownMat = crownRef.current?.material as { opacity?: number } | undefined;
-
-    if (shellMat) shellMat.opacity = GLOW_SHELL_OPACITY * tower.glowStrength * glowAlpha;
-    if (edgeMat) edgeMat.opacity = MathUtils.clamp(GLOW_EDGE_OPACITY * tower.glowStrength * glowAlpha, 0, 1);
     if (crownMat) crownMat.opacity = MathUtils.clamp(CROWN_OPACITY * tower.glowStrength * tower.capGlowBoost * glowAlpha, 0, 1);
+
+    for (let i = 0; i < segments.length; i++) {
+      const shell = shellRefs.current[i];
+      const edge = edgeRefs.current[i];
+      const segBoost = segments[i]?.isTop ? 1.08 : 1;
+      const shellMat = shell?.material as { opacity?: number } | undefined;
+      const edgeMat = edge?.material as { opacity?: number } | undefined;
+      if (shellMat) shellMat.opacity = MathUtils.clamp(GLOW_SHELL_OPACITY * tower.glowStrength * segBoost * glowAlpha, 0, 1);
+      if (edgeMat) edgeMat.opacity = MathUtils.clamp(GLOW_EDGE_OPACITY * tower.glowStrength * segBoost * glowAlpha, 0, 1);
+    }
 
     for (let i = 0; i < bandRefs.current.length; i++) {
       const band = bandRefs.current[i];
@@ -743,41 +885,53 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
 
   return (
     <group ref={groupRef} position={[tower.x, 0, tower.z]} scale={[1, 0.0001, 1]}>
-      <mesh position={[0, tower.height * 0.5, 0]} castShadow={RUNTIME_QUALITY_CONFIG.shadows} receiveShadow={RUNTIME_QUALITY_CONFIG.shadows}>
-        <boxGeometry args={[TOWER_FOOTPRINT, tower.height, TOWER_FOOTPRINT]} />
-        <meshStandardMaterial
-          color={coreColor}
-          roughness={0.38}
-          metalness={0.16}
-          emissive={coreColor}
-          emissiveIntensity={0.045}
-        />
-      </mesh>
-
-      <mesh ref={shellRef} position={[0, tower.height * 0.5, 0]} scale={[GLOW_SHELL_SCALE, 1.002, GLOW_SHELL_SCALE]}>
-        <boxGeometry args={[TOWER_FOOTPRINT, tower.height, TOWER_FOOTPRINT]} />
-        <meshBasicMaterial
-          color={glowColor}
-          transparent
-          opacity={0}
-          toneMapped={false}
-          depthWrite={false}
-          blending={AdditiveBlending}
-        />
-      </mesh>
-
-      <mesh ref={edgeRef} position={[0, tower.height * 0.5, 0]} scale={[GLOW_EDGE_SCALE, 1.006, GLOW_EDGE_SCALE]}>
-        <boxGeometry args={[TOWER_FOOTPRINT, tower.height, TOWER_FOOTPRINT]} />
-        <meshBasicMaterial
-          color={glowColor}
-          wireframe
-          transparent
-          opacity={0}
-          toneMapped={false}
-          depthWrite={false}
-          blending={AdditiveBlending}
-        />
-      </mesh>
+      {segments.map((seg, i) => (
+        <group key={`${tower.sequence}-seg-${seg.id}-${i}`} position={[0, seg.y, 0]}>
+          <mesh castShadow={RUNTIME_QUALITY_CONFIG.shadows} receiveShadow={RUNTIME_QUALITY_CONFIG.shadows}>
+            <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
+            <meshStandardMaterial
+              color={coreColor}
+              roughness={0.38}
+              metalness={0.16}
+              emissive={coreColor}
+              emissiveIntensity={seg.isTop ? 0.055 : 0.045}
+            />
+          </mesh>
+          <mesh
+            ref={(el) => {
+              shellRefs.current[i] = el;
+            }}
+            scale={[GLOW_SHELL_SCALE, 1.002, GLOW_SHELL_SCALE]}
+          >
+            <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
+            <meshBasicMaterial
+              color={glowColor}
+              transparent
+              opacity={0}
+              toneMapped={false}
+              depthWrite={false}
+              blending={AdditiveBlending}
+            />
+          </mesh>
+          <mesh
+            ref={(el) => {
+              edgeRefs.current[i] = el;
+            }}
+            scale={[GLOW_EDGE_SCALE, 1.006, GLOW_EDGE_SCALE]}
+          >
+            <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
+            <meshBasicMaterial
+              color={glowColor}
+              wireframe
+              transparent
+              opacity={0}
+              toneMapped={false}
+              depthWrite={false}
+              blending={AdditiveBlending}
+            />
+          </mesh>
+        </group>
+      ))}
 
       {bandFractions.map((f, i) => (
         <mesh
@@ -788,7 +942,13 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
           position={[0, tower.height * f, 0]}
           visible={i < tower.bandCount}
         >
-          <boxGeometry args={[TOWER_FOOTPRINT * 1.06, 0.05, TOWER_FOOTPRINT * 1.06]} />
+          <boxGeometry
+            args={[
+              Math.max(0.18, tower.footprintX * (i % 2 === 0 ? 1.04 : 0.92)),
+              0.05,
+              Math.max(0.18, tower.footprintZ * (i % 2 === 0 ? 1.04 : 0.92))
+            ]}
+          />
           <meshBasicMaterial
             color={glowColor}
             transparent
@@ -801,7 +961,13 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
       ))}
 
       <mesh ref={crownRef} position={[0, tower.height + 0.08, 0]}>
-        <boxGeometry args={[TOWER_FOOTPRINT * 0.86, 0.09, TOWER_FOOTPRINT * 0.86]} />
+        <boxGeometry
+          args={[
+            Math.max(0.16, (topSegment?.sx ?? tower.footprintX) * 0.9),
+            0.09,
+            Math.max(0.16, (topSegment?.sz ?? tower.footprintZ) * 0.9)
+          ]}
+        />
         <meshBasicMaterial
           color={glowColor}
           transparent
@@ -817,8 +983,20 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
 
 function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
   const boardSize = MathUtils.clamp(Math.max(420, bounds.radius * 8 + 180), 420, 1400);
+  const targetGlowRadius = Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT);
   const panelStep = 24;
   const arteryLen = Math.min(boardSize * 0.92, Math.max(140, bounds.radius * 3.6));
+  const glowMeshRef = useRef<Mesh>(null);
+  const ringRef = useRef<Mesh>(null);
+  const smoothGlowRadiusRef = useRef(targetGlowRadius);
+  const glowUniforms = useMemo(
+    () => ({
+      uCenterColor: { value: new Color('#F5D8AE') },
+      uRingColor: { value: new Color('#F7931A') },
+      uOpacity: { value: 1 }
+    }),
+    []
+  );
   const panelOffsets = useMemo(() => {
     const values: number[] = [];
     const half = boardSize * 0.5;
@@ -828,8 +1006,37 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
     return values;
   }, [boardSize]);
 
+  useFrame(({ clock }, delta) => {
+    smoothGlowRadiusRef.current = MathUtils.damp(smoothGlowRadiusRef.current, targetGlowRadius, RADIAL_GLOW_DAMP, delta);
+    const r = smoothGlowRadiusRef.current;
+    if (glowMeshRef.current) {
+      glowMeshRef.current.scale.set(r * 2.2, r * 2.2, 1);
+    }
+    if (ringRef.current) {
+      ringRef.current.scale.set(r * 0.9, r * 0.9, 1);
+      const pulse = RUNTIME_QUALITY_CONFIG.reducedMotion ? 0 : Math.sin(clock.getElapsedTime() * 0.22) * 0.02;
+      const mat = ringRef.current.material as { opacity?: number } | undefined;
+      if (mat) {
+        mat.opacity = 0.08 + pulse;
+      }
+    }
+  });
+
   return (
     <group>
+      <mesh ref={glowMeshRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.052, 0]} scale={[targetGlowRadius * 2.2, targetGlowRadius * 2.2, 1]}>
+        <planeGeometry args={[1, 1, 1, 1]} />
+        <shaderMaterial
+          uniforms={glowUniforms}
+          vertexShader={RADIAL_GLOW_VERTEX}
+          fragmentShader={RADIAL_GLOW_FRAGMENT}
+          transparent
+          depthWrite={false}
+          toneMapped={false}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.06, 0]} receiveShadow>
         <planeGeometry args={[boardSize, boardSize]} />
         <meshStandardMaterial color="#05070b" roughness={0.97} metalness={0.04} />
@@ -837,7 +1044,7 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
 
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.045, 0]}>
         <planeGeometry args={[boardSize * 0.99, boardSize * 0.99]} />
-        <meshStandardMaterial color="#080c11" roughness={0.9} metalness={0.08} emissive="#10161f" emissiveIntensity={0.08} />
+        <meshStandardMaterial color="#080c11" roughness={0.9} metalness={0.08} emissive="#10161f" emissiveIntensity={0.05} />
       </mesh>
 
       {panelOffsets.map((x) => (
@@ -857,8 +1064,13 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
         args={[boardSize * 0.95, Math.max(48, Math.round(boardSize / 5)), new Color('#1f2833'), new Color('#121922')]}
         position={[0, -0.03, 0]}
         material-transparent
-        material-opacity={0.14}
+        material-opacity={0.09}
       />
+
+      <mesh ref={ringRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.026, 0]} scale={[targetGlowRadius * 0.9, targetGlowRadius * 0.9, 1]}>
+        <ringGeometry args={[0.96, 1, 96]} />
+        <meshBasicMaterial color="#F7931A" transparent opacity={0.08} toneMapped={false} depthWrite={false} blending={AdditiveBlending} />
+      </mesh>
 
       <mesh position={[0, -0.024, 0]}>
         <boxGeometry args={[0.18, 0.01, arteryLen]} />
@@ -1005,9 +1217,11 @@ export function MinimalVizSandbox() {
       latestSequence: latest?.sequence ?? 0,
       towerCount: towers.length,
       traceCount: traces.length,
-      trafficCount: trafficParticles.length
+      trafficCount: trafficParticles.length,
+      cityRadius: bounds.radius,
+      glowRadius: Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT)
     }),
-    [latest, towers.length, traces.length, trafficParticles.length]
+    [latest, towers.length, traces.length, trafficParticles.length, bounds.radius]
   );
 
   return (
@@ -1035,6 +1249,14 @@ export function MinimalVizSandbox() {
           <div className="minimal-viz__row">
             <span>Traffic</span>
             <span>{overlay.trafficCount}</span>
+          </div>
+          <div className="minimal-viz__row">
+            <span>CityRadius</span>
+            <span>{fmtFixed(overlay.cityRadius, 1)}</span>
+          </div>
+          <div className="minimal-viz__row">
+            <span>GlowRadius</span>
+            <span>{fmtFixed(overlay.glowRadius, 1)}</span>
           </div>
           {latestHeightDebug ? (
             <>
