@@ -5,7 +5,7 @@ import { PlaceholderCity } from './PlaceholderCity';
 import { DEBUG_VIEW_ENABLED } from './viewFlags';
 
 function Atmosphere() {
-  const fogDensity = DEBUG_VIEW_ENABLED ? 0.02 : 0.03;
+  const fogDensity = DEBUG_VIEW_ENABLED ? 0.0175 : 0.024;
   return (
     <>
       <color attach="background" args={['#05070b']} />
@@ -23,6 +23,8 @@ function Atmosphere() {
         shadow-mapSize-width={1024}
         shadow-mapSize-height={1024}
       />
+      <directionalLight color="#d8ecff" intensity={DEBUG_VIEW_ENABLED ? 0.5 : 0.34} position={[-18, 28, -26]} />
+      <directionalLight color="#7db9ff" intensity={DEBUG_VIEW_ENABLED ? 0.42 : 0.28} position={[18, 20, -120]} />
       <pointLight
         color="#49a6ff"
         intensity={DEBUG_VIEW_ENABLED ? 18 : 14}
@@ -32,14 +34,20 @@ function Atmosphere() {
       <pointLight
         color="#7bb8ff"
         intensity={DEBUG_VIEW_ENABLED ? 2.4 : 1.8}
-        distance={120}
+        distance={220}
         position={[4, 8, -34]}
       />
       <pointLight
         color="#7d8cff"
         intensity={DEBUG_VIEW_ENABLED ? 1.8 : 1.2}
-        distance={160}
+        distance={260}
         position={[-18, 10, -72]}
+      />
+      <pointLight
+        color="#5bd2ff"
+        intensity={DEBUG_VIEW_ENABLED ? 1.35 : 0.8}
+        distance={320}
+        position={[14, 12, -160]}
       />
     </>
   );
@@ -50,9 +58,9 @@ export function BtcSpotCityScene() {
     <Canvas
       camera={{
         position: [12.4, 6.6, 14.6],
-        fov: DEBUG_VIEW_ENABLED ? 50 : 48,
+        fov: DEBUG_VIEW_ENABLED ? 54 : 52,
         near: 0.1,
-        far: 320
+        far: 420
       }}
       dpr={[1, 2]}
       shadows
@@ -63,7 +71,7 @@ export function BtcSpotCityScene() {
       }}
       onCreated={({ scene, gl }) => {
         scene.background = new Color('#05070b');
-        scene.fog = new FogExp2('#06080c', DEBUG_VIEW_ENABLED ? 0.02 : 0.03);
+        scene.fog = new FogExp2('#06080c', DEBUG_VIEW_ENABLED ? 0.0175 : 0.024);
         gl.setClearColor('#05070b', 1);
       }}
     >

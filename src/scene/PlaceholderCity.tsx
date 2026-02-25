@@ -1,6 +1,5 @@
-import { useFrame } from '@react-three/fiber';
 import { useLayoutEffect, useMemo, useRef } from 'react';
-import type { Group, InstancedMesh, Mesh } from 'three';
+import type { InstancedMesh } from 'three';
 import { Color, Object3D } from 'three';
 import { ProceduralCityGrowth } from './ProceduralCityGrowth';
 
@@ -93,50 +92,6 @@ function LegacyBackdropBlocks() {
   );
 }
 
-function FloatingBeacon() {
-  const groupRef = useRef<Group>(null);
-  const coreRef = useRef<Mesh>(null);
-
-  useFrame(({ clock }, delta) => {
-    const group = groupRef.current;
-    const core = coreRef.current;
-    if (!group || !core) {
-      return;
-    }
-
-    const t = clock.getElapsedTime();
-    group.position.y = 1.05 + Math.sin(t * 0.75) * 0.12;
-    group.rotation.y += delta * 0.22;
-    core.rotation.y = -t * 0.5;
-    core.rotation.x = Math.sin(t * 0.3) * 0.18;
-  });
-
-  return (
-    <group ref={groupRef} position={[0, 1.05, 0]}>
-      <mesh rotation={[Math.PI / 2, 0, 0]}>
-        <torusGeometry args={[0.68, 0.03, 18, 80]} />
-        <meshBasicMaterial color="#1e4a73" transparent opacity={0.75} />
-      </mesh>
-
-      <mesh ref={coreRef} castShadow>
-        <icosahedronGeometry args={[0.36, 1]} />
-        <meshStandardMaterial
-          color="#070b10"
-          roughness={0.15}
-          metalness={0.35}
-          emissive="#3f9fff"
-          emissiveIntensity={1.25}
-        />
-      </mesh>
-
-      <mesh position={[0, -0.52, 0]} receiveShadow>
-        <cylinderGeometry args={[0.18, 0.22, 0.4, 32]} />
-        <meshStandardMaterial color="#0a0d12" metalness={0.35} roughness={0.8} />
-      </mesh>
-    </group>
-  );
-}
-
 function Ground() {
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]} receiveShadow>
@@ -194,7 +149,6 @@ export function PlaceholderCity() {
       <DepthColumns />
       <LegacyBackdropBlocks />
       <ProceduralCityGrowth />
-      <FloatingBeacon />
     </group>
   );
 }

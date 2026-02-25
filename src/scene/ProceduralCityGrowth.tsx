@@ -45,7 +45,7 @@ type CityVisualData = {
   glows: DistrictGlowInstance[];
 };
 
-const HISTORY_CAP = 36;
+const HISTORY_CAP = 42;
 const MAX_BASE_INSTANCES = 96;
 const MAX_TOWER_INSTANCES = 960;
 const MAX_GLOW_INSTANCES = 1400;
@@ -187,7 +187,8 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
   const towers: DistrictTowerInstance[] = [];
   const glows: DistrictGlowInstance[] = [];
 
-  for (const event of events) {
+  for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
+    const event = events[eventIndex];
     if (
       !event ||
       !event.metrics ||
@@ -199,6 +200,10 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
     }
 
     const m = event.metrics;
+    const recency01 = events.length <= 1 ? 1 : eventIndex / (events.length - 1);
+    const recencyCurve = smoothstep01(recency01);
+    const historySubdue = 0.62 + recencyCurve * 0.38;
+    const frontierEmphasis = 0.8 + recencyCurve * 0.55;
     const spine = getSpineTransformFromSequence(event.sequence);
     const [cx, , cz] = spine.position;
     if (!isFiniteTuple3([cx, 0, cz]) || !isValidRotationY(spine.yaw)) {
@@ -238,9 +243,16 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
     const neutralTint = new Color('#99afc3');
 
     const dominanceColor = sellTint.clone().lerp(buyTint, (dominance + 1) * 0.5);
-    const towerColor = new Color('#11171f').lerp(new Color('#243443'), 0.22 + intensity * 0.28);
-    const glowColor = neutralTint.clone().lerp(dominanceColor, 0.35 + intensity * 0.55);
-    const baseColor = new Color('#11161d').lerp(dominanceColor, 0.08 + intensity * 0.12);
+    const towerColor = new Color('#11171f')
+      .lerp(new Color('#243443'), 0.22 + intensity * 0.28)
+      .multiplyScalar(0.84 + recencyCurve * 0.28);
+    const glowColor = neutralTint
+      .clone()
+      .lerp(dominanceColor, 0.35 + intensity * 0.55)
+      .multiplyScalar(0.78 + recencyCurve * 0.55);
+    const baseColor = new Color('#11161d')
+      .lerp(dominanceColor, 0.08 + intensity * 0.12)
+      .multiplyScalar(0.82 + recencyCurve * 0.22);
 
     const massiveness = clampFinite(1.15 + intensity * 1.45 + sizeSignal * 0.9, 1.8, 0.85, 5.8);
     const verticalBias = clampFinite(
@@ -260,7 +272,7 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       position: [cx, plateauHeight * 0.5 - 0.01, cz],
       rotationY: yaw,
       size: [footprint * 2.05, plateauHeight, footprint * 1.65],
-      color: baseColor,
+      color: baseColor.clone(),
       birthAtMs: Math.max(0, clampFinite(event.emittedAt, Date.now())),
       riseDelayMs: 0,
       riseDurationMs: 700
@@ -307,7 +319,8 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       const y = clampFinite(plateauHeight + actualHeight * 0.5, 0.4, -1, 60);
       const towerLocalColor = towerColor
         .clone()
-        .lerp(dominanceColor, radialWeight * 0.05 + intensity * 0.08);
+        .lerp(dominanceColor, radialWeight * 0.05 + intensity * 0.08 + recencyCurve * 0.06)
+        .multiplyScalar(0.92 + radialWeight * 0.08);
 
       const riseDelayMs = Math.floor(clampFinite(i * (22 + intensity * 28), 0, 0, 2000));
       const riseDurationMs = Math.floor(
@@ -345,7 +358,7 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
           rotationY: yaw,
           size: [glowWidth, stripHeight, glowDepth],
           color: glowColor.clone(),
-          opacity: MathUtils.clamp(glowOpacity, 0.28, 1),
+          opacity: MathUtils.clamp(glowOpacity * historySubdue * frontierEmphasis, 0.22, 1),
           birthAtMs: Math.max(0, clampFinite(event.emittedAt, Date.now())),
           riseDelayMs: riseDelayMs + 120,
           riseDurationMs: Math.max(380, riseDurationMs - 160)
@@ -364,8 +377,8 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       position: [cx, plateauHeight + crownHeight * 0.5 + 0.06, cz],
       rotationY: yaw,
       size: [footprint * 1.15, crownHeight, footprint * 0.95],
-      color: glowColor.clone().multiplyScalar(1.15 + intensity * 0.55),
-      opacity: 0.26 + intensity * 0.34,
+      color: glowColor.clone().multiplyScalar((1.05 + intensity * 0.55) * (0.85 + recencyCurve * 0.35)),
+      opacity: MathUtils.clamp((0.22 + intensity * 0.34) * (0.85 + recencyCurve * 0.4), 0.18, 0.9),
       birthAtMs: Math.max(0, clampFinite(event.emittedAt, Date.now())),
       riseDelayMs: 90,
       riseDurationMs: 900
@@ -478,7 +491,7 @@ export function ProceduralCityGrowth() {
   const glowColors = useMemo(
     () =>
       visualData.glows.map((item) =>
-        item.color.clone().multiplyScalar(DEBUG_VIEW_ENABLED ? 1.35 : 0.95 + item.opacity * 0.95)
+        item.color.clone().multiplyScalar(DEBUG_VIEW_ENABLED ? 1.45 : 1.05 + item.opacity * 1.15)
       ),
     [visualData.glows]
   );
@@ -553,10 +566,10 @@ export function ProceduralCityGrowth() {
         <meshStandardMaterial
           vertexColors
           color={DEBUG_VIEW_ENABLED ? '#18212b' : '#121a23'}
-          roughness={0.9}
-          metalness={0.18}
-          emissive="#1b2b3a"
-          emissiveIntensity={DEBUG_VIEW_ENABLED ? 0.42 : 0.28}
+          roughness={0.84}
+          metalness={0.2}
+          emissive="#22384b"
+          emissiveIntensity={DEBUG_VIEW_ENABLED ? 0.52 : 0.36}
         />
       </instancedMesh>
 
@@ -570,10 +583,10 @@ export function ProceduralCityGrowth() {
         <meshStandardMaterial
           vertexColors
           color={DEBUG_VIEW_ENABLED ? '#1d2b37' : '#18232e'}
-          roughness={0.76}
-          metalness={0.22}
-          emissive="#26455f"
-          emissiveIntensity={DEBUG_VIEW_ENABLED ? 0.85 : 0.55}
+          roughness={0.72}
+          metalness={0.24}
+          emissive="#3a6d92"
+          emissiveIntensity={DEBUG_VIEW_ENABLED ? 1.05 : 0.72}
         />
       </instancedMesh>
 
@@ -588,6 +601,7 @@ export function ProceduralCityGrowth() {
           transparent
           opacity={DEBUG_VIEW_ENABLED ? 1 : 0.95}
           depthWrite={false}
+          depthTest
           toneMapped={false}
           blending={AdditiveBlending}
         />

@@ -1,4 +1,5 @@
 import { useFrame, useThree } from '@react-three/fiber';
+import { useRef } from 'react';
 import { MathUtils, Vector3 } from 'three';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import { getSpineTransformFromSequence } from './cityGrowthPath';
@@ -18,23 +19,119 @@ const latestTransformPos = new Vector3();
 const latestTransformTangent = new Vector3();
 const latestTransformNormal = new Vector3();
 const historyTransformPos = new Vector3();
+const centerTransformPos = new Vector3();
+const desiredLookTarget = new Vector3();
+const smoothedLookTargetVec = new Vector3();
+const smoothedCameraPosVec = new Vector3();
+
+function dampVec3(current: Vector3, target: Vector3, lambda: number, delta: number) {
+  current.x = MathUtils.damp(current.x, target.x, lambda, delta);
+  current.y = MathUtils.damp(current.y, target.y, lambda, delta);
+  current.z = MathUtils.damp(current.z, target.z, lambda, delta);
+}
 
 export function CameraRig() {
   const { camera, pointer } = useThree();
-  const { latest } = useBlockEventStore();
+  const { events, latest } = useBlockEventStore();
+  const initializedRef = useRef(false);
+  const smoothedFrontierSeqRef = useRef(1);
+  const smoothedCenterSeqRef = useRef(1);
+  const smoothedHeightSignalRef = useRef(0.5);
 
   useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime();
-    const seq = latest?.sequence ?? 1;
-    const recentHistoryDepth = DEBUG_VIEW_ENABLED ? 14 : 10;
-    const historySeq = Math.max(1, seq - recentHistoryDepth);
+    const targetFrontierSeq = Math.max(1, latest?.sequence ?? 1);
+    const recentCount = DEBUG_VIEW_ENABLED ? 18 : 14;
+    const start = Math.max(0, events.length - recentCount);
+    const sampleCount = Math.max(0, events.length - start);
+    let weightedSeqSum = 0;
+    let weightedHeightSum = 0;
+    let weightSum = 0;
 
-    const latestTransform = getSpineTransformFromSequence(seq);
+    for (let i = start; i < events.length; i++) {
+      const event = events[i];
+      if (!event || !Number.isFinite(event.sequence)) {
+        continue;
+      }
+
+      const localIndex = i - start;
+      const recency = sampleCount <= 1 ? 1 : localIndex / (sampleCount - 1);
+      const weight = 0.55 + recency * 1.55;
+      const intensity = MathUtils.clamp(event.metrics?.intensity ?? 0, 0, 1);
+      const tradeCount = Math.max(0, event.metrics?.tradeCount ?? 0);
+      const localHeightSignal = MathUtils.clamp(
+        0.35 + intensity * 0.55 + Math.log1p(tradeCount) / 11.5,
+        0.3,
+        1.5
+      );
+
+      weightedSeqSum += event.sequence * weight;
+      weightedHeightSum += localHeightSignal * weight;
+      weightSum += weight;
+    }
+
+    const recentWeightedCenterSeq =
+      weightSum > 0 ? weightedSeqSum / weightSum : targetFrontierSeq - (DEBUG_VIEW_ENABLED ? 6.5 : 5.2);
+    const targetCenterSeq = MathUtils.clamp(
+      recentWeightedCenterSeq * 0.82 + targetFrontierSeq * 0.18,
+      1,
+      Math.max(1, targetFrontierSeq - 0.8)
+    );
+    const targetHeightSignal = MathUtils.clamp(
+      (weightSum > 0 ? weightedHeightSum / weightSum : 0.45) * 0.78 +
+        (latest
+          ? MathUtils.clamp(
+              0.35 + (latest.metrics.intensity ?? 0) * 0.45 + Math.log1p(Math.max(0, latest.metrics.tradeCount ?? 0)) / 12,
+              0.35,
+              1.4
+            )
+          : 0.45) *
+          0.22,
+      0.35,
+      1.4
+    );
+
+    if (!initializedRef.current) {
+      initializedRef.current = true;
+      smoothedFrontierSeqRef.current = targetFrontierSeq;
+      smoothedCenterSeqRef.current = targetCenterSeq;
+      smoothedHeightSignalRef.current = targetHeightSignal;
+    }
+
+    const seqFollowDamping = DEBUG_VIEW_ENABLED ? 1.15 : 1.35;
+    const seqCenterDamping = DEBUG_VIEW_ENABLED ? 1.05 : 1.2;
+    smoothedFrontierSeqRef.current = MathUtils.damp(
+      smoothedFrontierSeqRef.current,
+      targetFrontierSeq,
+      seqFollowDamping,
+      delta
+    );
+    smoothedCenterSeqRef.current = MathUtils.damp(
+      smoothedCenterSeqRef.current,
+      targetCenterSeq,
+      seqCenterDamping,
+      delta
+    );
+    smoothedHeightSignalRef.current = MathUtils.damp(
+      smoothedHeightSignalRef.current,
+      targetHeightSignal,
+      DEBUG_VIEW_ENABLED ? 1.1 : 1.35,
+      delta
+    );
+
+    const smoothedFrontierSeq = smoothedFrontierSeqRef.current;
+    const smoothedCenterSeq = smoothedCenterSeqRef.current;
+    const historySpan = DEBUG_VIEW_ENABLED ? 15 : 12;
+    const historySeq = Math.max(1, smoothedFrontierSeq - historySpan);
+
+    const latestTransform = getSpineTransformFromSequence(smoothedFrontierSeq);
+    const centerTransform = getSpineTransformFromSequence(smoothedCenterSeq);
     const olderTransform = getSpineTransformFromSequence(historySeq);
 
     latestTransformPos.set(...latestTransform.position);
     latestTransformTangent.set(...latestTransform.tangent);
     latestTransformNormal.set(...latestTransform.normal);
+    centerTransformPos.set(...centerTransform.position);
     historyTransformPos.set(...olderTransform.position);
 
     frontierPos.copy(latestTransformPos);
@@ -42,15 +139,20 @@ export function CameraRig() {
     frontierNormal.copy(latestTransformNormal);
     historyPos.copy(historyTransformPos);
 
-    // Keep the latest frontier in view, but center framing on the recent corridor span.
-    corridorCenter.copy(historyPos).lerp(frontierPos, 0.62);
+    // Keep both the frontier and recent history in frame with a stable corridor anchor.
+    corridorCenter
+      .copy(historyPos)
+      .lerp(centerTransformPos, 0.52)
+      .lerp(frontierPos, 0.18);
 
-    const pointerInfluence = DEBUG_VIEW_ENABLED ? 0.18 : 0.45;
-    const drift = DEBUG_VIEW_ENABLED ? 0 : Math.sin(t * 0.15) * 0.22;
-    const hover = DEBUG_VIEW_ENABLED ? 0.04 : Math.cos(t * 0.2) * 0.14;
-    const side = DEBUG_VIEW_ENABLED ? 0.08 : Math.sin(t * 0.11) * 0.28;
-    const cameraDistance = DEBUG_VIEW_ENABLED ? 14.5 : 13.2;
-    const backOffset = DEBUG_VIEW_ENABLED ? -10.8 : -9.9;
+    const heightSignal = smoothedHeightSignalRef.current;
+    const pointerInfluence = DEBUG_VIEW_ENABLED ? 0.14 : 0.22;
+    const drift = DEBUG_VIEW_ENABLED ? 0 : Math.sin(t * 0.1) * 0.14;
+    const hover = DEBUG_VIEW_ENABLED ? 0.02 : Math.cos(t * 0.15) * 0.08;
+    const side = DEBUG_VIEW_ENABLED ? 0.06 : Math.sin(t * 0.09) * 0.18;
+    const cameraDistance = (DEBUG_VIEW_ENABLED ? 17.5 : 16.4) + heightSignal * 1.8;
+    const backOffset = (DEBUG_VIEW_ENABLED ? -13.4 : -12.1) - heightSignal * 0.8;
+    const cameraElevation = (DEBUG_VIEW_ENABLED ? 8.5 : 7.8) + heightSignal * 1.35;
 
     desiredPosition
       .copy(corridorCenter)
@@ -59,37 +161,43 @@ export function CameraRig() {
       .add(
         cameraBaseOffset.set(
           0,
-          DEBUG_VIEW_ENABLED ? 6.9 : 6.3,
+          cameraElevation,
           0
         )
       )
       .add(
         cameraPointerOffset.set(
           pointer.x * pointerInfluence,
-          pointer.y * (DEBUG_VIEW_ENABLED ? 0.12 : 0.22) + hover,
-          pointer.y * (DEBUG_VIEW_ENABLED ? 0.08 : 0.16)
+          pointer.y * (DEBUG_VIEW_ENABLED ? 0.08 : 0.12) + hover,
+          pointer.y * (DEBUG_VIEW_ENABLED ? 0.05 : 0.08)
         )
       );
 
-    desiredPosition.x = MathUtils.clamp(desiredPosition.x, -42, 42);
-    desiredPosition.y = MathUtils.clamp(desiredPosition.y, 4.2, 13.5);
-    desiredPosition.z = MathUtils.clamp(desiredPosition.z, -240, 22);
+    desiredPosition.x = MathUtils.clamp(desiredPosition.x, -52, 52);
+    desiredPosition.y = MathUtils.clamp(desiredPosition.y, 5.6, 18);
+    desiredPosition.z = MathUtils.clamp(desiredPosition.z, -280, 28);
 
-    camera.position.x = MathUtils.damp(camera.position.x, desiredPosition.x, 2.4, delta);
-    camera.position.y = MathUtils.damp(camera.position.y, desiredPosition.y, 2.2, delta);
-    camera.position.z = MathUtils.damp(camera.position.z, desiredPosition.z, 2.4, delta);
-
-    lookAtTarget
+    desiredLookTarget
       .copy(corridorCenter)
-      .addScaledVector(frontierTangent, 0.7)
-      .addScaledVector(frontierNormal, DEBUG_VIEW_ENABLED ? -0.15 : -0.25)
-      .setY((DEBUG_VIEW_ENABLED ? 1.45 : 1.25) + pointer.y * (DEBUG_VIEW_ENABLED ? 0.06 : 0.12))
-      .add(lookPointerOffset.set(pointer.x * (DEBUG_VIEW_ENABLED ? 0.12 : 0.24), 0, 0));
+      .addScaledVector(frontierTangent, 1.15)
+      .addScaledVector(frontierNormal, DEBUG_VIEW_ENABLED ? -0.35 : -0.5)
+      .setY((DEBUG_VIEW_ENABLED ? 2.35 : 2.05) + heightSignal * 1.05)
+      .add(lookPointerOffset.set(pointer.x * (DEBUG_VIEW_ENABLED ? 0.08 : 0.12), 0, 0));
 
-    lookAtTarget.x = MathUtils.clamp(lookAtTarget.x, -38, 38);
-    lookAtTarget.y = MathUtils.clamp(lookAtTarget.y, 0.6, 7.5);
-    lookAtTarget.z = MathUtils.clamp(lookAtTarget.z, -240, 18);
+    desiredLookTarget.x = MathUtils.clamp(desiredLookTarget.x, -48, 48);
+    desiredLookTarget.y = MathUtils.clamp(desiredLookTarget.y, 1.2, 11);
+    desiredLookTarget.z = MathUtils.clamp(desiredLookTarget.z, -280, 24);
 
+    if (initializedRef.current && smoothedCameraPosVec.lengthSq() === 0 && smoothedLookTargetVec.lengthSq() === 0) {
+      smoothedCameraPosVec.copy(desiredPosition);
+      smoothedLookTargetVec.copy(desiredLookTarget);
+    }
+
+    dampVec3(smoothedCameraPosVec, desiredPosition, DEBUG_VIEW_ENABLED ? 1.4 : 1.7, delta);
+    dampVec3(smoothedLookTargetVec, desiredLookTarget, DEBUG_VIEW_ENABLED ? 1.3 : 1.6, delta);
+
+    lookAtTarget.copy(smoothedLookTargetVec);
+    camera.position.copy(smoothedCameraPosVec);
     camera.lookAt(lookAtTarget);
   });
 
