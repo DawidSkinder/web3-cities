@@ -4,6 +4,7 @@ import type { Group, Mesh } from 'three';
 import {
   AdditiveBlending,
   ACESFilmicToneMapping,
+  BackSide,
   Color,
   MathUtils,
   PlaneGeometry,
@@ -155,6 +156,8 @@ const BIRTH_GLOW_RAMP_MS = 700;
 const BIRTH_OVERSHOOT = 1.18;
 const GLOW_SHELL_SCALE = 1.022;
 const GLOW_EDGE_SCALE = 1.034;
+const STROKE_SHELL_SCALE = 1.014;
+const STROKE_SHELL_OPACITY = 0.66;
 const GLOW_SHELL_OPACITY = 0.24;
 const GLOW_EDGE_OPACITY = 0.62;
 const BAND_OPACITY = 0.55;
@@ -1047,6 +1050,21 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
             depthWrite
           />
           </mesh>
+          <mesh scale={[STROKE_SHELL_SCALE, 1.004, STROKE_SHELL_SCALE]}>
+            <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
+            <meshBasicMaterial
+              color={strokeColor}
+              side={BackSide}
+              transparent
+              opacity={STROKE_SHELL_OPACITY}
+              toneMapped={false}
+              depthTest
+              depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-3}
+            />
+          </mesh>
           <mesh
             ref={(el) => {
               shellRefs.current[i] = el;
@@ -1270,18 +1288,13 @@ function ScreenSpaceGroundLine({
 function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
   const boardSize = MathUtils.clamp(Math.max(420, bounds.radius * 8 + 180), 420, 1400);
   const targetGlowRadius = clampFinite(Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT), 64, 30, boardSize * 0.48);
-  const panelStep = 24;
   const arteryLen = Math.min(boardSize * 0.92, Math.max(140, bounds.radius * 3.6));
   const groundGraphicY = GROUND_GRAPHIC_Y;
   const lineExtent = MathUtils.clamp(Math.max(200, bounds.radius * 4.2), 200, boardSize * 0.94);
-  const minorGridStep = RUNTIME_QUALITY_CONFIG.tier === 'low' ? 28 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 24 : 20;
-  const majorGridStep = minorGridStep * 4;
   const windRoseRadius = MathUtils.clamp(Math.max(68, bounds.radius * 2.35), 68, lineExtent * 0.62);
   const glowMeshRef = useRef<Mesh>(null);
   const smoothGlowRadiusRef = useRef(targetGlowRadius);
   const glowGeometry = useMemo(() => new PlaneGeometry(1, 1, 1, 1), []);
-  const gridMinorLines = useMemo(() => segmentsToLinePointPairs(buildGridSegments(lineExtent, minorGridStep)), [lineExtent, minorGridStep]);
-  const gridMajorLines = useMemo(() => segmentsToLinePointPairs(buildGridSegments(lineExtent, majorGridStep)), [lineExtent, majorGridStep]);
   const windRoseSegments = useMemo(() => buildWindRoseSegments(windRoseRadius), [windRoseRadius]);
   const windRoseAxisLines = useMemo(() => segmentsToLinePointPairs(windRoseSegments.slice(0, 4)), [windRoseSegments]);
   const windRoseDiagonalLines = useMemo(() => segmentsToLinePointPairs(windRoseSegments.slice(4, 8)), [windRoseSegments]);
@@ -1309,15 +1322,6 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
     material.toneMapped = false;
     return material;
   }, [glowUniforms]);
-  const panelOffsets = useMemo(() => {
-    const values: number[] = [];
-    const half = boardSize * 0.5;
-    for (let v = -half; v <= half; v += panelStep) {
-      values.push(v);
-    }
-    return values;
-  }, [boardSize]);
-
   useEffect(() => {
     return () => {
       glowGeometry.dispose();
@@ -1377,41 +1381,6 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
         />
       </mesh>
 
-      {panelOffsets.map((x) => (
-        <mesh key={`panel-v-${x}`} position={[x, GROUND_GRAPHIC_Y - 0.0015, 0]} renderOrder={2}>
-          <boxGeometry args={[0.08, 0.006, boardSize * 0.94]} />
-          <meshBasicMaterial color="#101821" transparent opacity={0.26} toneMapped={false} depthWrite={false} depthTest />
-        </mesh>
-      ))}
-      {panelOffsets.map((z) => (
-        <mesh key={`panel-h-${z}`} position={[0, GROUND_GRAPHIC_Y - 0.0015, z]} renderOrder={2}>
-          <boxGeometry args={[boardSize * 0.94, 0.006, 0.08]} />
-          <meshBasicMaterial color="#101821" transparent opacity={0.22} toneMapped={false} depthWrite={false} depthTest />
-        </mesh>
-      ))}
-
-      {gridMinorLines.map((points, i) => (
-        <ScreenSpaceGroundLine
-          key={`grid-minor-${i}`}
-          points={points}
-          y={groundGraphicY + 0.0002}
-          color="#18222d"
-          opacity={0.2}
-          lineWidth={1.25}
-          renderOrder={2}
-        />
-      ))}
-      {gridMajorLines.map((points, i) => (
-        <ScreenSpaceGroundLine
-          key={`grid-major-${i}`}
-          points={points}
-          y={groundGraphicY + 0.0004}
-          color="#2a3746"
-          opacity={0.28}
-          lineWidth={1.85}
-          renderOrder={2.02}
-        />
-      ))}
       {windRoseDiagonalLines.map((points, i) => (
         <ScreenSpaceGroundLine
           key={`wr-diag-${i}`}
