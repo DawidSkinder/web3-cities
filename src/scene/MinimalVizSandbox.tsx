@@ -1,18 +1,19 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Group, LineSegments as ThreeLineSegments, Mesh } from 'three';
+import type { Group, Mesh } from 'three';
 import {
   AdditiveBlending,
   ACESFilmicToneMapping,
-  BufferGeometry,
   Color,
-  Float32BufferAttribute,
   MathUtils,
   PlaneGeometry,
   ShaderMaterial,
   SRGBColorSpace,
   Vector3
 } from 'three';
+import { Line2 } from 'three/examples/jsm/lines/Line2.js';
+import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import type { BlockEvent } from '../data/trades/types';
 import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
@@ -195,9 +196,10 @@ const VIS_FAR_DIST = 170;
 const GROUND_GLOW_Y = -0.05;
 const GROUND_SLAB_Y = -0.03;
 const GROUND_DECK_Y = -0.02;
-const GROUND_GRAPHIC_Y = -0.015;
-const TRACE_BASE_Y = -0.005;
-const TRAFFIC_BASE_OFFSET_Y = 0.002;
+const GROUND_GRAPHIC_Y = GROUND_DECK_Y + 0.006;
+const TRACE_BASE_Y = GROUND_DECK_Y + 0.012;
+const TRACE_LAYER_STEP_Y = 0.00035;
+const TRAFFIC_BASE_OFFSET_Y = 0.005;
 
 const RADIAL_GLOW_VERTEX = `
 varying vec2 vUv;
@@ -420,7 +422,7 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
     const glow = TRACE_ORANGE.clone().lerp(TRACE_WARM, warmBias > 0.88 ? 0.35 : 0.12);
     const width = 0.08 + hash01(aSeq, bSeq, 3) * 0.03;
     const glowWidth = width * 2.6;
-    const y = TRACE_BASE_Y + i * 0.0009;
+    const y = TRACE_BASE_Y + i * TRACE_LAYER_STEP_Y;
 
     const traceId = `T-${traceKey}`;
     state.traces.push({
@@ -1132,26 +1134,11 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
   );
 }
 
-function buildLineSegmentsGeometry(segments: Array<[number, number, number, number, number, number]>) {
-  const positions = new Float32Array(segments.length * 6);
-  let offset = 0;
-  for (let i = 0; i < segments.length; i++) {
-    const s = segments[i];
-    if (!s) continue;
-    positions[offset++] = s[0];
-    positions[offset++] = s[1];
-    positions[offset++] = s[2];
-    positions[offset++] = s[3];
-    positions[offset++] = s[4];
-    positions[offset++] = s[5];
-  }
-  const geometry = new BufferGeometry();
-  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
-  return geometry;
-}
+type LineSegment = [number, number, number, number, number, number];
+type LinePoints = [number, number, number][];
 
 function buildGridSegments(extent: number, step: number) {
-  const segments: Array<[number, number, number, number, number, number]> = [];
+  const segments: LineSegment[] = [];
   const half = extent * 0.5;
   for (let v = -half; v <= half + 0.001; v += step) {
     segments.push([-half, 0, v, half, 0, v]);
@@ -1161,7 +1148,7 @@ function buildGridSegments(extent: number, step: number) {
 }
 
 function buildWindRoseSegments(radius: number) {
-  const segments: Array<[number, number, number, number, number, number]> = [];
+  const segments: LineSegment[] = [];
   const dirs = [
     [1, 0],
     [0, 1],
@@ -1187,32 +1174,119 @@ function buildWindRoseSegments(radius: number) {
   return segments;
 }
 
+function segmentsToLinePointPairs(segments: LineSegment[]) {
+  return segments.map(
+    (s) =>
+      [
+        [s[0], s[1], s[2]],
+        [s[3], s[4], s[5]]
+      ] as LinePoints
+  );
+}
+
+function buildCircleLinePoints(radius: number, segments = 96): LinePoints {
+  const pts: LinePoints = [];
+  for (let i = 0; i <= segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    pts.push([Math.cos(a) * radius, 0, Math.sin(a) * radius]);
+  }
+  return pts;
+}
+
+function ScreenSpaceGroundLine({
+  points,
+  y,
+  color,
+  opacity,
+  lineWidth,
+  renderOrder,
+  additive = false
+}: {
+  points: LinePoints;
+  y: number;
+  color: string;
+  opacity: number;
+  lineWidth: number;
+  renderOrder: number;
+  additive?: boolean;
+}) {
+  const { size } = useThree();
+  const geometry = useMemo(() => {
+    const g = new LineGeometry();
+    const flat: number[] = [];
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      if (!p) continue;
+      flat.push(p[0], p[1], p[2]);
+    }
+    g.setPositions(flat);
+    return g;
+  }, [points]);
+
+  const material = useMemo(() => {
+    const m = new LineMaterial({
+      color,
+      transparent: true,
+      opacity,
+      linewidth: lineWidth,
+      depthWrite: false,
+      depthTest: false
+    });
+    m.toneMapped = false;
+    if (additive) m.blending = AdditiveBlending;
+    return m;
+  }, [color, opacity, lineWidth, additive]);
+
+  const line = useMemo(() => {
+    const l = new Line2(geometry, material);
+    l.frustumCulled = false;
+    l.renderOrder = renderOrder;
+    l.position.set(0, y, 0);
+    return l;
+  }, [geometry, material, renderOrder, y]);
+
+  useEffect(() => {
+    material.resolution.set(size.width, size.height);
+  }, [material, size.width, size.height]);
+
+  useEffect(() => {
+    line.renderOrder = renderOrder;
+    line.position.y = y;
+    material.opacity = opacity;
+    material.linewidth = lineWidth;
+  }, [line, material, renderOrder, y, opacity, lineWidth]);
+
+  useEffect(() => {
+    return () => {
+      geometry.dispose();
+      material.dispose();
+    };
+  }, [geometry, material]);
+
+  return <primitive object={line} />;
+}
+
 function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
-  const { camera } = useThree();
   const boardSize = MathUtils.clamp(Math.max(420, bounds.radius * 8 + 180), 420, 1400);
   const targetGlowRadius = clampFinite(Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT), 64, 30, boardSize * 0.48);
   const panelStep = 24;
   const arteryLen = Math.min(boardSize * 0.92, Math.max(140, bounds.radius * 3.6));
   const groundGraphicY = GROUND_GRAPHIC_Y;
-  const lineExtent = MathUtils.clamp(Math.max(180, bounds.radius * 4.2), 180, boardSize * 0.94);
-  const minorGridStep = RUNTIME_QUALITY_CONFIG.tier === 'low' ? 20 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 16 : 14;
+  const lineExtent = MathUtils.clamp(Math.max(200, bounds.radius * 4.2), 200, boardSize * 0.94);
+  const minorGridStep = RUNTIME_QUALITY_CONFIG.tier === 'low' ? 28 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 24 : 20;
   const majorGridStep = minorGridStep * 4;
   const windRoseRadius = MathUtils.clamp(Math.max(68, bounds.radius * 2.35), 68, lineExtent * 0.62);
   const glowMeshRef = useRef<Mesh>(null);
-  const ringRef = useRef<Mesh>(null);
-  const innerRingRef = useRef<Mesh>(null);
-  const arteryMainRef = useRef<Mesh>(null);
-  const arteryCrossRef = useRef<Mesh>(null);
-  const arteryDiagARef = useRef<Mesh>(null);
-  const arteryDiagBRef = useRef<Mesh>(null);
-  const gridMinorRef = useRef<ThreeLineSegments>(null);
-  const gridMajorRef = useRef<ThreeLineSegments>(null);
-  const windRoseRef = useRef<ThreeLineSegments>(null);
   const smoothGlowRadiusRef = useRef(targetGlowRadius);
   const glowGeometry = useMemo(() => new PlaneGeometry(1, 1, 1, 1), []);
-  const gridMinorGeometry = useMemo(() => buildLineSegmentsGeometry(buildGridSegments(lineExtent, minorGridStep)), [lineExtent, minorGridStep]);
-  const gridMajorGeometry = useMemo(() => buildLineSegmentsGeometry(buildGridSegments(lineExtent, majorGridStep)), [lineExtent, majorGridStep]);
-  const windRoseGeometry = useMemo(() => buildLineSegmentsGeometry(buildWindRoseSegments(windRoseRadius)), [windRoseRadius]);
+  const gridMinorLines = useMemo(() => segmentsToLinePointPairs(buildGridSegments(lineExtent, minorGridStep)), [lineExtent, minorGridStep]);
+  const gridMajorLines = useMemo(() => segmentsToLinePointPairs(buildGridSegments(lineExtent, majorGridStep)), [lineExtent, majorGridStep]);
+  const windRoseSegments = useMemo(() => buildWindRoseSegments(windRoseRadius), [windRoseRadius]);
+  const windRoseAxisLines = useMemo(() => segmentsToLinePointPairs(windRoseSegments.slice(0, 4)), [windRoseSegments]);
+  const windRoseDiagonalLines = useMemo(() => segmentsToLinePointPairs(windRoseSegments.slice(4, 8)), [windRoseSegments]);
+  const windRoseCrosshairLines = useMemo(() => segmentsToLinePointPairs(windRoseSegments.slice(8)), [windRoseSegments]);
+  const outerRingPoints = useMemo(() => buildCircleLinePoints(windRoseRadius * 0.92, 96), [windRoseRadius]);
+  const innerRingPoints = useMemo(() => buildCircleLinePoints(windRoseRadius * 0.62, 72), [windRoseRadius]);
   const glowUniforms = useMemo(
     () => ({
       uCenterColor: { value: new Color('#F5D8AE') },
@@ -1246,15 +1320,11 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
   useEffect(() => {
     return () => {
       glowGeometry.dispose();
-      gridMinorGeometry.dispose();
-      gridMajorGeometry.dispose();
-      windRoseGeometry.dispose();
       glowMaterial.dispose();
     };
-  }, [glowGeometry, gridMinorGeometry, gridMajorGeometry, windRoseGeometry, glowMaterial]);
+  }, [glowGeometry, glowMaterial]);
 
-  useFrame(({ clock }, delta) => {
-    const visCurve = distanceVisibilityCurve(camera.position.length());
+  useFrame((_, delta) => {
     const safeTarget = clampFinite(targetGlowRadius, smoothGlowRadiusRef.current || 64, 30, boardSize * 0.48);
     if (!Number.isFinite(smoothGlowRadiusRef.current)) {
       smoothGlowRadiusRef.current = safeTarget;
@@ -1265,57 +1335,11 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
       glowMeshRef.current.scale.set(r * 2.2, r * 2.2, 1);
       glowUniforms.uOpacity.value = 0.86;
     }
-    if (ringRef.current) {
-      const ringScaleVis = MathUtils.lerp(1, 1.04, visCurve);
-      ringRef.current.scale.set(windRoseRadius * 0.92 * ringScaleVis, windRoseRadius * 0.92 * ringScaleVis, 1);
-      const pulse = RUNTIME_QUALITY_CONFIG.reducedMotion ? 0 : Math.sin(clock.getElapsedTime() * 0.22) * 0.02;
-      const mat = ringRef.current.material as { opacity?: number } | undefined;
-      if (mat) {
-        mat.opacity = 0.09 + visCurve * 0.1 + pulse;
-      }
-    }
-    if (innerRingRef.current) {
-      const innerScaleVis = MathUtils.lerp(1, 1.03, visCurve);
-      innerRingRef.current.scale.set(windRoseRadius * 0.62 * innerScaleVis, windRoseRadius * 0.62 * innerScaleVis, 1);
-      const mat = innerRingRef.current.material as { opacity?: number } | undefined;
-      if (mat) {
-        mat.opacity = 0.04 + visCurve * 0.06;
-      }
-    }
-    const gridMinorMat = gridMinorRef.current?.material as { opacity?: number } | undefined;
-    if (gridMinorMat) gridMinorMat.opacity = MathUtils.lerp(0.07, 0.16, visCurve);
-    const gridMajorMat = gridMajorRef.current?.material as { opacity?: number } | undefined;
-    if (gridMajorMat) gridMajorMat.opacity = MathUtils.lerp(0.14, 0.28, visCurve);
-    const windRoseMat = windRoseRef.current?.material as { opacity?: number } | undefined;
-    if (windRoseMat) windRoseMat.opacity = MathUtils.lerp(0.13, 0.26, visCurve);
-
-    const axisWidthScale = MathUtils.lerp(1, 1.9, visCurve);
-    const crossWidthScale = MathUtils.lerp(1, 1.7, visCurve);
-    if (arteryMainRef.current) {
-      arteryMainRef.current.scale.set(axisWidthScale, 1, 1);
-      const mat = arteryMainRef.current.material as { opacity?: number } | undefined;
-      if (mat) mat.opacity = MathUtils.lerp(0.22, 0.36, visCurve);
-    }
-    if (arteryCrossRef.current) {
-      arteryCrossRef.current.scale.set(1, 1, axisWidthScale);
-      const mat = arteryCrossRef.current.material as { opacity?: number } | undefined;
-      if (mat) mat.opacity = MathUtils.lerp(0.11, 0.22, visCurve);
-    }
-    if (arteryDiagARef.current) {
-      arteryDiagARef.current.scale.set(crossWidthScale, 1, 1);
-      const mat = arteryDiagARef.current.material as { opacity?: number } | undefined;
-      if (mat) mat.opacity = MathUtils.lerp(0.12, 0.22, visCurve);
-    }
-    if (arteryDiagBRef.current) {
-      arteryDiagBRef.current.scale.set(crossWidthScale, 1, 1);
-      const mat = arteryDiagBRef.current.material as { opacity?: number } | undefined;
-      if (mat) mat.opacity = MathUtils.lerp(0.095, 0.18, visCurve);
-    }
   });
 
     return (
     <group>
-      {/* Layer stack: 0=deck, 1=radial glow (only depthTest off), 2=grid/wind-rose, 3=guide lines */}
+      {/* Layer stack: 0=deck, 1=radial glow (only depthTest off), 2=grid/wind-rose overlay lines, 3=guide lines */}
       <mesh
         ref={glowMeshRef}
         rotation={[-Math.PI / 2, 0, 0]}
@@ -1365,67 +1389,94 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
         </mesh>
       ))}
 
-      <lineSegments ref={gridMinorRef} geometry={gridMinorGeometry} position={[0, groundGraphicY, 0]} renderOrder={2}>
-        <lineBasicMaterial color="#18222d" transparent opacity={0.07} toneMapped={false} depthWrite={false} depthTest />
-      </lineSegments>
-      <lineSegments ref={gridMajorRef} geometry={gridMajorGeometry} position={[0, groundGraphicY + 0.0005, 0]} renderOrder={2}>
-        <lineBasicMaterial color="#263341" transparent opacity={0.14} toneMapped={false} depthWrite={false} depthTest />
-      </lineSegments>
-
-      <lineSegments ref={windRoseRef} geometry={windRoseGeometry} position={[0, groundGraphicY + 0.0012, 0]} renderOrder={2}>
-        <lineBasicMaterial color="#F0D2A2" transparent opacity={0.13} toneMapped={false} depthWrite={false} depthTest />
-      </lineSegments>
-
-      <mesh
-        ref={ringRef}
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, groundGraphicY + 0.0015, 0]}
-        scale={[windRoseRadius * 0.92, windRoseRadius * 0.92, 1]}
-        renderOrder={2}
-      >
-        <ringGeometry args={[0.96, 1, 96]} />
-        <meshBasicMaterial
-          color="#F7931A"
-          transparent
-          opacity={0.11}
-          toneMapped={false}
-          depthWrite={false}
-          depthTest
-          blending={AdditiveBlending}
+      {gridMinorLines.map((points, i) => (
+        <ScreenSpaceGroundLine
+          key={`grid-minor-${i}`}
+          points={points}
+          y={groundGraphicY + 0.0002}
+          color="#18222d"
+          opacity={0.2}
+          lineWidth={1.25}
+          renderOrder={2}
         />
-      </mesh>
-      <mesh
-        ref={innerRingRef}
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, groundGraphicY + 0.001, 0]}
-        scale={[windRoseRadius * 0.62, windRoseRadius * 0.62, 1]}
-        renderOrder={2}
-      >
-        <ringGeometry args={[0.985, 1, 96]} />
-        <meshBasicMaterial
-          color="#F5E8D1"
-          transparent
-          opacity={0.045}
-          toneMapped={false}
-          depthWrite={false}
-          depthTest
-          blending={AdditiveBlending}
+      ))}
+      {gridMajorLines.map((points, i) => (
+        <ScreenSpaceGroundLine
+          key={`grid-major-${i}`}
+          points={points}
+          y={groundGraphicY + 0.0004}
+          color="#2a3746"
+          opacity={0.28}
+          lineWidth={1.85}
+          renderOrder={2.02}
         />
-      </mesh>
+      ))}
+      {windRoseDiagonalLines.map((points, i) => (
+        <ScreenSpaceGroundLine
+          key={`wr-diag-${i}`}
+          points={points}
+          y={groundGraphicY + 0.0007}
+          color="#d7c09a"
+          opacity={0.18}
+          lineWidth={2.2}
+          renderOrder={2.08}
+          additive
+        />
+      ))}
+      {windRoseAxisLines.map((points, i) => (
+        <ScreenSpaceGroundLine
+          key={`wr-axis-${i}`}
+          points={points}
+          y={groundGraphicY + 0.0009}
+          color={i % 2 === 0 ? '#F4D3A2' : '#F7931A'}
+          opacity={i % 2 === 0 ? 0.22 : 0.2}
+          lineWidth={3.1}
+          renderOrder={2.1}
+          additive
+        />
+      ))}
+      {windRoseCrosshairLines.map((points, i) => (
+        <ScreenSpaceGroundLine
+          key={`wr-cross-${i}`}
+          points={points}
+          y={groundGraphicY + 0.001}
+          color="#f6ead7"
+          opacity={0.14}
+          lineWidth={2.0}
+          renderOrder={2.12}
+        />
+      ))}
+      <ScreenSpaceGroundLine
+        points={outerRingPoints}
+        y={groundGraphicY + 0.0011}
+        color="#F7931A"
+        opacity={0.16}
+        lineWidth={2.6}
+        renderOrder={2.16}
+        additive
+      />
+      <ScreenSpaceGroundLine
+        points={innerRingPoints}
+        y={groundGraphicY + 0.00115}
+        color="#f2e4cf"
+        opacity={0.09}
+        lineWidth={1.7}
+        renderOrder={2.14}
+      />
 
-      <mesh ref={arteryMainRef} position={[0, groundGraphicY + 0.002, 0]} renderOrder={3}>
+      <mesh position={[0, groundGraphicY + 0.002, 0]} renderOrder={3}>
         <boxGeometry args={[0.18, 0.01, arteryLen]} />
         <meshBasicMaterial color="#F7931A" transparent opacity={0.22} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
-      <mesh ref={arteryCrossRef} position={[0, groundGraphicY + 0.0025, 0]} renderOrder={3}>
+      <mesh position={[0, groundGraphicY + 0.0025, 0]} renderOrder={3}>
         <boxGeometry args={[arteryLen * 0.72, 0.01, 0.16]} />
         <meshBasicMaterial color="#f4e8d6" transparent opacity={0.11} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
-      <mesh ref={arteryDiagARef} rotation={[0, Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
+      <mesh rotation={[0, Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.8]} />
         <meshBasicMaterial color="#F7931A" transparent opacity={0.12} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
-      <mesh ref={arteryDiagBRef} rotation={[0, -Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
+      <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.62]} />
         <meshBasicMaterial color="#ffe7c4" transparent opacity={0.095} toneMapped={false} depthWrite={false} depthTest />
       </mesh>
@@ -1447,8 +1498,8 @@ function TraceStrips({ traces }: { traces: TraceDatum[] }) {
     const visCurve = distanceVisibilityCurve(camera.position.length());
     const glowWidthScale = MathUtils.lerp(1, 2.4, visCurve);
     const coreWidthScale = MathUtils.lerp(1, 1.95, visCurve);
-    const glowOpacity = MathUtils.lerp(0.11, 0.2, visCurve);
-    const coreOpacity = MathUtils.lerp(0.58, 0.78, visCurve);
+    const glowOpacity = MathUtils.lerp(0.13, 0.22, visCurve);
+    const coreOpacity = MathUtils.lerp(0.62, 0.82, visCurve);
     for (let i = 0; i < traces.length; i++) {
       const glow = glowRefs.current[i];
       const core = coreRefs.current[i];
@@ -1529,7 +1580,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
     const sizeScale = MathUtils.lerp(1, 2.15, visCurve);
-    const opacity = MathUtils.lerp(0.74, 0.94, visCurve);
+    const opacity = MathUtils.lerp(0.8, 0.95, visCurve);
     for (let i = 0; i < particles.length; i++) {
       const mesh = refs.current[i];
       const p = particles[i];
