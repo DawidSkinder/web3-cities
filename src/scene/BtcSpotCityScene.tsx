@@ -30,7 +30,7 @@ function Atmosphere() {
 export function BtcSpotCityScene() {
   return (
     <Canvas
-      camera={{ position: [6.5, 4.2, 8.5], fov: 42, near: 0.1, far: 80 }}
+      camera={{ position: [10.5, 5.8, 12.5], fov: 46, near: 0.1, far: 120 }}
       dpr={[1, 2]}
       shadows
       gl={{

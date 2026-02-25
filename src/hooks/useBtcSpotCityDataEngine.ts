@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { publishBlockEvent } from '../data/trades/blockEventStore';
 import { BtcSpotCityDataEngine } from '../data/trades/BtcSpotCityDataEngine';
 
 export function useBtcSpotCityDataEngine() {
@@ -8,8 +9,8 @@ export function useBtcSpotCityDataEngine() {
       logWindows: true
     });
 
-    const unsubscribe = engine.subscribe(() => {
-      // Placeholder subscription hook for future scene-driven procedural systems.
+    const unsubscribe = engine.subscribe((event) => {
+      publishBlockEvent(event);
     });
 
     engine.start();
@@ -20,4 +21,3 @@ export function useBtcSpotCityDataEngine() {
     };
   }, []);
 }
-

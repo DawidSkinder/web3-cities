@@ -2,6 +2,7 @@ import { useFrame } from '@react-three/fiber';
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import type { Group, InstancedMesh, Mesh } from 'three';
 import { Color, Object3D } from 'three';
+import { ProceduralCityGrowth } from './ProceduralCityGrowth';
 
 type Block = {
   position: [number, number, number];
@@ -49,7 +50,7 @@ function buildBlocks(): Block[] {
   return blocks;
 }
 
-function CityBlocks() {
+function LegacyBackdropBlocks() {
   const meshRef = useRef<InstancedMesh>(null);
   const blocks = useMemo(buildBlocks, []);
   const color = useMemo(() => new Color(), []);
@@ -191,7 +192,8 @@ export function PlaceholderCity() {
     <group>
       <Ground />
       <DepthColumns />
-      <CityBlocks />
+      <LegacyBackdropBlocks />
+      <ProceduralCityGrowth />
       <FloatingBeacon />
     </group>
   );
