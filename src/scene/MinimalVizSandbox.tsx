@@ -1,6 +1,7 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ACESFilmicToneMapping, Color, MathUtils, SRGBColorSpace, Vector3 } from 'three';
+import type { Group, Mesh } from 'three';
+import { AdditiveBlending, ACESFilmicToneMapping, Color, MathUtils, SRGBColorSpace, Vector3 } from 'three';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import type { BlockEvent } from '../data/trades/types';
 import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
@@ -10,7 +11,10 @@ type TowerDatum = {
   x: number;
   z: number;
   height: number;
-  color: string;
+  coreColor: string;
+  glowColor: string;
+  glowStrength: number;
+  bandCount: 2 | 3 | 4;
   emittedAt: number;
 };
 
@@ -43,6 +47,21 @@ const MIN_HEIGHT = 0.7;
 const MAX_HEIGHT = 22;
 const TOWER_FOOTPRINT = 1.1;
 const IDLE_DELAY_MS = 6000;
+const BIRTH_RISE_MS = 900;
+const BIRTH_GLOW_DELAY_MS = 150;
+const BIRTH_GLOW_RAMP_MS = 700;
+const BIRTH_OVERSHOOT = 1.18;
+const GLOW_SHELL_SCALE = 1.022;
+const GLOW_EDGE_SCALE = 1.034;
+const GLOW_SHELL_OPACITY = 0.28;
+const GLOW_EDGE_OPACITY = 0.8;
+const BAND_OPACITY = 0.55;
+const CROWN_OPACITY = 0.8;
+const BTC_ORANGE = new Color('#F7931A');
+const BTC_SELL_WARM = new Color('#F5F2E9');
+const BTC_PALE_AMBER = new Color('#FFD8A2');
+const CORE_GRAPHITE = new Color('#0c1016');
+const CORE_GRAPHITE_HI = new Color('#171e27');
 
 const desiredPosition = new Vector3();
 const desiredTarget = new Vector3();
@@ -53,6 +72,18 @@ const tempDir = new Vector3();
 function clampFinite(value: number, fallback: number, min?: number, max?: number) {
   const safe = Number.isFinite(value) ? value : fallback;
   return MathUtils.clamp(safe, min ?? safe, max ?? safe);
+}
+
+function easeOutCubic(t: number) {
+  const x = MathUtils.clamp(t, 0, 1);
+  return 1 - Math.pow(1 - x, 3);
+}
+
+function easeOutBack(t: number, overshoot = 1.1) {
+  const x = MathUtils.clamp(t, 0, 1);
+  const c1 = overshoot;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
 }
 
 function createEmptyAccum(): AccumState {
@@ -80,18 +111,22 @@ function mapEventToTower(event: BlockEvent): TowerDatum {
   const height = clampFinite(BASE_HEIGHT + (volumeSignal * 0.7 + intensity * 0.3) * HEIGHT_SCALE, 2, MIN_HEIGHT, MAX_HEIGHT);
 
   const dominance = MathUtils.clamp(clampFinite(event.metrics.imbalance, 0), -1, 1);
-  const buyColor = new Color('#59e8ff');
-  const sellColor = new Color('#ffae61');
-  const neutral = new Color('#b7d6ea');
-  const c = sellColor.clone().lerp(buyColor, (dominance + 1) * 0.5);
-  c.lerp(neutral, 0.15);
+  const imbalance = Math.abs(dominance);
+  const dominance01 = (dominance + 1) * 0.5;
+  const glow = BTC_SELL_WARM.clone().lerp(BTC_PALE_AMBER, 0.38).lerp(BTC_ORANGE, dominance01);
+  const core = CORE_GRAPHITE.clone().lerp(CORE_GRAPHITE_HI, 0.2 + imbalance * 0.22);
+  const glowStrength = MathUtils.clamp(0.7 + intensity * 0.45 + imbalance * 0.55, 0.75, 1.55);
+  const bandCount = (2 + Math.min(2, Math.floor(imbalance * 3))) as 2 | 3 | 4;
 
   return {
     sequence: event.sequence,
     x,
     z,
     height,
-    color: `#${c.getHexString()}`,
+    coreColor: `#${core.getHexString()}`,
+    glowColor: `#${glow.getHexString()}`,
+    glowStrength,
+    bandCount,
     emittedAt: Math.max(0, clampFinite(event.emittedAt, Date.now()))
   };
 }
@@ -358,6 +393,135 @@ function MinimalOrbitRig({ bounds }: { bounds: SandboxBounds }) {
   return null;
 }
 
+function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
+  const groupRef = useRef<Group>(null);
+  const shellRef = useRef<Mesh>(null);
+  const edgeRef = useRef<Mesh>(null);
+  const crownRef = useRef<Mesh>(null);
+  const bandRefs = useRef<Array<Mesh | null>>([]);
+  const settledRef = useRef(false);
+
+  const glowColor = useMemo(() => new Color(tower.glowColor), [tower.glowColor]);
+  const coreColor = useMemo(() => new Color(tower.coreColor), [tower.coreColor]);
+  const bandFractions = useMemo(() => {
+    const base = [0.2, 0.42, 0.66, 0.86];
+    const wobble = ((tower.sequence % 17) - 8) * 0.0025;
+    return base.map((v, i) => MathUtils.clamp(v + wobble * (i + 1), 0.12, 0.92));
+  }, [tower.sequence]);
+
+  useFrame(() => {
+    const group = groupRef.current;
+    if (!group) return;
+    if (settledRef.current) return;
+
+    const now = Date.now();
+    const elapsed = now - tower.emittedAt;
+    const riseT = MathUtils.clamp(elapsed / BIRTH_RISE_MS, 0, 1);
+    const riseScaleY = Math.max(0.0001, easeOutBack(riseT, BIRTH_OVERSHOOT));
+    group.scale.y = riseScaleY;
+
+    const glowT = MathUtils.clamp((elapsed - BIRTH_GLOW_DELAY_MS) / BIRTH_GLOW_RAMP_MS, 0, 1);
+    const glowAlpha = easeOutCubic(glowT);
+
+    const shellMat = shellRef.current?.material as { opacity?: number } | undefined;
+    const edgeMat = edgeRef.current?.material as { opacity?: number } | undefined;
+    const crownMat = crownRef.current?.material as { opacity?: number } | undefined;
+
+    if (shellMat) shellMat.opacity = GLOW_SHELL_OPACITY * tower.glowStrength * glowAlpha;
+    if (edgeMat) edgeMat.opacity = MathUtils.clamp(GLOW_EDGE_OPACITY * tower.glowStrength * glowAlpha, 0, 1);
+    if (crownMat) crownMat.opacity = MathUtils.clamp(CROWN_OPACITY * tower.glowStrength * glowAlpha, 0, 1);
+
+    for (let i = 0; i < bandRefs.current.length; i++) {
+      const band = bandRefs.current[i];
+      if (!band) continue;
+      band.visible = i < tower.bandCount;
+      const mat = band.material as { opacity?: number } | undefined;
+      if (mat) {
+        const localFade = 0.9 - i * 0.08;
+        mat.opacity = MathUtils.clamp(BAND_OPACITY * tower.glowStrength * glowAlpha * localFade, 0, 1);
+      }
+    }
+
+    if (riseT >= 1 && glowT >= 1) {
+      group.scale.y = 1;
+      settledRef.current = true;
+    }
+  });
+
+  return (
+    <group ref={groupRef} position={[tower.x, 0, tower.z]} scale={[1, 0.0001, 1]}>
+      <mesh position={[0, tower.height * 0.5, 0]} castShadow={RUNTIME_QUALITY_CONFIG.shadows} receiveShadow={RUNTIME_QUALITY_CONFIG.shadows}>
+        <boxGeometry args={[TOWER_FOOTPRINT, tower.height, TOWER_FOOTPRINT]} />
+        <meshStandardMaterial
+          color={coreColor}
+          roughness={0.38}
+          metalness={0.16}
+          emissive={coreColor}
+          emissiveIntensity={0.045}
+        />
+      </mesh>
+
+      <mesh ref={shellRef} position={[0, tower.height * 0.5, 0]} scale={[GLOW_SHELL_SCALE, 1.002, GLOW_SHELL_SCALE]}>
+        <boxGeometry args={[TOWER_FOOTPRINT, tower.height, TOWER_FOOTPRINT]} />
+        <meshBasicMaterial
+          color={glowColor}
+          transparent
+          opacity={0}
+          toneMapped={false}
+          depthWrite={false}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+
+      <mesh ref={edgeRef} position={[0, tower.height * 0.5, 0]} scale={[GLOW_EDGE_SCALE, 1.006, GLOW_EDGE_SCALE]}>
+        <boxGeometry args={[TOWER_FOOTPRINT, tower.height, TOWER_FOOTPRINT]} />
+        <meshBasicMaterial
+          color={glowColor}
+          wireframe
+          transparent
+          opacity={0}
+          toneMapped={false}
+          depthWrite={false}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+
+      {bandFractions.map((f, i) => (
+        <mesh
+          key={`${tower.sequence}-band-${i}`}
+          ref={(el) => {
+            bandRefs.current[i] = el;
+          }}
+          position={[0, tower.height * f, 0]}
+          visible={i < tower.bandCount}
+        >
+          <boxGeometry args={[TOWER_FOOTPRINT * 1.06, 0.05, TOWER_FOOTPRINT * 1.06]} />
+          <meshBasicMaterial
+            color={glowColor}
+            transparent
+            opacity={0}
+            toneMapped={false}
+            depthWrite={false}
+            blending={AdditiveBlending}
+          />
+        </mesh>
+      ))}
+
+      <mesh ref={crownRef} position={[0, tower.height + 0.08, 0]}>
+        <boxGeometry args={[TOWER_FOOTPRINT * 0.86, 0.09, TOWER_FOOTPRINT * 0.86]} />
+        <meshBasicMaterial
+          color={glowColor}
+          transparent
+          opacity={0}
+          toneMapped={false}
+          depthWrite={false}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+    </group>
+  );
+}
+
 function SandboxScene({ towers, bounds }: { towers: TowerDatum[]; bounds: SandboxBounds }) {
   return (
     <Canvas
@@ -394,26 +558,7 @@ function SandboxScene({ towers, bounds }: { towers: TowerDatum[]; bounds: Sandbo
 
       <group>
         {towers.map((tower) => (
-          <group key={tower.sequence} position={[tower.x, 0, tower.z]}>
-            <mesh position={[0, tower.height * 0.5, 0]} castShadow={RUNTIME_QUALITY_CONFIG.shadows} receiveShadow={RUNTIME_QUALITY_CONFIG.shadows}>
-              <boxGeometry args={[TOWER_FOOTPRINT, tower.height, TOWER_FOOTPRINT]} />
-              <meshStandardMaterial
-                color={tower.color}
-                roughness={0.56}
-                metalness={0.22}
-                emissive={tower.color}
-                emissiveIntensity={0.18}
-              />
-            </mesh>
-            <mesh position={[0, tower.height * 0.5, 0]}>
-              <boxGeometry args={[TOWER_FOOTPRINT * 1.03, tower.height * 1.002, TOWER_FOOTPRINT * 1.03]} />
-              <meshBasicMaterial color={tower.color} wireframe transparent opacity={0.58} toneMapped={false} />
-            </mesh>
-            <mesh position={[0, tower.height + 0.06, 0]}>
-              <boxGeometry args={[TOWER_FOOTPRINT * 0.78, 0.08, TOWER_FOOTPRINT * 0.78]} />
-              <meshBasicMaterial color={tower.color} transparent opacity={0.7} toneMapped={false} />
-            </mesh>
-          </group>
+          <AnimatedHoloTower key={tower.sequence} tower={tower} />
         ))}
       </group>
     </Canvas>
