@@ -104,6 +104,8 @@ function GroundSystem() {
   const groundSize = Math.min(1800, maxSpan);
   const centerX = bounds?.centerX ?? 0;
   const centerZ = bounds ? bounds.centerZ * 0.82 + bounds.frontierZ * 0.18 : -48;
+  const majorLaneLength = Math.min(groundSize * 0.84, Math.max(140, radius * 4.6));
+  const majorLaneCross = Math.min(groundSize * 0.58, Math.max(90, radius * 2.9));
   const gridDivisions = Math.max(
     24,
     Math.min(96, Math.round((groundSize / (RUNTIME_QUALITY_CONFIG.tier === 'low' ? 8 : 6)) / 2) * 2)
@@ -131,14 +133,31 @@ function GroundSystem() {
 
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.018, 0]}>
         <ringGeometry args={[Math.max(18, radius * 0.55), Math.min(groundSize * 0.46, radius * 2.25), 64]} />
-        <meshBasicMaterial color="#09111a" transparent opacity={DEBUG_VIEW_ENABLED ? 0.08 : 0.055} depthWrite={false} />
+        <meshBasicMaterial color="#0d1723" transparent opacity={DEBUG_VIEW_ENABLED ? 0.12 : 0.08} depthWrite={false} />
+      </mesh>
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.012, 0]}>
+        <planeGeometry args={[1.8, majorLaneLength]} />
+        <meshBasicMaterial color="#102131" transparent opacity={DEBUG_VIEW_ENABLED ? 0.22 : 0.16} toneMapped={false} />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.011, 0]}>
+        <planeGeometry args={[majorLaneCross, 1.5]} />
+        <meshBasicMaterial color="#0f1e2c" transparent opacity={DEBUG_VIEW_ENABLED ? 0.18 : 0.12} toneMapped={false} />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.01, 0]}>
+        <planeGeometry args={[0.12, majorLaneLength * 0.94]} />
+        <meshBasicMaterial color="#6fcfff" transparent opacity={DEBUG_VIEW_ENABLED ? 0.35 : 0.24} toneMapped={false} />
+      </mesh>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.009, 0]}>
+        <planeGeometry args={[majorLaneCross * 0.9, 0.1]} />
+        <meshBasicMaterial color="#8fd8ff" transparent opacity={DEBUG_VIEW_ENABLED ? 0.26 : 0.18} toneMapped={false} />
       </mesh>
 
       <gridHelper
         args={[groundSize * 0.96, gridDivisions, new Color('#172533'), new Color('#0f1722')]}
         position={[0, -0.014, 0]}
         material-transparent
-        material-opacity={DEBUG_VIEW_ENABLED ? 0.14 : 0.09}
+        material-opacity={DEBUG_VIEW_ENABLED ? 0.22 : 0.15}
       />
     </group>
   );

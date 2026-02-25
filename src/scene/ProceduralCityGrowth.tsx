@@ -6,7 +6,7 @@ import type { InstancedMesh } from 'three';
 import { AdditiveBlending, Color, MathUtils, Object3D } from 'three';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import type { BlockEvent } from '../data/trades/types';
-import { getSpineTransformFromSequence } from './cityGrowthPath';
+import { getGrowthFieldNode, getSpineTransformFromSequence } from './cityGrowthPath';
 import {
   clearHoveredTowerInstance,
   publishCitySceneData,
@@ -285,8 +285,7 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
   const flowLights: LightInstance[] = [];
   const trafficCars: LightInstance[] = [];
 
-  let prevDistrictCenter: [number, number, number] | null = null;
-  let prevDistrictPlotSpan = 0;
+  const districtCentersBySequence = new Map<number, { center: [number, number, number]; plotSpan: number }>();
   let minX = Number.POSITIVE_INFINITY;
   let maxX = Number.NEGATIVE_INFINITY;
   let minZ = Number.POSITIVE_INFINITY;
@@ -316,8 +315,9 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
     const bodyContrast = 0.68 + recencyCurve * 0.58;
     const topContrast = 0.84 + recencyCurve * 0.48;
 
+    const fieldNode = getGrowthFieldNode(event.sequence);
     const spine = getSpineTransformFromSequence(event.sequence);
-    const [cx, , cz] = spine.position;
+    const [cx, , cz] = fieldNode.position;
     if (!isFiniteTuple3([cx, 0, cz]) || !isValidRotationY(spine.yaw)) {
       warnInvalidEvent(event.sequence, 'invalid spine transform');
       continue;
@@ -513,9 +513,9 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       pushLight(trafficCars, 'car', event.sequence, {
         position: [cx, localCarY, cz],
         rotationY: yaw,
-        size: [0.05, 0.028, 0.12],
+        size: [0.075, 0.038, 0.2],
         color: carColor,
-        opacity: 0.34 + recencyCurve * 0.18,
+        opacity: 0.52 + recencyCurve * 0.22,
         birthAtMs: eventBirthAt,
         riseDelayMs: 200 + c * 25,
         riseDurationMs: Math.round(680 * birthDurationScale),
@@ -530,9 +530,9 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       pushLight(trafficCars, 'car', event.sequence, {
         position: [cx, localCarY + 0.002, cz],
         rotationY: yaw + Math.PI * 0.5,
-        size: [0.05, 0.028, 0.12],
+        size: [0.07, 0.036, 0.18],
         color: carColor.clone().multiplyScalar(huePick > 0.84 ? 0.9 : 1.06),
-        opacity: 0.28 + recencyCurve * 0.14,
+        opacity: 0.42 + recencyCurve * 0.18,
         birthAtMs: eventBirthAt,
         riseDelayMs: 220 + c * 25,
         riseDurationMs: Math.round(720 * birthDurationScale),
@@ -549,9 +549,11 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
     // Corridor roads and moving light flow between district centers.
     const districtCenter: [number, number, number] = [cx, plotHeight + 0.02, cz];
     const districtPlotSpan = Math.max(plotSpanX, plotSpanZ);
-    if (prevDistrictCenter) {
-      const seg = segmentYawAndLength(prevDistrictCenter, districtCenter);
-      const clearLength = Math.max(0.35, seg.length - (prevDistrictPlotSpan + districtPlotSpan) * 0.34);
+    const parentLink =
+      fieldNode.parentSequence != null ? districtCentersBySequence.get(fieldNode.parentSequence) ?? null : null;
+    if (parentLink) {
+      const seg = segmentYawAndLength(parentLink.center, districtCenter);
+      const clearLength = Math.max(0.35, seg.length - (parentLink.plotSpan + districtPlotSpan) * 0.34);
       if (clearLength > 0.4) {
         const corridorY = 0.02;
         pushSolid(streetDecks, 'street', event.sequence, {
@@ -627,9 +629,9 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
           pushLight(trafficCars, 'car', event.sequence, {
             position: [seg.mid[0], corridorY + 0.03, seg.mid[2]],
             rotationY: seg.yaw,
-            size: [0.05, 0.03, 0.14],
+            size: [0.08, 0.04, 0.24],
             color: carColor,
-            opacity: 0.34 + recencyCurve * 0.18,
+            opacity: 0.56 + recencyCurve * 0.2,
             birthAtMs: eventBirthAt,
             riseDelayMs: 190 + c * 20,
             riseDurationMs: Math.round(720 * birthDurationScale),
@@ -644,8 +646,10 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
         }
       }
     }
-    prevDistrictCenter = districtCenter;
-    prevDistrictPlotSpan = districtPlotSpan;
+    districtCentersBySequence.set(event.sequence, {
+      center: districtCenter,
+      plotSpan: districtPlotSpan
+    });
 
     // District massing: podium / shaft / spire tiers with more negative space and capped extremes.
     const buildableRadiusX = plotSpanX * 0.36;
@@ -1237,20 +1241,29 @@ export function ProceduralCityGrowth() {
       }
       items.push({
         ...source,
-        size: [source.size[0] * 1.1, source.size[1] * 1.04, source.size[2] * 1.1],
-        color: meta.tier === 'spire' ? new Color('#fffce3') : new Color('#ffd400'),
-        opacity: meta.tier === 'spire' ? 0.82 : 0.7,
+        size: [source.size[0] * 1.2, source.size[1] * 1.06, source.size[2] * 1.2],
+        color: meta.tier === 'spire' ? new Color('#fffef3') : new Color('#ffe066'),
+        opacity: meta.tier === 'spire' ? 0.95 : 0.84,
         pulseAmp: 0.12 * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.4 : 1),
         pulseSpeed: 0.45 * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.4 : 1),
         pulsePhase: i * 0.37
       });
+      items.push({
+        ...source,
+        size: [source.size[0] * 1.38, source.size[1] * 1.1, source.size[2] * 1.38],
+        color: new Color('#ffd400'),
+        opacity: meta.tier === 'spire' ? 0.56 : 0.48,
+        pulseAmp: 0.14 * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.35 : 1),
+        pulseSpeed: 0.34 * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.35 : 1),
+        pulsePhase: i * 0.29 + 0.6
+      });
     }
-    return items.slice(0, 4);
+    return items.slice(0, 8);
   }, [hoveredBuildingId, visualData.towerMasses, visualData.towerMassMeta]);
   const glowBrightnessScale = 1.18 * (0.82 + RUNTIME_QUALITY_CONFIG.glowIntensityScale * 0.26);
   const flowBrightnessScale = 1.2 * (0.78 + RUNTIME_QUALITY_CONFIG.glowIntensityScale * 0.28);
   const detailBrightnessScale = 1.08 * (0.82 + RUNTIME_QUALITY_CONFIG.glowIntensityScale * 0.22);
-  const trafficCarBrightnessScale = 1.18 * (0.86 + RUNTIME_QUALITY_CONFIG.glowIntensityScale * 0.22);
+  const trafficCarBrightnessScale = 1.8 * (0.9 + RUNTIME_QUALITY_CONFIG.glowIntensityScale * 0.4);
 
   const latestAnimationEndMs = useMemo(() => {
     let maxMs = 0;
@@ -1439,7 +1452,7 @@ export function ProceduralCityGrowth() {
       <InstancedColorSetup meshRef={plotMeshRef} items={visualData.plots} />
       <InstancedColorSetup meshRef={streetMeshRef} items={visualData.streetDecks} />
       <InstancedColorSetup meshRef={towerMeshRef} items={towerColorItems} />
-      <InstancedColorSetup meshRef={hoverShellMeshRef} items={hoverShellItems} brightnessScale={1.35} />
+      <InstancedColorSetup meshRef={hoverShellMeshRef} items={hoverShellItems} brightnessScale={3.2} />
       <InstancedColorSetup meshRef={laneLightMeshRef} items={visualData.laneLights} brightnessScale={1.1} />
       <InstancedColorSetup meshRef={detailLightMeshRef} items={visualData.detailLights} brightnessScale={detailBrightnessScale} />
       <InstancedColorSetup meshRef={haloGlowMeshRef} items={visualData.haloGlows} brightnessScale={glowBrightnessScale} />
@@ -1499,7 +1512,7 @@ export function ProceduralCityGrowth() {
         <meshBasicMaterial
           vertexColors
           transparent
-          opacity={0.95}
+          opacity={1}
           depthWrite={false}
           toneMapped={false}
           blending={AdditiveBlending}
@@ -1528,7 +1541,7 @@ export function ProceduralCityGrowth() {
 
       <instancedMesh ref={trafficCarMeshRef} args={[undefined, undefined, Math.max(1, visualData.trafficCars.length)]} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
-        <meshBasicMaterial vertexColors transparent opacity={0.98} depthWrite={false} toneMapped={false} blending={AdditiveBlending} />
+        <meshBasicMaterial vertexColors transparent opacity={1} depthWrite={false} toneMapped={false} blending={AdditiveBlending} />
       </instancedMesh>
     </group>
   );

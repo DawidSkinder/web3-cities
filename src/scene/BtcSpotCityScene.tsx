@@ -1,6 +1,16 @@
 import { Canvas, useFrame } from '@react-three/fiber';
 import { useRef } from 'react';
-import { AmbientLight, Color, DirectionalLight, FogExp2, MathUtils, PointLight } from 'three';
+import {
+  ACESFilmicToneMapping,
+  AmbientLight,
+  Color,
+  DirectionalLight,
+  FogExp2,
+  MathUtils,
+  PointLight,
+  SRGBColorSpace,
+  Vector3
+} from 'three';
 import { CameraRig } from './CameraRig';
 import { clearHoveredTowerInstance, useCitySceneStore } from './citySceneStore';
 import { PlaceholderCity } from './PlaceholderCity';
@@ -107,6 +117,37 @@ function AdaptiveExposureLights() {
   );
 }
 
+const tempBoundsCenter = new Vector3();
+
+function AdaptiveRendererExposure() {
+  const { bounds } = useCitySceneStore();
+  const exposureRef = useRef(1.04);
+
+  useFrame(({ gl, camera }, delta) => {
+    const radius = Math.max(18, bounds?.radius ?? 18);
+    const maxY = Math.max(8, bounds?.maxY ?? 10);
+    tempBoundsCenter.set(bounds?.centerX ?? 0, Math.min(12, maxY * 0.4), bounds?.centerZ ?? -30);
+    const cameraDistance = camera.position.distanceTo(tempBoundsCenter);
+
+    const cityGrowth = MathUtils.clamp((radius - 18) / 210 + (maxY - 8) / 52, 0, 1);
+    const zoomOutFactor = MathUtils.clamp((cameraDistance - 22) / 80, 0, 1);
+    const targetExposure = MathUtils.clamp(
+      1.0 +
+        cityGrowth * 0.2 +
+        zoomOutFactor * 0.22 +
+        (DEBUG_VIEW_ENABLED ? 0.06 : 0) +
+        (RUNTIME_QUALITY_CONFIG.tier === 'low' ? 0.03 : 0),
+      0.92,
+      1.36
+    );
+
+    exposureRef.current = MathUtils.damp(exposureRef.current, targetExposure, 1.15, delta);
+    gl.toneMappingExposure = exposureRef.current;
+  });
+
+  return null;
+}
+
 export function BtcSpotCityScene() {
   return (
     <Canvas
@@ -132,10 +173,14 @@ export function BtcSpotCityScene() {
           '#06080c',
           (DEBUG_VIEW_ENABLED ? 0.0175 : 0.024) * RUNTIME_QUALITY_CONFIG.fogDensityScale
         );
+        gl.outputColorSpace = SRGBColorSpace;
+        gl.toneMapping = ACESFilmicToneMapping;
+        gl.toneMappingExposure = 1.04;
         gl.setClearColor('#05070b', 1);
       }}
     >
       <Atmosphere />
+      <AdaptiveRendererExposure />
       <AdaptiveExposureLights />
       <CameraRig />
       <PlaceholderCity />
