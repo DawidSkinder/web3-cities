@@ -45,7 +45,12 @@ type CityVisualData = {
 };
 
 const HISTORY_CAP = 36;
+const MAX_BASE_INSTANCES = 96;
+const MAX_TOWER_INSTANCES = 960;
+const MAX_GLOW_INSTANCES = 1400;
 const tempObject = new Object3D();
+let invalidInstanceWarnCount = 0;
+let invalidEventWarnCount = 0;
 
 function pseudoRandom(seed: number) {
   const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453123;
@@ -62,8 +67,111 @@ function easeOutCubic(v: number) {
   return 1 - Math.pow(1 - t, 3);
 }
 
-function mixColor(a: string, b: string, t: number) {
-  return new Color(a).lerp(new Color(b), MathUtils.clamp(t, 0, 1));
+function clampFinite(value: number, fallback: number, min?: number, max?: number) {
+  const safe = Number.isFinite(value) ? value : fallback;
+  const lower = min ?? safe;
+  const upper = max ?? safe;
+  return Math.min(upper, Math.max(lower, safe));
+}
+
+function isFiniteTuple3(v: [number, number, number]) {
+  return Number.isFinite(v[0]) && Number.isFinite(v[1]) && Number.isFinite(v[2]);
+}
+
+function warnInvalidEvent(sequence: number, reason: string) {
+  if (invalidEventWarnCount >= 24) {
+    return;
+  }
+  invalidEventWarnCount += 1;
+  console.warn(`[BTC Spot City][city] skipped event seq=${sequence}: ${reason}`);
+}
+
+function warnInvalidInstance(kind: 'base' | 'tower' | 'glow', sequence: number, reason: string) {
+  if (invalidInstanceWarnCount >= 40) {
+    return;
+  }
+  invalidInstanceWarnCount += 1;
+  console.warn(`[BTC Spot City][city] skipped ${kind} seq=${sequence}: ${reason}`);
+}
+
+function isValidRotationY(v: number) {
+  return Number.isFinite(v) && Math.abs(v) < Math.PI * 32;
+}
+
+function validateAndPushBase(
+  eventSequence: number,
+  item: DistrictBaseInstance,
+  target: DistrictBaseInstance[]
+) {
+  if (!isFiniteTuple3(item.position)) {
+    warnInvalidInstance('base', eventSequence, 'invalid position');
+    return;
+  }
+  if (!isFiniteTuple3(item.size)) {
+    warnInvalidInstance('base', eventSequence, 'invalid size');
+    return;
+  }
+  if (!isValidRotationY(item.rotationY)) {
+    warnInvalidInstance('base', eventSequence, 'invalid rotation');
+    return;
+  }
+  if (item.size[0] <= 0 || item.size[1] <= 0 || item.size[2] <= 0) {
+    warnInvalidInstance('base', eventSequence, 'non-positive size');
+    return;
+  }
+  target.push(item);
+}
+
+function validateAndPushTower(
+  eventSequence: number,
+  item: DistrictTowerInstance,
+  target: DistrictTowerInstance[]
+) {
+  if (!isFiniteTuple3(item.position)) {
+    warnInvalidInstance('tower', eventSequence, 'invalid position');
+    return;
+  }
+  if (!isFiniteTuple3(item.size)) {
+    warnInvalidInstance('tower', eventSequence, 'invalid size');
+    return;
+  }
+  if (!isValidRotationY(item.rotationY)) {
+    warnInvalidInstance('tower', eventSequence, 'invalid rotation');
+    return;
+  }
+  if (item.size[0] <= 0 || item.size[1] <= 0 || item.size[2] <= 0) {
+    warnInvalidInstance('tower', eventSequence, 'non-positive size');
+    return;
+  }
+  target.push(item);
+}
+
+function validateAndPushGlow(
+  eventSequence: number,
+  item: DistrictGlowInstance,
+  target: DistrictGlowInstance[]
+) {
+  if (!isFiniteTuple3(item.position)) {
+    warnInvalidInstance('glow', eventSequence, 'invalid position');
+    return;
+  }
+  if (!isFiniteTuple3(item.size)) {
+    warnInvalidInstance('glow', eventSequence, 'invalid size');
+    return;
+  }
+  if (!isValidRotationY(item.rotationY)) {
+    warnInvalidInstance('glow', eventSequence, 'invalid rotation');
+    return;
+  }
+  if (!Number.isFinite(item.opacity) || item.opacity <= 0) {
+    warnInvalidInstance('glow', eventSequence, 'invalid opacity');
+    return;
+  }
+  if (item.size[0] <= 0 || item.size[1] <= 0 || item.size[2] <= 0) {
+    warnInvalidInstance('glow', eventSequence, 'non-positive size');
+    return;
+  }
+  target.push(item);
 }
 
 function rotateLocalPoint(x: number, z: number, yaw: number): [number, number] {
@@ -78,20 +186,45 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
   const glows: DistrictGlowInstance[] = [];
 
   for (const event of events) {
+    if (
+      !event ||
+      !event.metrics ||
+      !Number.isFinite(event.sequence) ||
+      !Number.isFinite(event.emittedAt)
+    ) {
+      warnInvalidEvent(event?.sequence ?? -1, 'missing event fields');
+      continue;
+    }
+
     const m = event.metrics;
     const spine = getSpineTransformFromSequence(event.sequence);
     const [cx, , cz] = spine.position;
-    const yaw = spine.yaw;
-    const dominance = MathUtils.clamp(m.imbalance, -1, 1);
-    const intensity = MathUtils.clamp(m.intensity, 0, 1);
-    const tradeDensity = MathUtils.clamp(Math.log1p(m.tradeCount) / 4.6, 0, 1);
-    const sizeSignal = MathUtils.clamp(Math.log1p(m.averageTradeSize * 1200) / 4, 0, 1);
-    const volumeSignal = MathUtils.clamp(Math.log1p(m.totalVolume * 140) / 6, 0, 1);
+    if (!isFiniteTuple3([cx, 0, cz]) || !isValidRotationY(spine.yaw)) {
+      warnInvalidEvent(event.sequence, 'invalid spine transform');
+      continue;
+    }
 
-    const footprint = 0.85 + volumeSignal * 2.35 + intensity * 0.85;
-    const plateauHeight = 0.12 + intensity * 0.22 + volumeSignal * 0.16;
+    const yaw = clampFinite(spine.yaw, 0, -Math.PI * 8, Math.PI * 8);
+    const dominance = MathUtils.clamp(clampFinite(m.imbalance, 0), -1, 1);
+    const intensity = MathUtils.clamp(clampFinite(m.intensity, 0), 0, 1);
+    const tradeCount = Math.max(0, Math.floor(clampFinite(m.tradeCount, 0, 0, 200000)));
+    const averageTradeSize = Math.max(0, clampFinite(m.averageTradeSize, 0, 0, 5000));
+    const totalVolume = Math.max(0, clampFinite(m.totalVolume, 0, 0, 5_000_000));
+    const priceChange = clampFinite(m.priceChange, 0, -1_000_000, 1_000_000);
+
+    const tradeDensity = MathUtils.clamp(Math.log1p(tradeCount) / 4.6, 0, 1);
+    const sizeSignal = MathUtils.clamp(Math.log1p(averageTradeSize * 1200) / 4, 0, 1);
+    const volumeSignal = MathUtils.clamp(Math.log1p(totalVolume * 140) / 6, 0, 1);
+
+    const footprint = clampFinite(0.85 + volumeSignal * 2.35 + intensity * 0.85, 1.2, 0.6, 7.5);
+    const plateauHeight = clampFinite(
+      0.12 + intensity * 0.22 + volumeSignal * 0.16,
+      0.2,
+      0.08,
+      1.2
+    );
     const density = Math.round(5 + tradeDensity * 10 + volumeSignal * 4);
-    const baseCount = Math.max(5, Math.min(20, density));
+    const baseCount = Math.max(5, Math.min(20, clampFinite(density, 8, 5, 20)));
 
     const buyTint = new Color('#44c8ff');
     const sellTint = new Color('#ff7b42');
@@ -102,23 +235,37 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
     const glowColor = neutralTint.clone().lerp(dominanceColor, 0.35 + intensity * 0.55);
     const baseColor = new Color('#07090d').lerp(dominanceColor, 0.03 + intensity * 0.08);
 
-    const massiveness = 0.9 + intensity * 1.2 + sizeSignal * 0.75;
-    const verticalBias = 1 + dominance * 0.55 + Math.sign(m.priceChange || 0) * 0.08;
-    const centralCoreHeight = (1.5 + footprint * 0.9 + intensity * 1.8) * massiveness;
+    const massiveness = clampFinite(0.9 + intensity * 1.2 + sizeSignal * 0.75, 1.2, 0.6, 4.8);
+    const verticalBias = clampFinite(
+      1 + dominance * 0.55 + Math.sign(priceChange || 0) * 0.08,
+      1,
+      0.35,
+      2.4
+    );
+    const centralCoreHeight = clampFinite(
+      (1.5 + footprint * 0.9 + intensity * 1.8) * massiveness,
+      2.5,
+      0.35,
+      24
+    );
 
-    bases.push({
+    validateAndPushBase(event.sequence, {
       position: [cx, plateauHeight * 0.5 - 0.01, cz],
       rotationY: yaw,
       size: [footprint * 2.05, plateauHeight, footprint * 1.65],
       color: baseColor,
-      birthAtMs: event.emittedAt,
+      birthAtMs: Math.max(0, clampFinite(event.emittedAt, Date.now())),
       riseDelayMs: 0,
       riseDurationMs: 700
-    });
+    }, bases);
 
     const seedBase = event.sequence * 1031;
 
     for (let i = 0; i < baseCount; i++) {
+      if (towers.length >= MAX_TOWER_INSTANCES || glows.length >= MAX_GLOW_INSTANCES) {
+        break;
+      }
+
       const seed = seedBase + i * 17;
       const ringMix = Math.pow(i / Math.max(1, baseCount - 1), 0.75);
       const radial = footprint * (0.18 + ringMix * 0.88) * (0.75 + pseudoRandom(seed + 1) * 0.55);
@@ -127,8 +274,18 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       const lz = Math.sin(angle) * radial * (0.55 + pseudoRandom(seed + 4) * 0.65);
       const [rx, rz] = rotateLocalPoint(lx, lz, yaw);
 
-      const width = 0.18 + pseudoRandom(seed + 5) * 0.42 + intensity * 0.12;
-      const depth = 0.18 + pseudoRandom(seed + 6) * 0.36 + volumeSignal * 0.09;
+      const width = clampFinite(
+        0.18 + pseudoRandom(seed + 5) * 0.42 + intensity * 0.12,
+        0.28,
+        0.08,
+        1.8
+      );
+      const depth = clampFinite(
+        0.18 + pseudoRandom(seed + 6) * 0.36 + volumeSignal * 0.09,
+        0.24,
+        0.08,
+        1.8
+      );
 
       const radialWeight = 1 - Math.min(1, radial / (footprint * 1.2));
       const spireBias = i === 0 ? 1.4 : 1;
@@ -139,24 +296,26 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
           tradeDensity * 0.5) *
         Math.max(0.42, verticalBias);
 
-      const actualHeight = Math.max(0.2, height);
-      const y = plateauHeight + actualHeight * 0.5;
+      const actualHeight = clampFinite(Math.max(0.2, height), 0.6, 0.12, 34);
+      const y = clampFinite(plateauHeight + actualHeight * 0.5, 0.4, -1, 60);
       const towerLocalColor = towerColor
         .clone()
         .lerp(dominanceColor, radialWeight * 0.05 + intensity * 0.08);
 
-      const riseDelayMs = Math.floor(i * (26 + intensity * 35));
-      const riseDurationMs = 850 + Math.floor((1 - radialWeight) * 450 + intensity * 350);
+      const riseDelayMs = Math.floor(clampFinite(i * (26 + intensity * 35), 0, 0, 2400));
+      const riseDurationMs = Math.floor(
+        clampFinite(850 + (1 - radialWeight) * 450 + intensity * 350, 950, 320, 2600)
+      );
 
-      towers.push({
+      validateAndPushTower(event.sequence, {
         position: [cx + rx, y, cz + rz],
         rotationY: yaw + pseudoRandom(seed + 8) * 0.14 - 0.07,
         size: [width, actualHeight, depth],
         color: towerLocalColor,
-        birthAtMs: event.emittedAt,
+        birthAtMs: Math.max(0, clampFinite(event.emittedAt, Date.now())),
         riseDelayMs,
         riseDurationMs
-      });
+      }, towers);
 
       const shouldGlow = i === 0 || pseudoRandom(seed + 9) > 0.67 - intensity * 0.2;
       if (shouldGlow) {
@@ -164,35 +323,50 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
         const stripY = plateauHeight + actualHeight - stripHeight * 0.5;
         const glowWidth = Math.max(0.045, Math.min(width, depth) * (0.24 + intensity * 0.16));
         const glowDepth = Math.max(0.045, glowWidth * (0.9 + pseudoRandom(seed + 11) * 0.4));
-        const glowOpacity = 0.22 + intensity * 0.38 + Math.abs(dominance) * 0.16;
+        const glowOpacity = clampFinite(
+          0.22 + intensity * 0.38 + Math.abs(dominance) * 0.16,
+          0.35,
+          0.08,
+          0.95
+        );
 
-        glows.push({
+        validateAndPushGlow(event.sequence, {
           position: [cx + rx, stripY, cz + rz],
           rotationY: yaw,
           size: [glowWidth, stripHeight, glowDepth],
           color: glowColor.clone(),
           opacity: MathUtils.clamp(glowOpacity, 0.18, 0.9),
-          birthAtMs: event.emittedAt,
+          birthAtMs: Math.max(0, clampFinite(event.emittedAt, Date.now())),
           riseDelayMs: riseDelayMs + 120,
           riseDurationMs: Math.max(380, riseDurationMs - 160)
-        });
+        }, glows);
       }
     }
 
     const crownHeight = 0.18 + intensity * 0.42 + Math.abs(dominance) * 0.25;
-    glows.push({
+    if (glows.length < MAX_GLOW_INSTANCES) {
+      validateAndPushGlow(event.sequence, {
       position: [cx, plateauHeight + crownHeight * 0.5 + 0.06, cz],
       rotationY: yaw,
       size: [footprint * 1.05, crownHeight, footprint * 0.85],
       color: glowColor.clone().multiplyScalar(0.95 + intensity * 0.4),
       opacity: 0.1 + intensity * 0.25,
-      birthAtMs: event.emittedAt,
+      birthAtMs: Math.max(0, clampFinite(event.emittedAt, Date.now())),
       riseDelayMs: 90,
       riseDurationMs: 900
-    });
+      }, glows);
+    }
+
+    if (bases.length >= MAX_BASE_INSTANCES) {
+      break;
+    }
   }
 
-  return { bases, towers, glows };
+  return {
+    bases: bases.slice(0, MAX_BASE_INSTANCES),
+    towers: towers.slice(0, MAX_TOWER_INSTANCES),
+    glows: glows.slice(0, MAX_GLOW_INSTANCES)
+  };
 }
 
 function applyAnimatedInstances<T extends { position: [number, number, number]; rotationY: number; size: [number, number, number]; birthAtMs: number; riseDelayMs: number; riseDurationMs: number }>(
@@ -205,10 +379,17 @@ function applyAnimatedInstances<T extends { position: [number, number, number]; 
     return;
   }
 
-  for (let i = 0; i < items.length; i++) {
+  const capacity = mesh.instanceMatrix?.count ?? 0;
+  const count = Math.min(items.length, capacity);
+  if (capacity <= 0 || count <= 0) {
+    return;
+  }
+
+  for (let i = 0; i < count; i++) {
     const item = items[i];
+    const durationMs = Math.max(1, item.riseDurationMs);
     const ageMs = nowMs - item.birthAtMs - item.riseDelayMs;
-    const progress = easeOutCubic(ageMs / item.riseDurationMs);
+    const progress = easeOutCubic(ageMs / durationMs);
     const alive = ageMs >= 0 ? progress : 0;
 
     const pulseScale = pulse ? 0.94 + smoothstep01(progress) * 0.06 : 1;
@@ -216,6 +397,18 @@ function applyAnimatedInstances<T extends { position: [number, number, number]; 
     const sy = Math.max(0.0001, item.size[1] * alive);
     const sz = item.size[2] * pulseScale;
     const y = item.position[1] - item.size[1] * 0.5 + sy * 0.5;
+
+    if (
+      !Number.isFinite(sx) ||
+      !Number.isFinite(sy) ||
+      !Number.isFinite(sz) ||
+      !Number.isFinite(y) ||
+      !Number.isFinite(item.position[0]) ||
+      !Number.isFinite(item.position[2]) ||
+      !Number.isFinite(item.rotationY)
+    ) {
+      continue;
+    }
 
     tempObject.position.set(item.position[0], y, item.position[2]);
     tempObject.rotation.set(0, item.rotationY, 0);
@@ -240,10 +433,12 @@ function InstancedColorSetup({
       return;
     }
 
-    for (let i = 0; i < colors.length; i++) {
+    const capacity = mesh.instanceMatrix?.count ?? 0;
+    const count = Math.min(colors.length, capacity);
+    for (let i = 0; i < count; i++) {
       mesh.setColorAt(i, colors[i]);
     }
-    mesh.count = colors.length;
+    mesh.count = count;
     if (mesh.instanceColor) {
       mesh.instanceColor.needsUpdate = true;
     }
@@ -282,6 +477,12 @@ export function ProceduralCityGrowth() {
     }
     return maxMs;
   }, [visualData]);
+
+  const totalInstances =
+    visualData.bases.length + visualData.towers.length + visualData.glows.length;
+  if (totalInstances > MAX_GLOW_INSTANCES + MAX_TOWER_INSTANCES + MAX_BASE_INSTANCES) {
+    console.warn('[BTC Spot City][city] instance budget exceeded, trimming visuals.');
+  }
 
   useLayoutEffect(() => {
     matricesSettledRef.current = false;

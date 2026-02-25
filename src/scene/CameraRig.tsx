@@ -8,6 +8,8 @@ const desiredPosition = new Vector3();
 const frontierPos = new Vector3();
 const frontierTangent = new Vector3();
 const frontierNormal = new Vector3();
+const cameraPointerOffset = new Vector3();
+const lookPointerOffset = new Vector3();
 
 export function CameraRig() {
   const { camera, pointer } = useThree();
@@ -29,7 +31,7 @@ export function CameraRig() {
       .copy(frontierPos)
       .addScaledVector(frontierNormal, 10.5 + side)
       .addScaledVector(frontierTangent, -8.7 + drift)
-      .add(new Vector3(pointer.x * 0.7, 5.8 + pointer.y * 0.35 + hover, pointer.y * 0.25));
+      .add(cameraPointerOffset.set(pointer.x * 0.7, 5.8 + pointer.y * 0.35 + hover, pointer.y * 0.25));
 
     camera.position.x = MathUtils.damp(camera.position.x, desiredPosition.x, 2.8, delta);
     camera.position.y = MathUtils.damp(camera.position.y, desiredPosition.y, 2.4, delta);
@@ -39,7 +41,7 @@ export function CameraRig() {
       .copy(frontierPos)
       .addScaledVector(frontierTangent, -2.6)
       .setY(1.05 + pointer.y * 0.16 + Math.sin(t * 0.31) * 0.05)
-      .add(new Vector3(pointer.x * 0.35, 0, 0));
+      .add(lookPointerOffset.set(pointer.x * 0.35, 0, 0));
 
     camera.lookAt(lookAtTarget);
   });

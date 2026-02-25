@@ -13,6 +13,10 @@ const MAX_STORE_EVENTS = 180;
 class BlockEventStore {
   private events: BlockEvent[] = [];
   private listeners = new Set<Listener>();
+  private snapshot: BlockEventStoreSnapshot = {
+    events: this.events,
+    latest: null
+  };
 
   subscribe = (listener: Listener) => {
     this.listeners.add(listener);
@@ -21,16 +25,18 @@ class BlockEventStore {
     };
   };
 
-  getSnapshot = (): BlockEventStoreSnapshot => ({
-    events: this.events,
-    latest: this.events[this.events.length - 1] ?? null
-  });
+  getSnapshot = (): BlockEventStoreSnapshot => this.snapshot;
 
   publish(event: BlockEvent) {
     this.events = [...this.events, event];
     if (this.events.length > MAX_STORE_EVENTS) {
       this.events = this.events.slice(this.events.length - MAX_STORE_EVENTS);
     }
+
+    this.snapshot = {
+      events: this.events,
+      latest: this.events[this.events.length - 1] ?? null
+    };
 
     for (const listener of this.listeners) {
       listener();
@@ -39,6 +45,10 @@ class BlockEventStore {
 
   clear() {
     this.events = [];
+    this.snapshot = {
+      events: this.events,
+      latest: null
+    };
     for (const listener of this.listeners) {
       listener();
     }
@@ -58,4 +68,3 @@ export function clearBlockEventStore() {
 export function useBlockEventStore() {
   return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 }
-
