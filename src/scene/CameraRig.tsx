@@ -4,6 +4,7 @@ import { MathUtils, Vector2, Vector3 } from 'three';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import { useCitySceneStore } from './citySceneStore';
 import { getSpineTransformFromSequence } from './cityGrowthPath';
+import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
 import { DEBUG_VIEW_ENABLED } from './viewFlags';
 
 type CameraMode = 'auto' | 'user' | 'returning';
@@ -85,7 +86,9 @@ export function CameraRig() {
   const initializedRef = useRef(false);
   const modeRef = useRef<CameraMode>('auto');
   const lastInteractionAtRef = useRef(0);
-  const idleDelayMsRef = useRef(DEBUG_VIEW_ENABLED ? 8000 : 5500);
+  const idleDelayMsRef = useRef(
+    (DEBUG_VIEW_ENABLED ? 8000 : 5500) * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 1.35 : 1)
+  );
 
   const actualStateRef = useRef<OrbitalState>({
     angle: 0,
@@ -361,9 +364,11 @@ export function CameraRig() {
     const autoAngle =
       frontierHeading +
       Math.PI * 0.78 +
-      t * (DEBUG_VIEW_ENABLED ? 0.045 : 0.055) +
-      Math.sin(t * 0.17) * 0.12 +
-      Math.sin(t * 0.047 + 0.9) * 0.06;
+      t * (DEBUG_VIEW_ENABLED ? 0.045 : 0.055) * RUNTIME_QUALITY_CONFIG.cameraOrbitSpeedScale +
+      Math.sin(t * 0.17 * RUNTIME_QUALITY_CONFIG.cameraOrbitSpeedScale) *
+        (0.12 * RUNTIME_QUALITY_CONFIG.cameraDriftScale) +
+      Math.sin(t * 0.047 * RUNTIME_QUALITY_CONFIG.cameraOrbitSpeedScale + 0.9) *
+        (0.06 * RUNTIME_QUALITY_CONFIG.cameraDriftScale);
 
     const autoDistance = MathUtils.clamp(
       11 + radius * 1.1 + maxHeight * 0.55 + smoothedHeightSignalRef.current * 2.5,
@@ -412,7 +417,8 @@ export function CameraRig() {
 
     if (modeRef.current === 'user' || modeRef.current === 'returning') {
       const precision = keys.ShiftLeft || keys.ShiftRight ? 0.45 : 1;
-      const orbitSpeed = (DEBUG_VIEW_ENABLED ? 0.7 : 0.95) * precision;
+      const orbitSpeed =
+        (DEBUG_VIEW_ENABLED ? 0.7 : 0.95) * precision * Math.max(0.75, RUNTIME_QUALITY_CONFIG.cameraOrbitSpeedScale);
       const heightSpeed = (DEBUG_VIEW_ENABLED ? 5.5 : 7) * precision;
       const zoomSpeed = (DEBUG_VIEW_ENABLED ? 9 : 12) * precision;
 
@@ -475,7 +481,9 @@ export function CameraRig() {
       .addScaledVector(tmpRight, actual.focusOffsetX)
       .addScaledVector(tmpForward, actual.focusOffsetZ);
 
-    const pointerAutoInfluence = modeRef.current === 'auto' ? (DEBUG_VIEW_ENABLED ? 0.14 : 0.22) : 0.08;
+    const pointerAutoInfluence =
+      (modeRef.current === 'auto' ? (DEBUG_VIEW_ENABLED ? 0.14 : 0.22) : 0.08) *
+      RUNTIME_QUALITY_CONFIG.pointerParallaxScale;
     desiredLookTarget
       .copy(tmpFocusOffset)
       .add(tmpLookOffset.set(pointerOffset.x * pointerAutoInfluence * 1.4, 0, 0));
@@ -485,7 +493,13 @@ export function CameraRig() {
     desiredPosition
       .copy(tmpFocusOffset)
       .addScaledVector(tmpDir, actual.distance)
-      .setY(actual.elevation + (modeRef.current === 'auto' ? Math.cos(t * 0.14) * 0.08 : 0));
+      .setY(
+        actual.elevation +
+          (modeRef.current === 'auto'
+            ? Math.cos(t * 0.14 * RUNTIME_QUALITY_CONFIG.cameraOrbitSpeedScale) *
+              (0.08 * RUNTIME_QUALITY_CONFIG.cameraDriftScale)
+            : 0)
+      );
 
     desiredPosition.x = MathUtils.clamp(desiredPosition.x, -95, 95);
     desiredPosition.y = MathUtils.clamp(desiredPosition.y, 5.5, 42);

@@ -4,6 +4,7 @@ import type { InstancedMesh, Mesh } from 'three';
 import { Color, Object3D } from 'three';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import { ProceduralCityGrowth } from './ProceduralCityGrowth';
+import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
 import { DEBUG_VIEW_ENABLED } from './viewFlags';
 
 type Block = {
@@ -105,11 +106,12 @@ function Ground() {
 }
 
 function DepthColumns() {
+  const columnCount = RUNTIME_QUALITY_CONFIG.tier === 'low' ? 10 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 13 : 16;
   const columns = useMemo(
     () =>
-      Array.from({ length: 16 }, (_, i) => {
+      Array.from({ length: columnCount }, (_, i) => {
         const r = pseudoRandom(i + 100);
-        const angle = (i / 16) * Math.PI * 2;
+        const angle = (i / columnCount) * Math.PI * 2;
         const radius = 14 + r * 6;
 
         return {
@@ -122,7 +124,7 @@ function DepthColumns() {
           width: 0.5 + r * 1.6
         };
       }),
-    []
+    [columnCount]
   );
 
   return (
@@ -147,25 +149,44 @@ function DepthColumns() {
 
 function HazeBands() {
   const refs = useRef<Array<Mesh | null>>([]);
+  const motionScale = RUNTIME_QUALITY_CONFIG.hazeMotionScale;
+  const opacityScale = RUNTIME_QUALITY_CONFIG.hazeOpacityScale;
+  const bandDefs = useMemo(
+    () =>
+      [
+        { z: -18, y: 1.2, w: 95, h: 5.5, o: DEBUG_VIEW_ENABLED ? 0.085 : 0.06, c: '#0d1823' },
+        { z: -58, y: 2.9, w: 135, h: 8.5, o: DEBUG_VIEW_ENABLED ? 0.075 : 0.05, c: '#0b1420' },
+        { z: -118, y: 4.7, w: 180, h: 13, o: DEBUG_VIEW_ENABLED ? 0.065 : 0.04, c: '#09121d' }
+      ]
+        .slice(0, RUNTIME_QUALITY_CONFIG.hazeBandCount)
+        .map((band) => ({
+          ...band,
+          o: band.o * opacityScale
+        })),
+    [opacityScale]
+  );
 
   useFrame(({ clock }) => {
+    if (motionScale <= 0.001) {
+      return;
+    }
     const t = clock.getElapsedTime();
     refs.current.forEach((mesh, i) => {
       if (!mesh) {
         return;
       }
-      mesh.position.x = Math.sin(t * (0.035 + i * 0.01) + i * 1.3) * (0.4 + i * 0.2);
-      mesh.position.y = 1.2 + i * 1.65 + Math.cos(t * (0.05 + i * 0.015) + i) * 0.08;
+      mesh.position.x =
+        Math.sin(t * (0.035 + i * 0.01) * motionScale + i * 1.3) * ((0.4 + i * 0.2) * motionScale);
+      mesh.position.y =
+        1.2 +
+        i * 1.65 +
+        Math.cos(t * (0.05 + i * 0.015) * motionScale + i) * (0.08 * motionScale);
     });
   });
 
   return (
     <group>
-      {[
-        { z: -18, y: 1.2, w: 95, h: 5.5, o: DEBUG_VIEW_ENABLED ? 0.085 : 0.06, c: '#0d1823' },
-        { z: -58, y: 2.9, w: 135, h: 8.5, o: DEBUG_VIEW_ENABLED ? 0.075 : 0.05, c: '#0b1420' },
-        { z: -118, y: 4.7, w: 180, h: 13, o: DEBUG_VIEW_ENABLED ? 0.065 : 0.04, c: '#09121d' }
-      ].map((band, i) => (
+      {bandDefs.map((band, i) => (
         <mesh
           key={i}
           ref={(node) => {
