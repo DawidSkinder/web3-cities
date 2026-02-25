@@ -15,6 +15,8 @@ type TowerDatum = {
   glowColor: string;
   glowStrength: number;
   bandCount: 2 | 3 | 4;
+  heightScore: number;
+  capGlowBoost: number;
   emittedAt: number;
 };
 
@@ -55,6 +57,29 @@ type SandboxBounds = {
   maxY: number;
 };
 
+type EmaStats = {
+  initialized: boolean;
+  meanLogV: number;
+  varLogV: number;
+  meanI: number;
+  varI: number;
+};
+
+type HeightDebugSnapshot = {
+  sequence: number;
+  totalVolume: number;
+  logV: number;
+  intensity: number;
+  scoreV: number;
+  scoreI: number;
+  score: number;
+  height: number;
+  meanLogV: number;
+  stdLogV: number;
+  meanI: number;
+  stdI: number;
+};
+
 type AccumState = {
   processedSequences: Set<number>;
   towers: TowerDatum[];
@@ -63,6 +88,8 @@ type AccumState = {
   traceKeySet: Set<string>;
   lastSequence: number;
   bounds: SandboxBounds;
+  ema: EmaStats;
+  latestHeightDebug: HeightDebugSnapshot | null;
 };
 
 type CameraMode = 'auto' | 'user' | 'returning';
@@ -76,10 +103,9 @@ type OrbitState = {
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const SPIRAL_STEP = 2.85;
-const BASE_HEIGHT = 0.85;
-const HEIGHT_SCALE = 15.5;
-const MIN_HEIGHT = 0.7;
-const MAX_HEIGHT = 22;
+const MIN_HEIGHT = 2.5;
+const MAX_HEIGHT = 30;
+const HEIGHT_GAMMA = 1.15;
 const TOWER_FOOTPRINT = 1.1;
 const IDLE_DELAY_MS = 6000;
 const BIRTH_RISE_MS = 900;
@@ -100,6 +126,15 @@ const CORE_GRAPHITE_HI = new Color('#171e27');
 const TRACE_ORANGE = new Color('#F7931A');
 const TRACE_WARM = new Color('#F5F5F5');
 const TRACE_PALE = new Color('#FFD7A0');
+const EMA_ALPHA_VOL = 0.08;
+const EMA_ALPHA_INT = 0.08;
+const EMA_STD_EPS = 0.045;
+const ZV_MIN = -2.5;
+const ZV_MAX = 3.5;
+const ZI_MIN = -2.5;
+const ZI_MAX = 3.5;
+const SCORE_WEIGHT_VOL = 0.78;
+const SCORE_WEIGHT_INT = 0.22;
 
 const desiredPosition = new Vector3();
 const desiredTarget = new Vector3();
@@ -112,6 +147,21 @@ function clampFinite(value: number, fallback: number, min?: number, max?: number
   return MathUtils.clamp(safe, min ?? safe, max ?? safe);
 }
 
+const compactNumber = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 2
+});
+
+function fmtCompact(v: number) {
+  if (!Number.isFinite(v)) return '0';
+  return compactNumber.format(Math.max(0, v));
+}
+
+function fmtFixed(v: number, digits = 2) {
+  if (!Number.isFinite(v)) return '0';
+  return v.toFixed(digits);
+}
+
 function easeOutCubic(t: number) {
   const x = MathUtils.clamp(t, 0, 1);
   return 1 - Math.pow(1 - x, 3);
@@ -122,6 +172,30 @@ function easeOutBack(t: number, overshoot = 1.1) {
   const c1 = overshoot;
   const c3 = c1 + 1;
   return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+}
+
+function smoothstep01(v: number) {
+  const x = MathUtils.clamp(v, 0, 1);
+  return x * x * (3 - 2 * x);
+}
+
+function remapClamped(value: number, inMin: number, inMax: number) {
+  if (inMax <= inMin) return 0;
+  return MathUtils.clamp((value - inMin) / (inMax - inMin), 0, 1);
+}
+
+function emaStd(variance: number) {
+  return Math.sqrt(Math.max(variance, EMA_STD_EPS * EMA_STD_EPS));
+}
+
+function updateEma(mean: number, variance: number, value: number, alpha: number) {
+  const delta = value - mean;
+  const nextMean = mean + alpha * delta;
+  const nextVariance = (1 - alpha) * (variance + alpha * delta * delta);
+  return {
+    mean: nextMean,
+    variance: Math.max(nextVariance, EMA_STD_EPS * EMA_STD_EPS)
+  };
 }
 
 function hash01(...values: number[]) {
@@ -157,7 +231,15 @@ function createEmptyAccum(): AccumState {
     bounds: {
       radius: 18,
       maxY: 10
-    }
+    },
+    ema: {
+      initialized: false,
+      meanLogV: 0,
+      varLogV: 1,
+      meanI: 0.4,
+      varI: 0.08
+    },
+    latestHeightDebug: null
   };
 }
 
@@ -254,7 +336,7 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
   }
 }
 
-function mapEventToTower(event: BlockEvent): TowerDatum {
+function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   const idx = Math.max(0, Math.floor(event.sequence) - 1);
   const angle = idx * GOLDEN_ANGLE;
   const radius = Math.sqrt(idx) * SPIRAL_STEP;
@@ -263,8 +345,34 @@ function mapEventToTower(event: BlockEvent): TowerDatum {
 
   const intensity = MathUtils.clamp(clampFinite(event.metrics.intensity, 0), 0, 1);
   const totalVolume = Math.max(0, clampFinite(event.metrics.totalVolume, 0, 0, 10_000_000));
-  const volumeSignal = MathUtils.clamp(Math.log1p(totalVolume * 100) / 6.4, 0, 1);
-  const height = clampFinite(BASE_HEIGHT + (volumeSignal * 0.7 + intensity * 0.3) * HEIGHT_SCALE, 2, MIN_HEIGHT, MAX_HEIGHT);
+  const logV = Math.log1p(totalVolume);
+
+  const ema = state.ema;
+  if (!ema.initialized) {
+    ema.initialized = true;
+    ema.meanLogV = logV;
+    ema.varLogV = Math.max(0.08, EMA_STD_EPS * EMA_STD_EPS);
+    ema.meanI = intensity;
+    ema.varI = Math.max(0.02, EMA_STD_EPS * EMA_STD_EPS);
+  }
+
+  const preMeanLogV = ema.meanLogV;
+  const preStdLogV = emaStd(ema.varLogV);
+  const preMeanI = ema.meanI;
+  const preStdI = emaStd(ema.varI);
+
+  const zV = MathUtils.clamp((logV - preMeanLogV) / preStdLogV, ZV_MIN, ZV_MAX);
+  const zI = MathUtils.clamp((intensity - preMeanI) / preStdI, ZI_MIN, ZI_MAX);
+  const scoreV = smoothstep01(remapClamped(zV, ZV_MIN, ZV_MAX));
+  const scoreI = smoothstep01(remapClamped(zI, ZI_MIN, ZI_MAX));
+
+  let score = SCORE_WEIGHT_VOL * scoreV + SCORE_WEIGHT_INT * scoreI;
+  if (scoreV > 0.85) {
+    score += 0.1 * ((scoreV - 0.85) / 0.15);
+  }
+  score = MathUtils.clamp(score, 0, 1);
+
+  const height = MathUtils.clamp(MIN_HEIGHT + (MAX_HEIGHT - MIN_HEIGHT) * Math.pow(score, HEIGHT_GAMMA), MIN_HEIGHT, MAX_HEIGHT);
 
   const dominance = MathUtils.clamp(clampFinite(event.metrics.imbalance, 0), -1, 1);
   const imbalance = Math.abs(dominance);
@@ -273,6 +381,29 @@ function mapEventToTower(event: BlockEvent): TowerDatum {
   const core = CORE_GRAPHITE.clone().lerp(CORE_GRAPHITE_HI, 0.2 + imbalance * 0.22);
   const glowStrength = MathUtils.clamp(0.7 + intensity * 0.45 + imbalance * 0.55, 0.75, 1.55);
   const bandCount = (2 + Math.min(2, Math.floor(imbalance * 3))) as 2 | 3 | 4;
+  const capGlowBoost = MathUtils.lerp(0.9, 1.35, Math.pow(score, 1.05));
+
+  const nextLog = updateEma(ema.meanLogV, ema.varLogV, logV, EMA_ALPHA_VOL);
+  ema.meanLogV = nextLog.mean;
+  ema.varLogV = nextLog.variance;
+  const nextI = updateEma(ema.meanI, ema.varI, intensity, EMA_ALPHA_INT);
+  ema.meanI = nextI.mean;
+  ema.varI = nextI.variance;
+
+  state.latestHeightDebug = {
+    sequence: event.sequence,
+    totalVolume,
+    logV,
+    intensity,
+    scoreV,
+    scoreI,
+    score,
+    height,
+    meanLogV: ema.meanLogV,
+    stdLogV: emaStd(ema.varLogV),
+    meanI: ema.meanI,
+    stdI: emaStd(ema.varI)
+  };
 
   return {
     sequence: event.sequence,
@@ -283,6 +414,8 @@ function mapEventToTower(event: BlockEvent): TowerDatum {
     glowColor: `#${glow.getHexString()}`,
     glowStrength,
     bandCount,
+    heightScore: score,
+    capGlowBoost,
     emittedAt: Math.max(0, clampFinite(event.emittedAt, Date.now()))
   };
 }
@@ -312,7 +445,7 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
     const target = accumRef.current;
     for (const event of ordered) {
       if (target.processedSequences.has(event.sequence)) continue;
-      const tower = mapEventToTower(event);
+      const tower = mapEventToTower(event, target);
       target.towers.push(tower);
       appendTracesForNewTower(target, tower);
       target.processedSequences.add(event.sequence);
@@ -332,7 +465,8 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
     towers: accumRef.current.towers,
     traces: accumRef.current.traces,
     trafficParticles: accumRef.current.trafficParticles,
-    bounds: accumRef.current.bounds
+    bounds: accumRef.current.bounds,
+    latestHeightDebug: accumRef.current.latestHeightDebug
   };
 }
 
@@ -588,7 +722,7 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
 
     if (shellMat) shellMat.opacity = GLOW_SHELL_OPACITY * tower.glowStrength * glowAlpha;
     if (edgeMat) edgeMat.opacity = MathUtils.clamp(GLOW_EDGE_OPACITY * tower.glowStrength * glowAlpha, 0, 1);
-    if (crownMat) crownMat.opacity = MathUtils.clamp(CROWN_OPACITY * tower.glowStrength * glowAlpha, 0, 1);
+    if (crownMat) crownMat.opacity = MathUtils.clamp(CROWN_OPACITY * tower.glowStrength * tower.capGlowBoost * glowAlpha, 0, 1);
 
     for (let i = 0; i < bandRefs.current.length; i++) {
       const band = bandRefs.current[i];
@@ -863,7 +997,7 @@ function SandboxScene({
 
 export function MinimalVizSandbox() {
   const { events, latest } = useBlockEventStore();
-  const { towers, traces, trafficParticles, bounds } = useAppendOnlyTowers(events);
+  const { towers, traces, trafficParticles, bounds, latestHeightDebug } = useAppendOnlyTowers(events);
 
   const overlay = useMemo(
     () => ({
@@ -902,6 +1036,38 @@ export function MinimalVizSandbox() {
             <span>Traffic</span>
             <span>{overlay.trafficCount}</span>
           </div>
+          {latestHeightDebug ? (
+            <>
+              <div className="minimal-viz__row">
+                <span>Vol</span>
+                <span>{fmtCompact(latestHeightDebug.totalVolume)}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>logV</span>
+                <span>{fmtFixed(latestHeightDebug.logV, 2)}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>Score</span>
+                <span>{fmtFixed(latestHeightDebug.score, 2)}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>Height</span>
+                <span>{fmtFixed(latestHeightDebug.height, 1)}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>EMA V</span>
+                <span>
+                  {fmtFixed(latestHeightDebug.meanLogV, 2)}/{fmtFixed(latestHeightDebug.stdLogV, 2)}
+                </span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>EMA I</span>
+                <span>
+                  {fmtFixed(latestHeightDebug.meanI, 2)}/{fmtFixed(latestHeightDebug.stdI, 2)}
+                </span>
+              </div>
+            </>
+          ) : null}
         </div>
       </div>
     </div>
