@@ -1,7 +1,8 @@
-import { Canvas } from '@react-three/fiber';
-import { Color, FogExp2 } from 'three';
+import { Canvas, useFrame } from '@react-three/fiber';
+import { useRef } from 'react';
+import { AmbientLight, Color, DirectionalLight, FogExp2, MathUtils, PointLight } from 'three';
 import { CameraRig } from './CameraRig';
-import { clearHoveredTowerInstance } from './citySceneStore';
+import { clearHoveredTowerInstance, useCitySceneStore } from './citySceneStore';
 import { PlaceholderCity } from './PlaceholderCity';
 import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
 import { DEBUG_VIEW_ENABLED } from './viewFlags';
@@ -57,6 +58,55 @@ function Atmosphere() {
   );
 }
 
+function AdaptiveExposureLights() {
+  const { bounds } = useCitySceneStore();
+  const ambientRef = useRef<AmbientLight>(null);
+  const rimRef = useRef<DirectionalLight>(null);
+  const topRef = useRef<DirectionalLight>(null);
+  const corridorFillRef = useRef<PointLight>(null);
+
+  useFrame((_, delta) => {
+    const radius = Math.max(16, bounds?.radius ?? 18);
+    const maxY = Math.max(8, bounds?.maxY ?? 10);
+    const growth = MathUtils.clamp((radius - 18) / 220 + (maxY - 8) / 46, 0, 1);
+    const debugBoost = DEBUG_VIEW_ENABLED ? 1.15 : 1;
+    const tierScale =
+      RUNTIME_QUALITY_CONFIG.tier === 'low' ? 0.92 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 1 : 1.06;
+
+    const targetAmbient = (0.05 + growth * 0.1) * debugBoost * tierScale;
+    const targetRim = (0.22 + growth * 0.28) * debugBoost;
+    const targetTop = (0.18 + growth * 0.22) * debugBoost;
+    const targetCorridorFill = (0.45 + growth * 0.75) * debugBoost;
+
+    if (ambientRef.current) {
+      ambientRef.current.intensity = MathUtils.damp(ambientRef.current.intensity, targetAmbient, 1.35, delta);
+    }
+    if (rimRef.current) {
+      rimRef.current.intensity = MathUtils.damp(rimRef.current.intensity, targetRim, 1.35, delta);
+    }
+    if (topRef.current) {
+      topRef.current.intensity = MathUtils.damp(topRef.current.intensity, targetTop, 1.35, delta);
+    }
+    if (corridorFillRef.current) {
+      corridorFillRef.current.intensity = MathUtils.damp(corridorFillRef.current.intensity, targetCorridorFill, 1.35, delta);
+      corridorFillRef.current.position.set(
+        MathUtils.clamp((bounds?.frontierX ?? 0) * 0.28, -34, 34),
+        9 + Math.min(10, maxY * 0.14),
+        MathUtils.clamp((bounds?.frontierZ ?? -40) + 26, -320, 36)
+      );
+    }
+  });
+
+  return (
+    <>
+      <ambientLight ref={ambientRef} intensity={0.05} color="#c6d8ea" />
+      <directionalLight ref={rimRef} color="#f2fbff" intensity={0.22} position={[-26, 30, -120]} />
+      <directionalLight ref={topRef} color="#9fd6ff" intensity={0.18} position={[10, 46, -44]} />
+      <pointLight ref={corridorFillRef} color="#7fd0ff" intensity={0.45} distance={260} position={[0, 10, -32]} />
+    </>
+  );
+}
+
 export function BtcSpotCityScene() {
   return (
     <Canvas
@@ -86,6 +136,7 @@ export function BtcSpotCityScene() {
       }}
     >
       <Atmosphere />
+      <AdaptiveExposureLights />
       <CameraRig />
       <PlaceholderCity />
     </Canvas>

@@ -54,6 +54,7 @@ type TowerMassMeta = {
 };
 
 type CityVisualData = {
+  shadowPads: LightInstance[];
   plots: SolidInstance[];
   streetDecks: SolidInstance[];
   towerMasses: SolidInstance[];
@@ -62,6 +63,7 @@ type CityVisualData = {
   detailLights: LightInstance[];
   haloGlows: LightInstance[];
   flowLights: LightInstance[];
+  trafficCars: LightInstance[];
   bounds: {
     minX: number;
     maxX: number;
@@ -78,12 +80,14 @@ const HISTORY_CAP = RUNTIME_QUALITY_CONFIG.historyCap;
 const INSTANCE_CAP_SCALE =
   RUNTIME_QUALITY_CONFIG.tier === 'low' ? 0.65 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 0.82 : 1;
 const MAX_PLOT_INSTANCES = Math.max(36, Math.floor(120 * INSTANCE_CAP_SCALE));
+const MAX_SHADOW_PAD_INSTANCES = Math.max(96, Math.floor(420 * INSTANCE_CAP_SCALE));
 const MAX_STREET_INSTANCES = Math.max(160, Math.floor(520 * INSTANCE_CAP_SCALE));
 const MAX_TOWER_MASS_INSTANCES = Math.max(420, Math.floor(1400 * INSTANCE_CAP_SCALE));
 const MAX_LANE_LIGHT_INSTANCES = Math.max(640, Math.floor(2200 * INSTANCE_CAP_SCALE));
 const MAX_DETAIL_LIGHT_INSTANCES = Math.max(700, Math.floor(2600 * INSTANCE_CAP_SCALE));
 const MAX_HALO_GLOW_INSTANCES = Math.max(520, Math.floor(2200 * INSTANCE_CAP_SCALE));
 const MAX_FLOW_LIGHT_INSTANCES = Math.max(80, Math.floor(420 * INSTANCE_CAP_SCALE));
+const MAX_TRAFFIC_CAR_INSTANCES = Math.max(120, Math.floor(840 * INSTANCE_CAP_SCALE));
 
 const tempObject = new Object3D();
 let invalidInstanceWarnCount = 0;
@@ -131,7 +135,7 @@ function warnInvalidEvent(sequence: number, reason: string) {
 }
 
 function warnInvalidInstance(
-  kind: 'plot' | 'street' | 'tower' | 'lane' | 'detail' | 'glow' | 'flow',
+  kind: 'plot' | 'street' | 'tower' | 'lane' | 'detail' | 'glow' | 'flow' | 'shadow' | 'car',
   sequence: number,
   reason: string
 ) {
@@ -181,7 +185,7 @@ function validateSolid(kind: 'plot' | 'street' | 'tower', sequence: number, item
 }
 
 function validateLight(
-  kind: 'lane' | 'detail' | 'glow' | 'flow',
+  kind: 'lane' | 'detail' | 'glow' | 'flow' | 'shadow' | 'car',
   sequence: number,
   item: LightInstance
 ) {
@@ -215,7 +219,7 @@ function pushSolid(
 
 function pushLight(
   target: LightInstance[],
-  kind: 'lane' | 'detail' | 'glow' | 'flow',
+  kind: 'lane' | 'detail' | 'glow' | 'flow' | 'shadow' | 'car',
   sequence: number,
   item: LightInstance,
   maxCount: number
@@ -260,12 +264,17 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
   const slideSpeedScale = Math.max(0, pulseMotionScale);
   const glowIntensityScale = RUNTIME_QUALITY_CONFIG.glowIntensityScale;
   const birthDurationScale = RUNTIME_QUALITY_CONFIG.birthDurationScale;
+  const carDensityScale =
+    (RUNTIME_QUALITY_CONFIG.tier === 'low' ? 0.45 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 0.75 : 1) *
+    (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.55 : 1);
+  const carMotionScale = Math.max(0.18, RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.35 : 1);
   const baseFlowCount = DEBUG_VIEW_ENABLED ? 3 : 2;
   const flowCount = Math.max(
     RUNTIME_QUALITY_CONFIG.reducedMotion ? 0 : 1,
     Math.round(baseFlowCount * ambientMotionDensityScale)
   );
 
+  const shadowPads: LightInstance[] = [];
   const plots: SolidInstance[] = [];
   const streetDecks: SolidInstance[] = [];
   const towerMasses: SolidInstance[] = [];
@@ -274,6 +283,7 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
   const detailLights: LightInstance[] = [];
   const haloGlows: LightInstance[] = [];
   const flowLights: LightInstance[] = [];
+  const trafficCars: LightInstance[] = [];
 
   let prevDistrictCenter: [number, number, number] | null = null;
   let prevDistrictPlotSpan = 0;
@@ -301,8 +311,10 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
     const m = event.metrics;
     const recency01 = events.length <= 1 ? 1 : eventIndex / (events.length - 1);
     const recencyCurve = smoothstep01(recency01);
-    const historySubdue = 0.58 + recencyCurve * 0.42;
-    const frontierEmphasis = 0.78 + recencyCurve * 0.62;
+    const historySubdue = 0.52 + recencyCurve * 0.48;
+    const frontierEmphasis = 0.72 + recencyCurve * 0.76;
+    const bodyContrast = 0.68 + recencyCurve * 0.58;
+    const topContrast = 0.84 + recencyCurve * 0.48;
 
     const spine = getSpineTransformFromSequence(event.sequence);
     const [cx, , cz] = spine.position;
@@ -336,13 +348,13 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
 
     const plotColor = new Color('#10151c')
       .lerp(dominanceColor, 0.05 + intensity * 0.08)
-      .multiplyScalar(0.78 + recencyCurve * 0.26);
-    const streetColor = new Color('#080b10').multiplyScalar(0.85 + recencyCurve * 0.08);
+      .multiplyScalar(0.8 + recencyCurve * 0.32);
+    const streetColor = new Color('#070a0f').multiplyScalar(0.84 + recencyCurve * 0.1);
     const towerBaseColor = new Color('#151d26')
       .lerp(new Color('#26384a'), 0.18 + intensity * 0.22)
-      .multiplyScalar(0.8 + recencyCurve * 0.28);
+      .multiplyScalar(bodyContrast);
     const detailColor = neutralTint.clone().lerp(dominanceColor, 0.35 + intensity * 0.5);
-    const laneColor = new Color('#56708f').lerp(dominanceColor, 0.18 + recencyCurve * 0.22);
+    const laneColor = new Color('#6885a8').lerp(dominanceColor, 0.22 + recencyCurve * 0.22);
 
     // District plot platform
     pushSolid(plots, 'plot', event.sequence, {
@@ -354,6 +366,38 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       riseDelayMs: 0,
       riseDurationMs: Math.round(780 * birthDurationScale)
     }, MAX_PLOT_INSTANCES);
+    pushLight(
+      shadowPads,
+      'shadow',
+      event.sequence,
+      {
+        position: [cx, 0.004, cz],
+        rotationY: yaw,
+        size: [plotSpanX * 1.1, 0.01, plotSpanZ * 1.1],
+        color: new Color('#000000'),
+        opacity: 0.085 + (1 - recencyCurve) * 0.06,
+        birthAtMs: eventBirthAt,
+        riseDelayMs: 0,
+        riseDurationMs: Math.round(640 * birthDurationScale)
+      },
+      MAX_SHADOW_PAD_INSTANCES
+    );
+    pushLight(
+      shadowPads,
+      'shadow',
+      event.sequence,
+      {
+        position: [cx, 0.006, cz],
+        rotationY: yaw,
+        size: [plotSpanX * 0.72, 0.012, plotSpanZ * 0.72],
+        color: new Color('#000000'),
+        opacity: 0.11 + (1 - recencyCurve) * 0.07,
+        birthAtMs: eventBirthAt,
+        riseDelayMs: 20,
+        riseDurationMs: Math.round(700 * birthDurationScale)
+      },
+      MAX_SHADOW_PAD_INSTANCES
+    );
     minX = Math.min(minX, cx - plotSpanX * 0.5);
     maxX = Math.max(maxX, cx + plotSpanX * 0.5);
     minZ = Math.min(minZ, cz - plotSpanZ * 0.5);
@@ -416,6 +460,19 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       pulseSpeed: (0.25 + intensity * 0.5) * pulseSpeedScale,
       pulsePhase: event.sequence * 0.53
     }, MAX_LANE_LIGHT_INSTANCES);
+    pushLight(laneLights, 'lane', event.sequence, {
+      position: [cx, plotHeight + 0.034, cz],
+      rotationY: yaw,
+      size: [Math.max(0.14, districtStreetWidth * 0.95), 0.028, Math.max(0.14, districtStreetWidth * 0.95)],
+      color: laneLineColor.clone().lerp(dominanceColor, 0.18).multiplyScalar(0.95 + recencyCurve * 0.35),
+      opacity: 0.16 + recencyCurve * 0.16,
+      birthAtMs: eventBirthAt,
+      riseDelayMs: 155,
+      riseDurationMs: Math.round(720 * birthDurationScale),
+      pulseAmp: (0.035 + intensity * 0.05) * pulseMotionScale,
+      pulseSpeed: (0.2 + intensity * 0.24) * pulseSpeedScale,
+      pulsePhase: event.sequence * 0.72
+    }, MAX_LANE_LIGHT_INSTANCES);
 
     const curbThickness = 0.03;
     const curbY = plotHeight + 0.032;
@@ -442,6 +499,51 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
         riseDelayMs: 180 + i * 30,
         riseDurationMs: Math.round(760 * birthDurationScale)
       }, MAX_LANE_LIGHT_INSTANCES);
+    }
+
+    // Lightweight local traffic on district cross streets.
+    const localCarY = plotHeight + 0.046;
+    const localCarCountPerLane = Math.max(
+      0,
+      Math.round((intensity > 0.18 ? 1 : 0) + carDensityScale * (tradeDensity > 0.2 ? 1 : 0))
+    );
+    for (let c = 0; c < localCarCountPerLane; c++) {
+      const huePick = pseudoRandom(event.sequence * 211 + c * 17);
+      const carColor = huePick > 0.84 ? new Color('#ffb35d') : huePick > 0.58 ? new Color('#e7f3ff') : new Color('#7ce8ff');
+      pushLight(trafficCars, 'car', event.sequence, {
+        position: [cx, localCarY, cz],
+        rotationY: yaw,
+        size: [0.05, 0.028, 0.12],
+        color: carColor,
+        opacity: 0.34 + recencyCurve * 0.18,
+        birthAtMs: eventBirthAt,
+        riseDelayMs: 200 + c * 25,
+        riseDurationMs: Math.round(680 * birthDurationScale),
+        pulseAmp: 0.03 * pulseMotionScale,
+        pulseSpeed: (0.1 + c * 0.03) * pulseSpeedScale,
+        pulsePhase: event.sequence * 0.15 + c * 0.5,
+        slideAxis: 'x',
+        slideSpan: Math.max(0.6, (plotSpanX - 0.8) * 0.78),
+        slideSpeed: (0.03 + huePick * 0.035) * carMotionScale,
+        slidePhase: pseudoRandom(event.sequence * 421 + c * 19)
+      }, MAX_TRAFFIC_CAR_INSTANCES);
+      pushLight(trafficCars, 'car', event.sequence, {
+        position: [cx, localCarY + 0.002, cz],
+        rotationY: yaw + Math.PI * 0.5,
+        size: [0.05, 0.028, 0.12],
+        color: carColor.clone().multiplyScalar(huePick > 0.84 ? 0.9 : 1.06),
+        opacity: 0.28 + recencyCurve * 0.14,
+        birthAtMs: eventBirthAt,
+        riseDelayMs: 220 + c * 25,
+        riseDurationMs: Math.round(720 * birthDurationScale),
+        pulseAmp: 0.025 * pulseMotionScale,
+        pulseSpeed: (0.095 + c * 0.028) * pulseSpeedScale,
+        pulsePhase: event.sequence * 0.18 + c * 0.44,
+        slideAxis: 'z',
+        slideSpan: Math.max(0.6, (plotSpanZ - 0.75) * 0.76),
+        slideSpeed: (0.028 + pseudoRandom(event.sequence * 603 + c * 23) * 0.032) * carMotionScale,
+        slidePhase: pseudoRandom(event.sequence * 557 + c * 11)
+      }, MAX_TRAFFIC_CAR_INSTANCES);
     }
 
     // Corridor roads and moving light flow between district centers.
@@ -475,6 +577,19 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
           pulseSpeed: 0.22 * pulseSpeedScale,
           pulsePhase: event.sequence * 0.37
         }, MAX_LANE_LIGHT_INSTANCES);
+        pushLight(laneLights, 'lane', event.sequence, {
+          position: [seg.mid[0], corridorY + 0.022, seg.mid[2]],
+          rotationY: seg.yaw,
+          size: [0.22, 0.02, 0.22],
+          color: laneLineColor.clone().lerp(dominanceColor, 0.14).multiplyScalar(0.75 + recencyCurve * 0.35),
+          opacity: 0.12 + recencyCurve * 0.12,
+          birthAtMs: eventBirthAt,
+          riseDelayMs: 165,
+          riseDurationMs: Math.round(760 * birthDurationScale),
+          pulseAmp: 0.03 * pulseMotionScale,
+          pulseSpeed: 0.12 * pulseSpeedScale,
+          pulsePhase: event.sequence * 0.2
+        }, MAX_LANE_LIGHT_INSTANCES);
 
         // Moving light streaks: cheap city-life motion cue
         for (let f = 0; f < flowCount; f++) {
@@ -496,22 +611,53 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
             slidePhase: pseudoRandom(event.sequence * 100 + f) * 0.95
           }, MAX_FLOW_LIGHT_INSTANCES);
         }
+
+        const corridorCarCount = Math.max(
+          RUNTIME_QUALITY_CONFIG.reducedMotion ? 0 : 1,
+          Math.round((1 + clearLength * 0.12) * carDensityScale)
+        );
+        for (let c = 0; c < corridorCarCount; c++) {
+          const carSeed = event.sequence * 177 + c * 13;
+          const carColor =
+            pseudoRandom(carSeed + 1) > 0.82
+              ? new Color('#ffac5b')
+              : pseudoRandom(carSeed + 2) > 0.52
+                ? new Color('#ecf7ff')
+                : new Color('#84ecff');
+          pushLight(trafficCars, 'car', event.sequence, {
+            position: [seg.mid[0], corridorY + 0.03, seg.mid[2]],
+            rotationY: seg.yaw,
+            size: [0.05, 0.03, 0.14],
+            color: carColor,
+            opacity: 0.34 + recencyCurve * 0.18,
+            birthAtMs: eventBirthAt,
+            riseDelayMs: 190 + c * 20,
+            riseDurationMs: Math.round(720 * birthDurationScale),
+            pulseAmp: 0.02 * pulseMotionScale,
+            pulseSpeed: (0.08 + c * 0.02) * pulseSpeedScale,
+            pulsePhase: event.sequence * 0.11 + c * 0.4,
+            slideAxis: 'z',
+            slideSpan: Math.max(0.9, clearLength * 0.82),
+            slideSpeed: (0.02 + pseudoRandom(carSeed + 3) * 0.045) * carMotionScale,
+            slidePhase: pseudoRandom(carSeed + 4)
+          }, MAX_TRAFFIC_CAR_INSTANCES);
+        }
       }
     }
     prevDistrictCenter = districtCenter;
     prevDistrictPlotSpan = districtPlotSpan;
 
     // District massing: podium / shaft / spire tiers with more negative space and capped extremes.
-    const buildableRadiusX = plotSpanX * 0.42;
-    const buildableRadiusZ = plotSpanZ * 0.42;
-    const centralStreetReserve = districtStreetWidth * 0.72;
+    const buildableRadiusX = plotSpanX * 0.36;
+    const buildableRadiusZ = plotSpanZ * 0.36;
+    const centralStreetReserve = districtStreetWidth * 1.18;
     const majorCount = Math.max(
       3,
-      Math.min(10, Math.round((4 + tradeDensity * 4 + volumeSignal * 3) * districtDensityScale))
+      Math.min(8, Math.round((3.7 + tradeDensity * 3.4 + volumeSignal * 2.5) * districtDensityScale))
     );
     const minorCount = Math.max(
       1,
-      Math.min(7, Math.round((2 + tradeDensity * 2 + intensity * 2) * districtDensityScale))
+      Math.min(4, Math.round((1.6 + tradeDensity * 1.4 + intensity * 1.35) * districtDensityScale))
     );
     const centralVerticality = clampFinite(1.05 + intensity * 0.9 + sizeSignal * 0.65, 1.4, 0.9, 2.6);
     const verticalBias = clampFinite(1 + dominance * 0.42 + Math.sign(priceChange || 0) * 0.06, 1, 0.6, 1.8);
@@ -519,6 +665,7 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
 
     const buildSeed = event.sequence * 1297;
     const totalCandidates = majorCount + minorCount;
+    const acceptedTowerLocals: Array<[number, number]> = [];
     for (let i = 0; i < totalCandidates; i++) {
       if (
         towerMasses.length >= MAX_TOWER_MASS_INSTANCES ||
@@ -536,17 +683,31 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       const angle = i * 2.3999632297 + pseudoRandom(seed + 3) * 0.85;
       const lx = Math.cos(angle) * radialX;
       const lz = Math.sin(angle) * radialZ;
+      const isMajor = i < majorCount;
 
       if (Math.abs(lx) < centralStreetReserve * 0.8 || Math.abs(lz) < centralStreetReserve * 0.75) {
         continue;
       }
+
+      let tooClose = false;
+      const minSpacing = (isMajor ? 0.7 : 0.52) + (1 - districtDensityScale) * 0.42;
+      for (let p = 0; p < acceptedTowerLocals.length; p++) {
+        const prev = acceptedTowerLocals[p];
+        if (Math.hypot(prev[0] - lx, prev[1] - lz) < minSpacing) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (tooClose) {
+        continue;
+      }
+      acceptedTowerLocals.push([lx, lz]);
 
       const [rx, rz] = rotateLocalPoint(lx, lz, yaw);
       const worldX = cx + rx;
       const worldZ = cz + rz;
       const radialNorm = Math.min(1, Math.hypot(lx / buildableRadiusX, lz / buildableRadiusZ));
       const centerWeight = 1 - radialNorm;
-      const isMajor = i < majorCount;
 
       const footprintW = clampFinite(
         (isMajor ? 0.45 : 0.3) + pseudoRandom(seed + 4) * (isMajor ? 0.8 : 0.55) + volumeSignal * 0.18,
@@ -586,9 +747,15 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
       const buildingId = `${districtId}-B-${i}`;
       const totalTowerHeight = podiumH + shaftH + spireH;
 
-      const baseTint = towerBaseColor.clone().lerp(dominanceColor, 0.03 + recencyCurve * 0.05);
-      const shaftTint = baseTint.clone().multiplyScalar(0.95 + centerWeight * 0.22);
-      const spireTint = shaftTint.clone().lerp(detailColor, 0.1 + recencyCurve * 0.08);
+      const baseTint = towerBaseColor
+        .clone()
+        .lerp(dominanceColor, 0.035 + recencyCurve * 0.06)
+        .multiplyScalar(0.9 + recencyCurve * 0.12);
+      const shaftTint = baseTint
+        .clone()
+        .lerp(detailColor, 0.06 + recencyCurve * 0.07)
+        .multiplyScalar(topContrast * (0.95 + centerWeight * 0.18));
+      const spireTint = shaftTint.clone().lerp(detailColor, 0.18 + recencyCurve * 0.12).multiplyScalar(1.03 + recencyCurve * 0.12);
 
       const riseDelayMs = Math.floor(
         clampFinite(i * (18 + intensity * 18) * birthDurationScale, 0, 0, 1800)
@@ -768,6 +935,21 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
         }
       }
 
+      // Skyline readability layer: subtle bright top band for height legibility.
+      pushLight(detailLights, 'detail', event.sequence, {
+        position: [worldX, plotHeight + podiumH + shaftH + 0.03, worldZ],
+        rotationY: towerYaw,
+        size: [Math.max(0.1, footprintW * 0.78), 0.028, Math.max(0.1, footprintD * 0.78)],
+        color: detailColor.clone().lerp(dominanceColor, 0.22 + recencyCurve * 0.18).multiplyScalar(0.9 + recencyCurve * 0.45),
+        opacity: MathUtils.clamp(0.1 + recencyCurve * 0.14 + intensity * 0.08, 0.07, 0.38),
+        birthAtMs: eventBirthAt,
+        riseDelayMs: riseDelayMs + 170,
+        riseDurationMs: Math.max(300, riseDurationMs - 40),
+        pulseAmp: 0.02 * pulseMotionScale,
+        pulseSpeed: 0.1 * pulseSpeedScale,
+        pulsePhase: event.sequence * 0.32 + i * 0.13
+      }, MAX_DETAIL_LIGHT_INSTANCES);
+
       const topY = plotHeight + podiumH + shaftH + (addSpire ? spireH : 0);
       pushLight(haloGlows, 'glow', event.sequence, {
         position: [worldX, topY + 0.08, worldZ],
@@ -831,6 +1013,7 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
   }
 
   return {
+    shadowPads: shadowPads.slice(0, MAX_SHADOW_PAD_INSTANCES),
     plots: plots.slice(0, MAX_PLOT_INSTANCES),
     streetDecks: streetDecks.slice(0, MAX_STREET_INSTANCES),
     towerMasses: towerMasses.slice(0, MAX_TOWER_MASS_INSTANCES),
@@ -839,6 +1022,7 @@ function buildCityVisualData(events: BlockEvent[]): CityVisualData {
     detailLights: detailLights.slice(0, MAX_DETAIL_LIGHT_INSTANCES),
     haloGlows: haloGlows.slice(0, MAX_HALO_GLOW_INSTANCES),
     flowLights: flowLights.slice(0, MAX_FLOW_LIGHT_INSTANCES),
+    trafficCars: trafficCars.slice(0, MAX_TRAFFIC_CAR_INSTANCES),
     bounds:
       minX === Number.POSITIVE_INFINITY
         ? null
@@ -1009,12 +1193,15 @@ export function ProceduralCityGrowth() {
   const visualData = useMemo(() => buildCityVisualData(visibleEvents), [visibleEvents]);
 
   const plotMeshRef = useRef<InstancedMesh>(null);
+  const shadowPadMeshRef = useRef<InstancedMesh>(null);
   const streetMeshRef = useRef<InstancedMesh>(null);
   const towerMeshRef = useRef<InstancedMesh>(null);
+  const hoverShellMeshRef = useRef<InstancedMesh>(null);
   const laneLightMeshRef = useRef<InstancedMesh>(null);
   const detailLightMeshRef = useRef<InstancedMesh>(null);
   const haloGlowMeshRef = useRef<InstancedMesh>(null);
   const flowLightMeshRef = useRef<InstancedMesh>(null);
+  const trafficCarMeshRef = useRef<InstancedMesh>(null);
   const matricesSettledRef = useRef(false);
   const optionalEffectsDisabledRef = useRef({
     halo: false,
@@ -1029,29 +1216,55 @@ export function ProceduralCityGrowth() {
           return item;
         }
 
-        const highlightBoost =
-          meta.tier === 'spire' ? 1.42 : meta.tier === 'shaft' ? 1.28 : 1.18;
+        const hot = meta.tier === 'spire' ? new Color('#fff8bf') : meta.tier === 'shaft' ? new Color('#ffd400') : new Color('#ffe76a');
         return {
           ...item,
-          color: item.color.clone().multiplyScalar(highlightBoost)
+          color: hot
         };
       }),
     [visualData.towerMasses, visualData.towerMassMeta, hoveredBuildingId]
   );
+  const hoverShellItems = useMemo(() => {
+    if (!hoveredBuildingId) {
+      return [] as LightInstance[];
+    }
+    const items: LightInstance[] = [];
+    for (let i = 0; i < visualData.towerMasses.length; i++) {
+      const meta = visualData.towerMassMeta[i];
+      const source = visualData.towerMasses[i];
+      if (!meta || !source || meta.buildingId !== hoveredBuildingId) {
+        continue;
+      }
+      items.push({
+        ...source,
+        size: [source.size[0] * 1.1, source.size[1] * 1.04, source.size[2] * 1.1],
+        color: meta.tier === 'spire' ? new Color('#fffce3') : new Color('#ffd400'),
+        opacity: meta.tier === 'spire' ? 0.82 : 0.7,
+        pulseAmp: 0.12 * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.4 : 1),
+        pulseSpeed: 0.45 * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.4 : 1),
+        pulsePhase: i * 0.37
+      });
+    }
+    return items.slice(0, 4);
+  }, [hoveredBuildingId, visualData.towerMasses, visualData.towerMassMeta]);
   const glowBrightnessScale = 1.18 * (0.82 + RUNTIME_QUALITY_CONFIG.glowIntensityScale * 0.26);
   const flowBrightnessScale = 1.2 * (0.78 + RUNTIME_QUALITY_CONFIG.glowIntensityScale * 0.28);
   const detailBrightnessScale = 1.08 * (0.82 + RUNTIME_QUALITY_CONFIG.glowIntensityScale * 0.22);
+  const trafficCarBrightnessScale = 1.18 * (0.86 + RUNTIME_QUALITY_CONFIG.glowIntensityScale * 0.22);
 
   const latestAnimationEndMs = useMemo(() => {
     let maxMs = 0;
     const layers = [
+      visualData.shadowPads,
       visualData.plots,
       visualData.streetDecks,
       visualData.towerMasses,
       visualData.laneLights,
       visualData.detailLights,
       visualData.haloGlows,
-      visualData.flowLights
+      visualData.flowLights,
+      visualData.trafficCars,
+      hoverShellItems
     ] as const;
     for (const layer of layers) {
       for (const item of layer) {
@@ -1062,24 +1275,28 @@ export function ProceduralCityGrowth() {
   }, [visualData]);
 
   const totalInstances =
+    visualData.shadowPads.length +
     visualData.plots.length +
     visualData.streetDecks.length +
     visualData.towerMasses.length +
     visualData.laneLights.length +
     visualData.detailLights.length +
     visualData.haloGlows.length +
-    visualData.flowLights.length;
+    visualData.flowLights.length +
+    visualData.trafficCars.length;
 
   if (
     !instanceBudgetWarned &&
     totalInstances >
       MAX_PLOT_INSTANCES +
+        MAX_SHADOW_PAD_INSTANCES +
         MAX_STREET_INSTANCES +
         MAX_TOWER_MASS_INSTANCES +
         MAX_LANE_LIGHT_INSTANCES +
         MAX_DETAIL_LIGHT_INSTANCES +
         MAX_HALO_GLOW_INSTANCES +
-        MAX_FLOW_LIGHT_INSTANCES
+        MAX_FLOW_LIGHT_INSTANCES +
+        MAX_TRAFFIC_CAR_INSTANCES
   ) {
     instanceBudgetWarned = true;
     console.warn('[BTC Spot City][city] instance budget exceeded, trimming visuals.');
@@ -1111,11 +1328,14 @@ export function ProceduralCityGrowth() {
     matricesSettledRef.current = false;
     const now = Date.now();
     try {
+      applyLightInstances(shadowPadMeshRef.current, visualData.shadowPads, now);
       applySolidInstances(plotMeshRef.current, visualData.plots, now);
       applySolidInstances(streetMeshRef.current, visualData.streetDecks, now);
       applySolidInstances(towerMeshRef.current, visualData.towerMasses, now);
+      applyLightInstances(hoverShellMeshRef.current, hoverShellItems, now);
       applyLightInstances(laneLightMeshRef.current, visualData.laneLights, now);
       applyLightInstances(detailLightMeshRef.current, visualData.detailLights, now);
+      applyLightInstances(trafficCarMeshRef.current, visualData.trafficCars, now);
     } catch (error) {
       warnRuntimeEffect('core instance update', error);
     }
@@ -1136,7 +1356,7 @@ export function ProceduralCityGrowth() {
         warnRuntimeEffect('flow light layer', error);
       }
     }
-  }, [visualData, latestAnimationEndMs]);
+  }, [visualData, latestAnimationEndMs, hoverShellItems]);
 
   const handleTowerPointerMove = (event: ThreeEvent<PointerEvent>) => {
     try {
@@ -1166,12 +1386,17 @@ export function ProceduralCityGrowth() {
       const birthAnimationsSettled = matricesSettledRef.current && now > latestAnimationEndMs;
 
       if (!birthAnimationsSettled) {
+        applyLightInstances(shadowPadMeshRef.current, visualData.shadowPads, now);
         applySolidInstances(plotMeshRef.current, visualData.plots, now);
         applySolidInstances(streetMeshRef.current, visualData.streetDecks, now);
         applySolidInstances(towerMeshRef.current, visualData.towerMasses, now);
+        applyLightInstances(hoverShellMeshRef.current, hoverShellItems, now);
         applyLightInstances(laneLightMeshRef.current, visualData.laneLights, now);
         applyLightInstances(detailLightMeshRef.current, visualData.detailLights, now);
       }
+
+      applyLightInstances(trafficCarMeshRef.current, visualData.trafficCars, now);
+      applyLightInstances(hoverShellMeshRef.current, hoverShellItems, now);
 
       if (!optionalEffectsDisabledRef.current.halo) {
         try {
@@ -1210,23 +1435,31 @@ export function ProceduralCityGrowth() {
 
   return (
     <group>
+      <InstancedColorSetup meshRef={shadowPadMeshRef} items={visualData.shadowPads} />
       <InstancedColorSetup meshRef={plotMeshRef} items={visualData.plots} />
       <InstancedColorSetup meshRef={streetMeshRef} items={visualData.streetDecks} />
       <InstancedColorSetup meshRef={towerMeshRef} items={towerColorItems} />
+      <InstancedColorSetup meshRef={hoverShellMeshRef} items={hoverShellItems} brightnessScale={1.35} />
       <InstancedColorSetup meshRef={laneLightMeshRef} items={visualData.laneLights} brightnessScale={1.1} />
       <InstancedColorSetup meshRef={detailLightMeshRef} items={visualData.detailLights} brightnessScale={detailBrightnessScale} />
       <InstancedColorSetup meshRef={haloGlowMeshRef} items={visualData.haloGlows} brightnessScale={glowBrightnessScale} />
       <InstancedColorSetup meshRef={flowLightMeshRef} items={visualData.flowLights} brightnessScale={flowBrightnessScale} />
+      <InstancedColorSetup meshRef={trafficCarMeshRef} items={visualData.trafficCars} brightnessScale={trafficCarBrightnessScale} />
+
+      <instancedMesh ref={shadowPadMeshRef} args={[undefined, undefined, Math.max(1, visualData.shadowPads.length)]} frustumCulled={false}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial vertexColors transparent opacity={0.3} depthWrite={false} />
+      </instancedMesh>
 
       <instancedMesh ref={plotMeshRef} args={[undefined, undefined, Math.max(1, visualData.plots.length)]} receiveShadow>
         <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial
           vertexColors
-          color={DEBUG_VIEW_ENABLED ? '#1a2430' : '#121a22'}
+          color={DEBUG_VIEW_ENABLED ? '#233142' : '#1a2430'}
           roughness={0.92}
           metalness={0.12}
-          emissive="#162535"
-          emissiveIntensity={DEBUG_VIEW_ENABLED ? 0.28 : 0.18}
+          emissive="#1d3248"
+          emissiveIntensity={DEBUG_VIEW_ENABLED ? 0.34 : 0.24}
         />
       </instancedMesh>
 
@@ -1234,11 +1467,11 @@ export function ProceduralCityGrowth() {
         <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial
           vertexColors
-          color="#090d12"
+          color="#0a0e14"
           roughness={0.96}
           metalness={0.06}
-          emissive="#101821"
-          emissiveIntensity={DEBUG_VIEW_ENABLED ? 0.16 : 0.1}
+          emissive="#13202d"
+          emissiveIntensity={DEBUG_VIEW_ENABLED ? 0.2 : 0.13}
         />
       </instancedMesh>
 
@@ -1257,7 +1490,19 @@ export function ProceduralCityGrowth() {
           roughness={0.74}
           metalness={0.24}
           emissive="#315f82"
-          emissiveIntensity={(DEBUG_VIEW_ENABLED ? 0.95 : 0.62) * (0.84 + RUNTIME_QUALITY_CONFIG.glowIntensityScale * 0.22)}
+          emissiveIntensity={(DEBUG_VIEW_ENABLED ? 1.08 : 0.75) * (0.86 + RUNTIME_QUALITY_CONFIG.glowIntensityScale * 0.24)}
+        />
+      </instancedMesh>
+
+      <instancedMesh ref={hoverShellMeshRef} args={[undefined, undefined, Math.max(1, hoverShellItems.length)]} frustumCulled={false}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial
+          vertexColors
+          transparent
+          opacity={0.95}
+          depthWrite={false}
+          toneMapped={false}
+          blending={AdditiveBlending}
         />
       </instancedMesh>
 
@@ -1279,6 +1524,11 @@ export function ProceduralCityGrowth() {
       <instancedMesh ref={flowLightMeshRef} args={[undefined, undefined, Math.max(1, visualData.flowLights.length)]} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshBasicMaterial vertexColors transparent opacity={0.92} depthWrite={false} toneMapped={false} blending={AdditiveBlending} />
+      </instancedMesh>
+
+      <instancedMesh ref={trafficCarMeshRef} args={[undefined, undefined, Math.max(1, visualData.trafficCars.length)]} frustumCulled={false}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial vertexColors transparent opacity={0.98} depthWrite={false} toneMapped={false} blending={AdditiveBlending} />
       </instancedMesh>
     </group>
   );

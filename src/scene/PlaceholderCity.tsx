@@ -4,6 +4,7 @@ import type { InstancedMesh, Mesh } from 'three';
 import { Color, Object3D } from 'three';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import { ProceduralCityGrowth } from './ProceduralCityGrowth';
+import { useCitySceneStore } from './citySceneStore';
 import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
 import { DEBUG_VIEW_ENABLED } from './viewFlags';
 
@@ -96,12 +97,50 @@ function LegacyBackdropBlocks() {
   );
 }
 
-function Ground() {
+function GroundSystem() {
+  const { bounds } = useCitySceneStore();
+  const radius = Math.max(60, bounds?.radius ?? 110);
+  const maxSpan = Math.max(420, radius * 6.2 + 140);
+  const groundSize = Math.min(1800, maxSpan);
+  const centerX = bounds?.centerX ?? 0;
+  const centerZ = bounds ? bounds.centerZ * 0.82 + bounds.frontierZ * 0.18 : -48;
+  const gridDivisions = Math.max(
+    24,
+    Math.min(96, Math.round((groundSize / (RUNTIME_QUALITY_CONFIG.tier === 'low' ? 8 : 6)) / 2) * 2)
+  );
+
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.02, 0]} receiveShadow>
-      <planeGeometry args={[420, 420]} />
-      <meshStandardMaterial color="#07090d" roughness={1} metalness={0} />
-    </mesh>
+    <group position={[centerX, 0, centerZ]}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.03, 0]} receiveShadow>
+        <planeGeometry args={[groundSize, groundSize]} />
+        <meshStandardMaterial color="#06080c" roughness={1} metalness={0.02} />
+      </mesh>
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.021, 0]}>
+        <planeGeometry args={[groundSize * 0.98, groundSize * 0.98]} />
+        <meshStandardMaterial
+          color="#0a0f15"
+          roughness={0.97}
+          metalness={0.04}
+          emissive="#101823"
+          emissiveIntensity={DEBUG_VIEW_ENABLED ? 0.05 : 0.03}
+          transparent
+          opacity={0.72}
+        />
+      </mesh>
+
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.018, 0]}>
+        <ringGeometry args={[Math.max(18, radius * 0.55), Math.min(groundSize * 0.46, radius * 2.25), 64]} />
+        <meshBasicMaterial color="#09111a" transparent opacity={DEBUG_VIEW_ENABLED ? 0.08 : 0.055} depthWrite={false} />
+      </mesh>
+
+      <gridHelper
+        args={[groundSize * 0.96, gridDivisions, new Color('#172533'), new Color('#0f1722')]}
+        position={[0, -0.014, 0]}
+        material-transparent
+        material-opacity={DEBUG_VIEW_ENABLED ? 0.14 : 0.09}
+      />
+    </group>
   );
 }
 
@@ -214,7 +253,7 @@ export function PlaceholderCity() {
 
   return (
     <group>
-      <Ground />
+      <GroundSystem />
       <HazeBands />
       <DepthColumns />
       {showFallbackBackdrop ? <LegacyBackdropBlocks /> : null}

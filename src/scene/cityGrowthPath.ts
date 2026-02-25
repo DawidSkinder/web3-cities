@@ -9,9 +9,9 @@ export type SpineTransform = {
 
 function pointAtIndex(index: number): [number, number, number] {
   const i = Math.max(0, index);
-  const forward = i * 1.72;
-  const lateral = Math.sin(i * 0.46) * (2.1 + i * 0.08) + Math.sin(i * 0.14) * 1.05;
-  const subtleWave = Math.cos(i * 0.28) * 1.05;
+  const forward = i * 2.24;
+  const lateral = Math.sin(i * 0.43) * (2.6 + i * 0.095) + Math.sin(i * 0.13) * 1.25;
+  const subtleWave = Math.cos(i * 0.25) * 1.2;
 
   return [lateral, 0, -forward + subtleWave];
 }
