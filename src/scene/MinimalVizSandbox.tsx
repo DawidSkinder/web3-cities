@@ -971,6 +971,7 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
 
   const glowColor = useMemo(() => new Color(tower.glowColor), [tower.glowColor]);
   const coreColor = useMemo(() => new Color(tower.coreColor), [tower.coreColor]);
+  const strokeColor = BTC_SELL_WARM;
   const segments = useMemo(() => buildTowerSegments(tower), [tower]);
   const topSegment = segments[segments.length - 1] ?? null;
   const bandFractions = useMemo(() => {
@@ -1071,7 +1072,7 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
           >
             <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
             <meshBasicMaterial
-              color={glowColor}
+              color={strokeColor}
               wireframe
               transparent
               opacity={0}
