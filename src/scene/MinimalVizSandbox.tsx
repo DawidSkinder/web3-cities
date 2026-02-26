@@ -122,6 +122,7 @@ type ParkDatum = {
   fireflyCount: number;
   linkX: number | null;
   linkZ: number | null;
+  emittedAt: number;
   treeStart: number;
   treeCount: number;
 };
@@ -1198,6 +1199,7 @@ function appendParkAtTowerSlot(state: AccumState, sourceTower: TowerDatum, seed:
     fireflyCount,
     linkX,
     linkZ,
+    emittedAt: Date.now(),
     treeStart,
     treeCount: state.parkTrees.length - treeStart
   });
@@ -1401,6 +1403,7 @@ function appendPark(state: AccumState, seed: number) {
     fireflyCount,
     linkX,
     linkZ,
+    emittedAt: Date.now(),
     treeStart,
     treeCount: state.parkTrees.length - treeStart
   });
@@ -3810,6 +3813,19 @@ function ParksLayer({
   const upRef = useRef(new Vector3(0, 1, 0));
   const crownColorRef = useRef(new Color());
   const trunkColorRef = useRef(new Color());
+  const treeBirthMeta = useMemo(() => {
+    const meta = Array.from({ length: trees.length }, () => ({ parkIndex: -1, localIndex: 0, emittedAt: 0 }));
+    for (let p = 0; p < parks.length; p++) {
+      const park = parks[p];
+      if (!park) continue;
+      for (let i = 0; i < park.treeCount; i++) {
+        const treeIndex = park.treeStart + i;
+        if (treeIndex < 0 || treeIndex >= meta.length) continue;
+        meta[treeIndex] = { parkIndex: p, localIndex: i, emittedAt: park.emittedAt };
+      }
+    }
+    return meta;
+  }, [parks, trees.length]);
   const fireflySources = useMemo(() => {
     const indices: number[] = [];
     for (let p = 0; p < parks.length; p++) {
@@ -3908,6 +3924,7 @@ function ParksLayer({
   useFrame((_, delta) => {
     focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 7.5, delta);
     const dimScale = MathUtils.lerp(1, FOCUS_GROUND_DIM, focusMixRef.current);
+    const nowMs = Date.now();
     for (let i = 0; i < patchRefs.current.length; i++) {
       const patch = patchRefs.current[i];
       const pathA = pathRefs.current[i * 2];
@@ -3915,9 +3932,74 @@ function ParksLayer({
       const patchMat = patch?.material as { opacity?: number } | undefined;
       const pathAMat = pathA?.material as { opacity?: number } | undefined;
       const pathBMat = pathB?.material as { opacity?: number } | undefined;
-      if (patchMat) patchMat.opacity = MathUtils.damp(patchMat.opacity ?? 0.92, 0.92 * dimScale, 8.5, delta);
-      if (pathAMat) pathAMat.opacity = MathUtils.damp(pathAMat.opacity ?? 0.14, 0.14 * dimScale, 8.5, delta);
-      if (pathBMat) pathBMat.opacity = MathUtils.damp(pathBMat.opacity ?? 0.1, 0.1 * dimScale, 8.5, delta);
+      const park = parks[i];
+      const parkElapsed = park ? nowMs - park.emittedAt : BIRTH_RISE_MS + BIRTH_GLOW_RAMP_MS;
+      const parkRiseT = MathUtils.clamp(parkElapsed / BIRTH_RISE_MS, 0, 1);
+      const parkGlowT = MathUtils.clamp((parkElapsed - BIRTH_GLOW_DELAY_MS) / BIRTH_GLOW_RAMP_MS, 0, 1);
+      const parkBirthAlpha = easeOutCubic(parkGlowT) * MathUtils.clamp(parkRiseT * 1.15, 0, 1);
+      if (patchMat) patchMat.opacity = MathUtils.damp(patchMat.opacity ?? 0.92, 0.92 * dimScale * parkBirthAlpha, 8.5, delta);
+      if (pathAMat) pathAMat.opacity = MathUtils.damp(pathAMat.opacity ?? 0.14, 0.14 * dimScale * parkBirthAlpha, 8.5, delta);
+      if (pathBMat) pathBMat.opacity = MathUtils.damp(pathBMat.opacity ?? 0.1, 0.1 * dimScale * parkBirthAlpha, 8.5, delta);
+    }
+
+    const trunk = trunkRef.current;
+    const crown = crownRef.current;
+    const trunkWire = trunkWireRef.current;
+    const crownWire = crownWireRef.current;
+    const crownGlow = crownGlowRef.current;
+    if (trunk && crown && trunkWire && crownWire && crownGlow) {
+      const matrix = matrixRef.current;
+      const pos = posRef.current;
+      const scl = sclRef.current;
+      const quat = quatRef.current;
+      const up = upRef.current;
+      const count = Math.min(trees.length, Math.max(1, trunk.instanceMatrix.count));
+      trunk.count = count;
+      crown.count = count;
+      trunkWire.count = count;
+      crownWire.count = count;
+      crownGlow.count = count;
+      for (let i = 0; i < count; i++) {
+        const tree = trees[i];
+        if (!tree) continue;
+        const birth = treeBirthMeta[i];
+        const localDelay = (birth?.localIndex ?? 0) * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 18 : 28);
+        const elapsed = nowMs - ((birth?.emittedAt ?? nowMs) + localDelay);
+        const riseT = MathUtils.clamp(elapsed / BIRTH_RISE_MS, 0, 1);
+        const riseScaleY = Math.max(0.0001, easeOutBack(riseT, BIRTH_OVERSHOOT));
+        const crownScaleXZ = MathUtils.lerp(0.25, 1, MathUtils.clamp(riseT * 1.15, 0, 1));
+        quat.setFromAxisAngle(up, tree.yaw);
+
+        const trunkH = tree.trunkH * riseScaleY;
+        pos.set(tree.x, TREE_BASE_Y + trunkH * 0.5, tree.z);
+        scl.set(Math.max(0.05, tree.crownR * 0.28) * crownScaleXZ, trunkH, Math.max(0.05, tree.crownR * 0.28) * crownScaleXZ);
+        matrix.compose(pos, quat, scl);
+        trunk.setMatrixAt(i, matrix);
+        scl.set(
+          Math.max(0.05, tree.crownR * 0.29) * 1.04 * crownScaleXZ,
+          Math.max(0.0001, trunkH * 1.02),
+          Math.max(0.05, tree.crownR * 0.29) * 1.04 * crownScaleXZ
+        );
+        matrix.compose(pos, quat, scl);
+        trunkWire.setMatrixAt(i, matrix);
+
+        const crownH = tree.crownH * riseScaleY;
+        pos.set(tree.x, TREE_BASE_Y + trunkH + crownH * 0.5, tree.z);
+        scl.set(tree.crownR * crownScaleXZ, crownH, tree.crownR * crownScaleXZ);
+        matrix.compose(pos, quat, scl);
+        crown.setMatrixAt(i, matrix);
+        scl.set(tree.crownR * 1.06 * crownScaleXZ, Math.max(0.0001, crownH * 1.03), tree.crownR * 1.06 * crownScaleXZ);
+        matrix.compose(pos, quat, scl);
+        crownWire.setMatrixAt(i, matrix);
+        scl.set(tree.crownR * 1.22 * crownScaleXZ, Math.max(0.0001, crownH * 1.18), tree.crownR * 1.22 * crownScaleXZ);
+        matrix.compose(pos, quat, scl);
+        crownGlow.setMatrixAt(i, matrix);
+      }
+      trunk.instanceMatrix.needsUpdate = true;
+      crown.instanceMatrix.needsUpdate = true;
+      trunkWire.instanceMatrix.needsUpdate = true;
+      crownWire.instanceMatrix.needsUpdate = true;
+      crownGlow.instanceMatrix.needsUpdate = true;
     }
 
     const trunkMat = trunkRef.current?.material as { opacity?: number; color?: Color } | undefined;
@@ -3956,6 +4038,17 @@ function ParksLayer({
         const sourceIndex = fireflySources[i] ?? i;
         const tree = trees[sourceIndex];
         if (!tree) continue;
+        const birth = treeBirthMeta[sourceIndex];
+        const localDelay = (birth?.localIndex ?? 0) * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 18 : 28);
+        const fireflyElapsed = nowMs - ((birth?.emittedAt ?? nowMs) + localDelay + BIRTH_GLOW_DELAY_MS);
+        const fireflyT = MathUtils.clamp(fireflyElapsed / BIRTH_GLOW_RAMP_MS, 0, 1);
+        if (fireflyT <= 0.02) {
+          pos.set(tree.x, TREE_BASE_Y + tree.trunkH, tree.z);
+          scl.set(0.0001, 0.0001, 0.0001);
+          matrix.compose(pos, quat, scl);
+          firefly.setMatrixAt(i, matrix);
+          continue;
+        }
         const driftAmp = (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.035 : 0.07) * Math.max(0.8, tree.crownR);
         const driftSpeed = (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.25 : 0.5) * MathUtils.lerp(0.7, 1.2, hash01(sourceIndex, 9067));
         const phase = hash01(sourceIndex, 9073) * Math.PI * 2;
@@ -3965,7 +4058,10 @@ function ParksLayer({
         const fx = tree.x + dx;
         const fz = tree.z + dz;
         const fy = TREE_BASE_Y + tree.trunkH + tree.crownH * MathUtils.lerp(0.42, 0.88, hash01(sourceIndex, 9037)) + dy;
-        const s = (0.028 + hash01(sourceIndex, 9041) * 0.022) * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.85 : 1);
+        const s =
+          (0.028 + hash01(sourceIndex, 9041) * 0.022) *
+          (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.85 : 1) *
+          easeOutCubic(fireflyT);
         pos.set(fx, fy, fz);
         scl.set(s, s * 0.95, s);
         matrix.compose(pos, quat, scl);
