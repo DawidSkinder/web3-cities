@@ -163,6 +163,15 @@ type CameraDebugSnapshot = {
   visCurve: number;
 };
 
+type HoverHudSnapshot = {
+  visible: boolean;
+  towerSequence: number | null;
+  anchorX: number;
+  anchorY: number;
+  labelX: number;
+  labelY: number;
+};
+
 type AccumState = {
   processedSequences: Set<number>;
   towers: TowerDatum[];
@@ -180,6 +189,9 @@ type AccumState = {
   heroEligibleSinceLast: number;
   tallestTowerSequence: number | null;
   tallestTowerHeight: number;
+  parksAttempted: number;
+  parksPlaced: number;
+  lastParkSkipReason: string;
 };
 
 type CameraMode = 'auto' | 'user' | 'returning';
@@ -244,13 +256,25 @@ const HERO_GUARANTEE_GAP = 56;
 const HERO_GUARANTEE_MIN_ELIGIBLE = 2;
 const VIS_NEAR_DIST = 34;
 const VIS_FAR_DIST = 170;
-const FOCUS_NON_HOVER_DIM = 0.28;
-const FOCUS_GROUND_DIM = 0.42;
-const FOCUS_TRACE_DIM = 0.34;
-const FOCUS_TRAFFIC_DIM = 0.3;
+const FOCUS_NON_HOVER_DIM = 0.22;
+const FOCUS_GROUND_DIM = 0.64;
+const FOCUS_TRACE_DIM = 0.22;
+const FOCUS_TRAFFIC_DIM = 0.24;
 const HOVER_ORANGE_BOOST = 1.22;
-const PARK_MIN_INTERVAL = 120;
-const PARK_MAX_INTERVAL = 220;
+const HOVER_LABEL_WIDTH_PX = 220;
+const HOVER_LABEL_HEIGHT_PX = 78;
+const HOVER_LABEL_OFFSET_Y_PX = 28;
+const HOVER_LABEL_EDGE_PAD_PX = 14;
+const HOVER_LABEL_LERP = 0.22;
+const HOVER_SWITCH_CONFIRM_FRAMES = 3;
+const HOVER_CLEAR_GRACE_MS = 110;
+const TALLEST_BADGE_SIZE_MIN = 0.9;
+const TALLEST_BADGE_SIZE_MAX = 2.3;
+const TALLEST_BADGE_SIZE_BASE_MULT = 0.9;
+const TALLEST_BADGE_FACE_OPACITY = 0.82;
+const TALLEST_BADGE_RIM_OPACITY = 0.34;
+const PARK_CADENCE_BASE = 80;
+const PARK_CADENCE_JITTER = 20;
 const PARK_BASE_CLEARANCE = 1.2;
 
 const GROUND_GLOW_Y = -0.05;
@@ -301,6 +325,16 @@ const tempDir = new Vector3();
 const tempColorA = new Color();
 const tempColorB = new Color();
 const tempColorC = new Color();
+const hoverProjectWorld = new Vector3();
+const hoverProjectNdc = new Vector3();
+const HOVER_HUD_HIDDEN: HoverHudSnapshot = {
+  visible: false,
+  towerSequence: null,
+  anchorX: 0,
+  anchorY: 0,
+  labelX: 0,
+  labelY: 0
+};
 
 function clampFinite(value: number, fallback: number, min?: number, max?: number) {
   const safe = Number.isFinite(value) ? value : fallback;
@@ -515,16 +549,19 @@ function createEmptyAccum(): AccumState {
       varI: 0.08
     },
     latestHeightDebug: null,
-    nextParkAtCount: PARK_MIN_INTERVAL + Math.floor(hash01(1, 7009) * (PARK_MAX_INTERVAL - PARK_MIN_INTERVAL + 1)),
+    nextParkAtCount: PARK_CADENCE_BASE + Math.round((hash01(1, 7009) * 2 - 1) * PARK_CADENCE_JITTER),
     towersSinceHero: 0,
     heroEligibleSinceLast: 0,
     tallestTowerSequence: null,
-    tallestTowerHeight: 0
+    tallestTowerHeight: 0,
+    parksAttempted: 0,
+    parksPlaced: 0,
+    lastParkSkipReason: 'none'
   };
 }
 
 function nextParkInterval(seed: number) {
-  return PARK_MIN_INTERVAL + Math.floor(hash01(seed, 7021) * (PARK_MAX_INTERVAL - PARK_MIN_INTERVAL + 1));
+  return PARK_CADENCE_BASE + Math.round((hash01(seed, 7021) * 2 - 1) * PARK_CADENCE_JITTER);
 }
 
 function parkConflictsTower(x: number, z: number, w: number, d: number, tower: TowerDatum) {
@@ -542,7 +579,11 @@ function parkConflictsPark(x: number, z: number, w: number, d: number, park: Par
 }
 
 function appendPark(state: AccumState, seed: number) {
-  if (state.towers.length < 16) return false;
+  state.parksAttempted += 1;
+  if (state.towers.length < 16) {
+    state.lastParkSkipReason = 'too-early';
+    return false;
+  }
 
   const cityRadius = Math.max(18, state.bounds.radius);
   const sizeScale = MathUtils.lerp(0.95, 1.3, MathUtils.clamp(cityRadius / 160, 0, 1));
@@ -554,6 +595,7 @@ function appendPark(state: AccumState, seed: number) {
   let chosenX = 0;
   let chosenZ = 0;
   let placed = false;
+  let fallbackBest: { x: number; z: number; penalty: number } | null = null;
   for (let attempt = 0; attempt < 24; attempt++) {
     const a = hash01(seed, attempt, 7131) * Math.PI * 2;
     const r = Math.sqrt(hash01(seed, attempt, 7139)) * spawnRadius;
@@ -561,27 +603,49 @@ function appendPark(state: AccumState, seed: number) {
     const z = Math.sin(a) * r;
     if (Math.hypot(x, z) > cityRadius * 0.98) continue;
     let blocked = false;
+    let penalty = 0;
     for (let i = 0; i < state.towers.length; i++) {
-      if (parkConflictsTower(x, z, w, d, state.towers[i])) {
+      const other = state.towers[i];
+      if (!other) continue;
+      if (parkConflictsTower(x, z, w, d, other)) {
         blocked = true;
-        break;
+        const dx = Math.abs(x - other.x);
+        const dz = Math.abs(z - other.z);
+        penalty += Math.max(0, (w + d) * 0.25 - Math.min(dx, dz));
       }
     }
-    if (blocked) continue;
     for (let i = 0; i < state.parks.length; i++) {
-      if (parkConflictsPark(x, z, w, d, state.parks[i])) {
+      const otherPark = state.parks[i];
+      if (!otherPark) continue;
+      if (parkConflictsPark(x, z, w, d, otherPark)) {
         blocked = true;
-        break;
+        penalty += 0.6;
       }
     }
-    if (blocked) continue;
+    if (blocked) {
+      if (!fallbackBest || penalty < fallbackBest.penalty) {
+        fallbackBest = { x, z, penalty };
+      }
+      continue;
+    }
     chosenX = x;
     chosenZ = z;
     placed = true;
+    state.lastParkSkipReason = 'placed';
     break;
   }
 
-  if (!placed) return false;
+  if (!placed && fallbackBest) {
+    chosenX = fallbackBest.x;
+    chosenZ = fallbackBest.z;
+    placed = true;
+    state.lastParkSkipReason = 'fallback-nearby';
+  }
+
+  if (!placed) {
+    state.lastParkSkipReason = 'no-slot';
+    return false;
+  }
 
   const patchColor = new Color('#172018')
     .lerp(new Color('#1b2318'), hash01(seed, 7201))
@@ -636,6 +700,7 @@ function appendPark(state: AccumState, seed: number) {
     treeStart,
     treeCount: state.parkTrees.length - treeStart
   });
+  state.parksPlaced += 1;
 
   return true;
 }
@@ -643,7 +708,11 @@ function appendPark(state: AccumState, seed: number) {
 function maybeAppendPark(state: AccumState, seed: number) {
   const towerCount = state.towers.length;
   if (towerCount < state.nextParkAtCount) return;
-  appendPark(state, seed);
+  const placed = appendPark(state, seed);
+  if (!placed && state.lastParkSkipReason === 'too-early') {
+    state.nextParkAtCount = Math.max(state.nextParkAtCount, 24);
+    return;
+  }
   state.nextParkAtCount = towerCount + nextParkInterval(seed + towerCount);
 }
 
@@ -982,7 +1051,10 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
     bounds: accumRef.current.bounds,
     latestHeightDebug: accumRef.current.latestHeightDebug,
     tallestTowerSequence: accumRef.current.tallestTowerSequence,
-    tallestTowerHeight: accumRef.current.tallestTowerHeight
+    tallestTowerHeight: accumRef.current.tallestTowerHeight,
+    parksAttempted: accumRef.current.parksAttempted,
+    parksPlaced: accumRef.current.parksPlaced,
+    lastParkSkipReason: accumRef.current.lastParkSkipReason
   };
 }
 
@@ -1343,11 +1415,14 @@ function TallestBtcDecals({
   if (!texture) return null;
 
   const focusScale = focusMode ? (isHovered ? 1 : FOCUS_NON_HOVER_DIM) : 1;
-  const rimOpacity = (isHovered ? 0.42 : 0.24) * focusScale;
-  const faceOpacity = (isHovered ? 0.82 : 0.62) * focusScale;
-  const logoW = Math.max(0.65, Math.min(tower.footprintX * 0.86, 3.6));
-  const logoH = Math.max(1.1, Math.min(tower.height * 0.24, 10));
-  const y = Math.max(logoH * 0.56 + 0.5, Math.min(tower.height * 0.54, tower.height - logoH * 0.5 - 0.2));
+  const rimOpacity = (isHovered ? TALLEST_BADGE_RIM_OPACITY * 1.35 : TALLEST_BADGE_RIM_OPACITY) * focusScale;
+  const faceOpacity = (isHovered ? TALLEST_BADGE_FACE_OPACITY : TALLEST_BADGE_FACE_OPACITY * 0.82) * focusScale;
+  const badgeSize = MathUtils.clamp(
+    Math.max(tower.baseW, tower.baseD) * TALLEST_BADGE_SIZE_BASE_MULT,
+    TALLEST_BADGE_SIZE_MIN,
+    TALLEST_BADGE_SIZE_MAX
+  );
+  const y = Math.max(badgeSize * 0.62 + 0.6, Math.min(tower.height * 0.66, tower.height - badgeSize * 0.6 - 0.2));
   const zInset = Math.max(tower.footprintZ * 0.5 + 0.012, 0.12);
   const xInset = Math.max(tower.footprintX * 0.5 + 0.012, 0.12);
 
@@ -1363,7 +1438,7 @@ function TallestBtcDecals({
       {faces.map((face) => (
         <group key={face.key} position={face.pos} rotation={face.rot}>
           <mesh position={[0, 0, 0]} renderOrder={6.45}>
-            <planeGeometry args={[logoW, logoH]} />
+            <planeGeometry args={[badgeSize, badgeSize]} />
             <meshBasicMaterial
               map={texture}
               alphaMap={texture}
@@ -1379,7 +1454,7 @@ function TallestBtcDecals({
             />
           </mesh>
           <mesh position={[0, 0, 0.004]} renderOrder={6.46}>
-            <planeGeometry args={[logoW * 1.02, logoH * 1.02]} />
+            <planeGeometry args={[badgeSize * 1.04, badgeSize * 1.04]} />
             <meshBasicMaterial
               map={texture}
               alphaMap={texture}
@@ -1610,6 +1685,212 @@ function HoverTowerLabel({ tower }: { tower: TowerDatum }) {
         />
       </mesh>
     </group>
+  );
+}
+
+function HoverProjectionTracker({
+  tower,
+  onHudUpdate
+}: {
+  tower: TowerDatum | null;
+  onHudUpdate?: (snapshot: HoverHudSnapshot) => void;
+}) {
+  const { camera, size } = useThree();
+  const smoothedAnchorRef = useRef<{ x: number; y: number } | null>(null);
+  const smoothedLabelRef = useRef<{ x: number; y: number } | null>(null);
+  const lastSentRef = useRef<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
+
+  useEffect(() => {
+    if (!tower) {
+      smoothedAnchorRef.current = null;
+      smoothedLabelRef.current = null;
+      if (lastSentRef.current.visible) {
+        lastSentRef.current = HOVER_HUD_HIDDEN;
+        onHudUpdate?.(HOVER_HUD_HIDDEN);
+      }
+    }
+  }, [tower, onHudUpdate]);
+
+  useEffect(() => {
+    return () => {
+      onHudUpdate?.(HOVER_HUD_HIDDEN);
+    };
+  }, [onHudUpdate]);
+
+  useFrame(() => {
+    if (!tower || !onHudUpdate) return;
+
+    hoverProjectWorld.set(tower.x, tower.height + 0.4, tower.z);
+    hoverProjectNdc.copy(hoverProjectWorld).project(camera);
+    if (!Number.isFinite(hoverProjectNdc.x) || !Number.isFinite(hoverProjectNdc.y) || hoverProjectNdc.z > 1.1) {
+      if (lastSentRef.current.visible) {
+        lastSentRef.current = HOVER_HUD_HIDDEN;
+        onHudUpdate(HOVER_HUD_HIDDEN);
+      }
+      return;
+    }
+
+    const rawAnchorX = (hoverProjectNdc.x * 0.5 + 0.5) * size.width;
+    const rawAnchorY = (-hoverProjectNdc.y * 0.5 + 0.5) * size.height;
+    const anchorX = MathUtils.clamp(rawAnchorX, 0, size.width);
+    const anchorY = MathUtils.clamp(rawAnchorY, 0, size.height);
+
+    let targetLabelX = anchorX - HOVER_LABEL_WIDTH_PX * 0.5;
+    let targetLabelY = anchorY - HOVER_LABEL_HEIGHT_PX - HOVER_LABEL_OFFSET_Y_PX;
+    if (targetLabelY < HOVER_LABEL_EDGE_PAD_PX) {
+      targetLabelY = Math.min(
+        size.height - HOVER_LABEL_HEIGHT_PX - HOVER_LABEL_EDGE_PAD_PX,
+        anchorY + HOVER_LABEL_OFFSET_Y_PX * 0.65
+      );
+    }
+    targetLabelX = MathUtils.clamp(
+      targetLabelX,
+      HOVER_LABEL_EDGE_PAD_PX,
+      Math.max(HOVER_LABEL_EDGE_PAD_PX, size.width - HOVER_LABEL_WIDTH_PX - HOVER_LABEL_EDGE_PAD_PX)
+    );
+    targetLabelY = MathUtils.clamp(
+      targetLabelY,
+      HOVER_LABEL_EDGE_PAD_PX,
+      Math.max(HOVER_LABEL_EDGE_PAD_PX, size.height - HOVER_LABEL_HEIGHT_PX - HOVER_LABEL_EDGE_PAD_PX)
+    );
+
+    const sa = smoothedAnchorRef.current ?? { x: anchorX, y: anchorY };
+    const sl = smoothedLabelRef.current ?? { x: targetLabelX, y: targetLabelY };
+    sa.x = MathUtils.lerp(sa.x, anchorX, HOVER_LABEL_LERP);
+    sa.y = MathUtils.lerp(sa.y, anchorY, HOVER_LABEL_LERP);
+    sl.x = MathUtils.lerp(sl.x, targetLabelX, HOVER_LABEL_LERP);
+    sl.y = MathUtils.lerp(sl.y, targetLabelY, HOVER_LABEL_LERP);
+    smoothedAnchorRef.current = sa;
+    smoothedLabelRef.current = sl;
+
+    const next: HoverHudSnapshot = {
+      visible: true,
+      towerSequence: tower.sequence,
+      anchorX: sa.x,
+      anchorY: sa.y,
+      labelX: sl.x,
+      labelY: sl.y
+    };
+    const prev = lastSentRef.current;
+    const changed =
+      !prev.visible ||
+      prev.towerSequence !== next.towerSequence ||
+      Math.abs(prev.anchorX - next.anchorX) > 0.25 ||
+      Math.abs(prev.anchorY - next.anchorY) > 0.25 ||
+      Math.abs(prev.labelX - next.labelX) > 0.25 ||
+      Math.abs(prev.labelY - next.labelY) > 0.25;
+    if (changed) {
+      lastSentRef.current = next;
+      onHudUpdate(next);
+    }
+  });
+
+  return null;
+}
+
+function HoverHudOverlay({
+  tower,
+  hud
+}: {
+  tower: TowerDatum | null;
+  hud: HoverHudSnapshot;
+}) {
+  if (!tower || !hud.visible || hud.towerSequence !== tower.sequence) return null;
+
+  const lineStartX = hud.labelX + HOVER_LABEL_WIDTH_PX * 0.5;
+  const labelBelowAnchor = hud.labelY > hud.anchorY;
+  const lineStartY = labelBelowAnchor ? hud.labelY : hud.labelY + HOVER_LABEL_HEIGHT_PX;
+  const dx = hud.anchorX - lineStartX;
+  const dy = hud.anchorY - lineStartY;
+  const lineLen = Math.max(6, Math.hypot(dx, dy));
+  const lineAngle = Math.atan2(dy, dx);
+
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        inset: 0,
+        pointerEvents: 'none',
+        zIndex: 5
+      }}
+      aria-hidden="true"
+    >
+      <div
+        style={{
+          position: 'absolute',
+          left: hud.labelX,
+          top: hud.labelY,
+          width: HOVER_LABEL_WIDTH_PX,
+          height: HOVER_LABEL_HEIGHT_PX,
+          borderRadius: 12,
+          border: '1px solid rgba(247,147,26,0.55)',
+          background: 'linear-gradient(180deg, rgba(12,15,20,0.96), rgba(8,10,14,0.92))',
+          boxShadow: '0 0 0 1px rgba(247,147,26,0.08) inset, 0 8px 22px rgba(0,0,0,0.35)',
+          color: '#fff7ec',
+          padding: '10px 12px',
+          backdropFilter: 'blur(2px)'
+        }}
+      >
+        <div
+          style={{
+            position: 'absolute',
+            left: 8,
+            top: 8,
+            width: 16,
+            height: 16,
+            borderLeft: '2px solid rgba(247,147,26,0.95)',
+            borderTop: '2px solid rgba(247,147,26,0.95)'
+          }}
+        />
+        <div
+          style={{
+            fontSize: 22,
+            fontWeight: 700,
+            lineHeight: 1.05,
+            letterSpacing: '0.01em'
+          }}
+        >
+          {fmtUsdCompact(tower.usdNotional)}
+        </div>
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 13,
+            fontWeight: 600,
+            color: 'rgba(246,226,197,0.92)',
+            letterSpacing: '0.03em'
+          }}
+        >
+          {fmtBtc(tower.btcVolume)} BTC
+        </div>
+      </div>
+
+      <div
+        style={{
+          position: 'absolute',
+          left: lineStartX,
+          top: lineStartY,
+          width: lineLen,
+          height: 2,
+          background: 'linear-gradient(90deg, rgba(247,147,26,0.65), rgba(247,147,26,0.9))',
+          transformOrigin: '0 50%',
+          transform: `rotate(${lineAngle}rad)`,
+          boxShadow: '0 0 8px rgba(247,147,26,0.35)'
+        }}
+      />
+      <div
+        style={{
+          position: 'absolute',
+          left: hud.anchorX - 3,
+          top: hud.anchorY - 3,
+          width: 6,
+          height: 6,
+          borderRadius: 999,
+          background: '#f7931a',
+          boxShadow: '0 0 10px rgba(247,147,26,0.75)'
+        }}
+      />
+    </div>
   );
 }
 
@@ -2354,6 +2635,7 @@ function ParksLayer({
   const pathRefs = useRef<Array<Mesh | null>>([]);
   const trunkRef = useRef<ThreeInstancedMesh>(null);
   const crownRef = useRef<ThreeInstancedMesh>(null);
+  const fireflyRef = useRef<ThreeInstancedMesh>(null);
   const focusMixRef = useRef(0);
   const matrixRef = useRef(new Matrix4());
   const posRef = useRef(new Vector3());
@@ -2371,11 +2653,13 @@ function ParksLayer({
   useEffect(() => {
     const trunk = trunkRef.current;
     const crown = crownRef.current;
-    if (!trunk || !crown) return;
+    const firefly = fireflyRef.current;
+    if (!trunk || !crown || !firefly) return;
 
     const count = Math.min(trees.length, Math.max(1, trunk.instanceMatrix.count));
     trunk.count = count;
     crown.count = count;
+    firefly.count = count;
     const matrix = matrixRef.current;
     const pos = posRef.current;
     const scl = sclRef.current;
@@ -2400,12 +2684,23 @@ function ParksLayer({
       matrix.compose(pos, quat, scl);
       crown.setMatrixAt(i, matrix);
       crown.setColorAt(i, crownColor.set('#1a2418').lerp(new Color('#2b3321'), tree.tintMix));
+
+      const fx = tree.x + (hash01(i, 9021) - 0.5) * tree.crownR * 0.9;
+      const fz = tree.z + (hash01(i, 9029) - 0.5) * tree.crownR * 0.9;
+      const fy = TREE_BASE_Y + tree.trunkH + tree.crownH * MathUtils.lerp(0.45, 0.82, hash01(i, 9037));
+      pos.set(fx, fy, fz);
+      scl.set(0.035 + hash01(i, 9041) * 0.025, 0.035 + hash01(i, 9047) * 0.03, 0.035 + hash01(i, 9053) * 0.025);
+      matrix.compose(pos, quat, scl);
+      firefly.setMatrixAt(i, matrix);
+      firefly.setColorAt(i, crownColor.set('#94ffc7').lerp(new Color('#b6ffdf'), hash01(i, 9059)));
     }
 
     trunk.instanceMatrix.needsUpdate = true;
     crown.instanceMatrix.needsUpdate = true;
+    firefly.instanceMatrix.needsUpdate = true;
     if (trunk.instanceColor) trunk.instanceColor.needsUpdate = true;
     if (crown.instanceColor) crown.instanceColor.needsUpdate = true;
+    if (firefly.instanceColor) firefly.instanceColor.needsUpdate = true;
   }, [trees.length]);
 
   useFrame((_, delta) => {
@@ -2432,6 +2727,10 @@ function ParksLayer({
     if (crownMat) {
       crownMat.opacity = MathUtils.damp(crownMat.opacity ?? 0.94, 0.94 * dimScale, 8.5, delta);
       if (crownMat.color) crownMat.color.copy(tempColorA.set('#27301f').lerp(tempColorB.set('#1a2016'), focusMixRef.current * 0.8));
+    }
+    const fireflyMat = fireflyRef.current?.material as { opacity?: number } | undefined;
+    if (fireflyMat) {
+      fireflyMat.opacity = MathUtils.damp(fireflyMat.opacity ?? 0.24, 0.24 * dimScale, 8.5, delta);
     }
   });
 
@@ -2463,6 +2762,21 @@ function ParksLayer({
                 opacity={0.92}
                 depthTest
                 depthWrite
+                polygonOffset
+                polygonOffsetFactor={-1}
+                polygonOffsetUnits={-1}
+              />
+            </mesh>
+            <mesh position={[0, 0.004, 0]} renderOrder={2.57}>
+              <planeGeometry args={[park.w * 1.03, park.d * 1.03]} />
+              <meshBasicMaterial
+                color="#63d89b"
+                transparent
+                opacity={0.06}
+                toneMapped={false}
+                depthTest
+                depthWrite={false}
+                blending={AdditiveBlending}
                 polygonOffset
                 polygonOffsetFactor={-1}
                 polygonOffsetUnits={-1}
@@ -2589,6 +2903,21 @@ function ParksLayer({
           polygonOffset
           polygonOffsetFactor={-1}
           polygonOffsetUnits={-1}
+        />
+      </instancedMesh>
+      <instancedMesh ref={fireflyRef} args={[undefined, undefined, Math.max(1, trees.length)]} renderOrder={2.78} frustumCulled={false}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial
+          vertexColors
+          transparent
+          opacity={0.24}
+          toneMapped={false}
+          depthTest
+          depthWrite={false}
+          blending={AdditiveBlending}
+          polygonOffset
+          polygonOffsetFactor={-1}
+          polygonOffsetUnits={-2}
         />
       </instancedMesh>
     </group>
@@ -2983,6 +3312,7 @@ function SandboxScene({
   hoveredTowerSequence,
   tallestTowerSequence,
   onHoverTowerChange,
+  onHoverHudUpdate,
   onCameraDebug
 }: {
   towers: TowerDatum[];
@@ -2994,6 +3324,7 @@ function SandboxScene({
   hoveredTowerSequence: number | null;
   tallestTowerSequence: number | null;
   onHoverTowerChange?: (sequence: number | null) => void;
+  onHoverHudUpdate?: (snapshot: HoverHudSnapshot) => void;
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
 }) {
   const hoveredTower = useMemo(
@@ -3005,6 +3336,67 @@ function SandboxScene({
     [tallestTowerSequence, towers]
   );
   const focusMode = hoveredTowerSequence != null;
+  const hoverStableRef = useRef<number | null>(hoveredTowerSequence);
+  const hoverIntentRef = useRef<number | null>(hoveredTowerSequence);
+  const hoverCandidateRef = useRef<number | null>(null);
+  const hoverCandidateFramesRef = useRef(0);
+  const hoverLastSeenAtRef = useRef(0);
+
+  useEffect(() => {
+    hoverStableRef.current = hoveredTowerSequence;
+    if (hoveredTowerSequence == null) {
+      hoverIntentRef.current = null;
+      hoverCandidateRef.current = null;
+      hoverCandidateFramesRef.current = 0;
+    }
+  }, [hoveredTowerSequence]);
+
+  const requestHoverTower = (sequence: number | null) => {
+    if (sequence == null) {
+      hoverIntentRef.current = null;
+      return;
+    }
+    hoverIntentRef.current = sequence;
+    hoverLastSeenAtRef.current = performance.now();
+  };
+
+  useFrame(() => {
+    const active = hoverStableRef.current;
+    const intent = hoverIntentRef.current;
+    let nextActive = active;
+    const now = performance.now();
+
+    if (intent != null) {
+      hoverLastSeenAtRef.current = now;
+      if (intent === active) {
+        hoverCandidateRef.current = null;
+        hoverCandidateFramesRef.current = 0;
+      } else {
+        if (hoverCandidateRef.current !== intent) {
+          hoverCandidateRef.current = intent;
+          hoverCandidateFramesRef.current = 1;
+        } else {
+          hoverCandidateFramesRef.current += 1;
+        }
+        if (hoverCandidateFramesRef.current >= HOVER_SWITCH_CONFIRM_FRAMES) {
+          nextActive = intent;
+          hoverCandidateRef.current = null;
+          hoverCandidateFramesRef.current = 0;
+        }
+      }
+    } else {
+      hoverCandidateRef.current = null;
+      hoverCandidateFramesRef.current = 0;
+      if (active != null && now - hoverLastSeenAtRef.current > HOVER_CLEAR_GRACE_MS) {
+        nextActive = null;
+      }
+    }
+
+    if (nextActive !== active) {
+      hoverStableRef.current = nextActive;
+      onHoverTowerChange?.(nextActive);
+    }
+  });
 
   return (
     <Canvas
@@ -3012,7 +3404,7 @@ function SandboxScene({
       dpr={[1, RUNTIME_QUALITY_CONFIG.dprCap]}
       gl={{ antialias: RUNTIME_QUALITY_CONFIG.antialias, alpha: false, powerPreference: 'high-performance' }}
       onPointerMissed={() => {
-        onHoverTowerChange?.(null);
+        requestHoverTower(null);
       }}
       onCreated={({ scene, gl }) => {
         scene.background = new Color('#06080c');
@@ -3034,6 +3426,7 @@ function SandboxScene({
       <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} />
       <TraceStrips traces={traces} focusMode={focusMode} />
       <TrafficParticles particles={trafficParticles} focusMode={focusMode} />
+      <HoverProjectionTracker tower={hoveredTower} onHudUpdate={onHoverHudUpdate} />
 
       {/* Render band 6: tower bodies and holo layers remain the top visual anchors */}
       <group renderOrder={6}>
@@ -3043,7 +3436,7 @@ function SandboxScene({
             tower={tower}
             hoveredTowerSequence={hoveredTowerSequence}
             isTallest={tallestTowerSequence === tower.sequence}
-            onHoverTower={onHoverTowerChange}
+            onHoverTower={requestHoverTower}
           />
         ))}
       </group>
@@ -3056,17 +3449,29 @@ function SandboxScene({
           isHovered={hoveredTowerSequence === tallestTower.sequence}
         />
       ) : null}
-      {hoveredTower ? <HoverTowerLabel tower={hoveredTower} /> : null}
     </Canvas>
   );
 }
 
 export function MinimalVizSandbox() {
   const { events, latest } = useBlockEventStore();
-  const { towers, traces, trafficParticles, parks, parkTrees, bounds, latestHeightDebug, tallestTowerSequence, tallestTowerHeight } =
-    useAppendOnlyTowers(events);
+  const {
+    towers,
+    traces,
+    trafficParticles,
+    parks,
+    parkTrees,
+    bounds,
+    latestHeightDebug,
+    tallestTowerSequence,
+    tallestTowerHeight,
+    parksAttempted,
+    parksPlaced,
+    lastParkSkipReason
+  } = useAppendOnlyTowers(events);
   const [cameraDebug, setCameraDebug] = useState<CameraDebugSnapshot>({ camDist: 0, visCurve: 0 });
   const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
+  const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
 
   useEffect(() => {
     if (hoveredTowerSequence == null) return;
@@ -3074,6 +3479,17 @@ export function MinimalVizSandbox() {
       setHoveredTowerSequence(null);
     }
   }, [hoveredTowerSequence, towers]);
+
+  useEffect(() => {
+    if (hoveredTowerSequence == null && hoverHud.visible) {
+      setHoverHud(HOVER_HUD_HIDDEN);
+    }
+  }, [hoveredTowerSequence, hoverHud.visible]);
+
+  const hoveredTower = useMemo(
+    () => (hoveredTowerSequence == null ? null : towers.find((tower) => tower.sequence === hoveredTowerSequence) ?? null),
+    [hoveredTowerSequence, towers]
+  );
 
   const overlay = useMemo(
     () => ({
@@ -3083,6 +3499,9 @@ export function MinimalVizSandbox() {
       traceCount: traces.length,
       trafficCount: trafficParticles.length,
       parkCount: parks.length,
+      parksAttempted,
+      parksPlaced,
+      lastParkSkipReason,
       cityRadius: bounds.radius,
       glowRadius: Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT),
       camDist: cameraDebug.camDist,
@@ -3097,6 +3516,9 @@ export function MinimalVizSandbox() {
       traces.length,
       trafficParticles.length,
       parks.length,
+      parksAttempted,
+      parksPlaced,
+      lastParkSkipReason,
       bounds.radius,
       cameraDebug.camDist,
       cameraDebug.visCurve,
@@ -3118,8 +3540,10 @@ export function MinimalVizSandbox() {
         hoveredTowerSequence={hoveredTowerSequence}
         tallestTowerSequence={tallestTowerSequence}
         onHoverTowerChange={setHoveredTowerSequence}
+        onHoverHudUpdate={setHoverHud}
         onCameraDebug={setCameraDebug}
       />
+      <HoverHudOverlay tower={hoveredTower} hud={hoverHud} />
       <div className="minimal-viz__overlay" aria-hidden="true">
         <div className="minimal-viz__panel">
           <div className="minimal-viz__title">Sandbox</div>
@@ -3146,6 +3570,18 @@ export function MinimalVizSandbox() {
           <div className="minimal-viz__row">
             <span>Parks</span>
             <span>{overlay.parkCount}</span>
+          </div>
+          <div className="minimal-viz__row">
+            <span>ParksAttempted</span>
+            <span>{overlay.parksAttempted}</span>
+          </div>
+          <div className="minimal-viz__row">
+            <span>ParksPlaced</span>
+            <span>{overlay.parksPlaced}</span>
+          </div>
+          <div className="minimal-viz__row">
+            <span>ParkSkip</span>
+            <span>{overlay.lastParkSkipReason}</span>
           </div>
           <div className="minimal-viz__row">
             <span>TrafficMode</span>
