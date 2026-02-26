@@ -5,8 +5,11 @@ import {
   AdditiveBlending,
   ACESFilmicToneMapping,
   BoxGeometry,
+  CanvasTexture,
   Color,
+  DoubleSide,
   EdgesGeometry,
+  LinearFilter,
   LineBasicMaterial,
   Matrix4,
   MathUtils,
@@ -23,12 +26,14 @@ import { useBlockEventStore } from '../data/trades/blockEventStore';
 import type { BlockEvent } from '../data/trades/types';
 import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
 
+type TowerArchetypeId = 0 | 1 | 2 | 3 | 4 | 5;
+
 type TowerDatum = {
   sequence: number;
   x: number;
   z: number;
   height: number;
-  archetypeId: 0 | 1 | 2 | 3;
+  archetypeId: TowerArchetypeId;
   baseW: number;
   baseD: number;
   footprintX: number;
@@ -44,6 +49,13 @@ type TowerDatum = {
   isHero: boolean;
   heroMult: number;
   capGlowBoost: number;
+  heroMode: 'none' | 'roll' | 'guarantee';
+  btcVolume: number;
+  usdNotional: number;
+  averagePrice: number;
+  tradeCount: number;
+  windowStart: number;
+  windowEnd: number;
   emittedAt: number;
 };
 
@@ -84,12 +96,37 @@ type SandboxBounds = {
   maxY: number;
 };
 
+type ParkDatum = {
+  id: string;
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+  yaw: number;
+  patchColor: string;
+  edgeColor: string;
+  treeStart: number;
+  treeCount: number;
+};
+
+type ParkTreeDatum = {
+  x: number;
+  z: number;
+  yaw: number;
+  trunkH: number;
+  crownH: number;
+  crownR: number;
+  tintMix: number;
+};
+
 type TowerSegmentSpec = {
   id: string;
   y: number;
   height: number;
   sx: number;
   sz: number;
+  ox?: number;
+  oz?: number;
   isTop: boolean;
 };
 
@@ -112,6 +149,7 @@ type HeightDebugSnapshot = {
   height: number;
   isHero: boolean;
   heroMult: number;
+  heroMode: 'none' | 'roll' | 'guarantee';
   baseW: number;
   baseD: number;
   meanLogV: number;
@@ -130,11 +168,18 @@ type AccumState = {
   towers: TowerDatum[];
   traces: TraceDatum[];
   trafficParticles: TrafficParticleDatum[];
+  parks: ParkDatum[];
+  parkTrees: ParkTreeDatum[];
   traceKeySet: Set<string>;
   lastSequence: number;
   bounds: SandboxBounds;
   ema: EmaStats;
   latestHeightDebug: HeightDebugSnapshot | null;
+  nextParkAtCount: number;
+  towersSinceHero: number;
+  heroEligibleSinceLast: number;
+  tallestTowerSequence: number | null;
+  tallestTowerHeight: number;
 };
 
 type CameraMode = 'auto' | 'user' | 'returning';
@@ -195,8 +240,18 @@ const HERO_HEIGHT_MULT_MIN = 1.8;
 const HERO_HEIGHT_MULT_MAX = 2.45;
 const HERO_BASE_MULT_MIN = 1.35;
 const HERO_BASE_MULT_MAX = 1.9;
+const HERO_GUARANTEE_GAP = 56;
+const HERO_GUARANTEE_MIN_ELIGIBLE = 2;
 const VIS_NEAR_DIST = 34;
 const VIS_FAR_DIST = 170;
+const FOCUS_NON_HOVER_DIM = 0.28;
+const FOCUS_GROUND_DIM = 0.42;
+const FOCUS_TRACE_DIM = 0.34;
+const FOCUS_TRAFFIC_DIM = 0.3;
+const HOVER_ORANGE_BOOST = 1.22;
+const PARK_MIN_INTERVAL = 120;
+const PARK_MAX_INTERVAL = 220;
+const PARK_BASE_CLEARANCE = 1.2;
 
 const GROUND_GLOW_Y = -0.05;
 const GROUND_SLAB_Y = -0.03;
@@ -207,6 +262,8 @@ const TRACE_LAYER_STEP_Y = 0.00035;
 const TRAFFIC_BASE_OFFSET_Y = 0.005;
 const TRAFFIC_SOLID_BASE_Y = TRACE_BASE_Y + 0.02;
 const TOWER_GROUND_LIFT_Y = 0.002;
+const PARK_PATCH_Y = GROUND_DECK_Y + 0.0052;
+const TREE_BASE_Y = GROUND_DECK_Y + 0.0108;
 const DEBUG_FORCE_TRAFFIC_VIS = false;
 const MAX_TRAFFIC_INSTANCES = 4096;
 const TRAFFIC_PATH_TRIM = 0.9;
@@ -241,6 +298,9 @@ const desiredTarget = new Vector3();
 const smoothPosition = new Vector3();
 const smoothTarget = new Vector3();
 const tempDir = new Vector3();
+const tempColorA = new Color();
+const tempColorB = new Color();
+const tempColorC = new Color();
 
 function clampFinite(value: number, fallback: number, min?: number, max?: number) {
   const safe = Number.isFinite(value) ? value : fallback;
@@ -251,15 +311,64 @@ const compactNumber = new Intl.NumberFormat('en-US', {
   notation: 'compact',
   maximumFractionDigits: 2
 });
+const compactUsd = new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  notation: 'compact',
+  maximumFractionDigits: 2
+});
 
 function fmtCompact(v: number) {
   if (!Number.isFinite(v)) return '0';
   return compactNumber.format(Math.max(0, v));
 }
 
+function fmtUsdCompact(v: number) {
+  if (!Number.isFinite(v)) return '$0';
+  return compactUsd.format(Math.max(0, v));
+}
+
+function fmtBtc(v: number) {
+  if (!Number.isFinite(v)) return '0';
+  if (v >= 10) return v.toFixed(2);
+  if (v >= 1) return v.toFixed(3);
+  if (v >= 0.1) return v.toFixed(4);
+  return v.toFixed(5);
+}
+
 function fmtFixed(v: number, digits = 2) {
   if (!Number.isFinite(v)) return '0';
   return v.toFixed(digits);
+}
+
+function drawRoundedRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number
+) {
+  const rr = Math.min(r, w * 0.5, h * 0.5);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.lineTo(x + w - rr, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+  ctx.lineTo(x + rr, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+  ctx.lineTo(x, y + rr);
+  ctx.quadraticCurveTo(x, y, x + rr, y);
+  ctx.closePath();
+}
+
+function finalizeCanvasTexture(texture: CanvasTexture) {
+  texture.colorSpace = SRGBColorSpace;
+  texture.minFilter = LinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 function easeOutCubic(t: number) {
@@ -327,7 +436,7 @@ function segmentFromPoints(ax: number, az: number, bx: number, bz: number) {
 }
 
 function buildTowerShapeParams(sequence: number, heightScore: number): {
-  archetypeId: 0 | 1 | 2 | 3;
+  archetypeId: TowerArchetypeId;
   baseW: number;
   baseD: number;
   footprintX: number;
@@ -337,8 +446,18 @@ function buildTowerShapeParams(sequence: number, heightScore: number): {
   crownRatio: number;
 } {
   const archetypePick = hash01(sequence, 101);
-  const archetypeId: 0 | 1 | 2 | 3 =
-    archetypePick < 0.34 ? 0 : archetypePick < 0.62 ? 1 : archetypePick < 0.84 ? 2 : 3;
+  const archetypeId: TowerArchetypeId =
+    archetypePick < 0.17
+      ? 0
+      : archetypePick < 0.34
+        ? 1
+        : archetypePick < 0.52
+          ? 2
+          : archetypePick < 0.7
+            ? 3
+            : archetypePick < 0.87
+              ? 4
+              : 5;
 
   const scoreLike = MathUtils.clamp(heightScore, 0, 1);
   const baseRaw = MathUtils.lerp(MIN_BASE, MAX_BASE, Math.pow(scoreLike, BASE_GAMMA));
@@ -380,6 +499,8 @@ function createEmptyAccum(): AccumState {
     towers: [],
     traces: [],
     trafficParticles: [],
+    parks: [],
+    parkTrees: [],
     traceKeySet: new Set<string>(),
     lastSequence: 0,
     bounds: {
@@ -393,8 +514,137 @@ function createEmptyAccum(): AccumState {
       meanI: 0.4,
       varI: 0.08
     },
-    latestHeightDebug: null
+    latestHeightDebug: null,
+    nextParkAtCount: PARK_MIN_INTERVAL + Math.floor(hash01(1, 7009) * (PARK_MAX_INTERVAL - PARK_MIN_INTERVAL + 1)),
+    towersSinceHero: 0,
+    heroEligibleSinceLast: 0,
+    tallestTowerSequence: null,
+    tallestTowerHeight: 0
   };
+}
+
+function nextParkInterval(seed: number) {
+  return PARK_MIN_INTERVAL + Math.floor(hash01(seed, 7021) * (PARK_MAX_INTERVAL - PARK_MIN_INTERVAL + 1));
+}
+
+function parkConflictsTower(x: number, z: number, w: number, d: number, tower: TowerDatum) {
+  const dx = Math.abs(x - tower.x);
+  const dz = Math.abs(z - tower.z);
+  const towerHalfX = Math.max(tower.baseW, tower.footprintX) * 0.62;
+  const towerHalfZ = Math.max(tower.baseD, tower.footprintZ) * 0.62;
+  return dx < w * 0.5 + towerHalfX + PARK_BASE_CLEARANCE && dz < d * 0.5 + towerHalfZ + PARK_BASE_CLEARANCE;
+}
+
+function parkConflictsPark(x: number, z: number, w: number, d: number, park: ParkDatum) {
+  const dx = Math.abs(x - park.x);
+  const dz = Math.abs(z - park.z);
+  return dx < w * 0.5 + park.w * 0.5 + 1.2 && dz < d * 0.5 + park.d * 0.5 + 1.2;
+}
+
+function appendPark(state: AccumState, seed: number) {
+  if (state.towers.length < 16) return false;
+
+  const cityRadius = Math.max(18, state.bounds.radius);
+  const sizeScale = MathUtils.lerp(0.95, 1.3, MathUtils.clamp(cityRadius / 160, 0, 1));
+  const w = MathUtils.lerp(4.8, 8.8, hash01(seed, 7101)) * sizeScale;
+  const d = MathUtils.lerp(4.4, 8.4, hash01(seed, 7109)) * sizeScale;
+  const yaw = hash01(seed, 7117) * Math.PI;
+  const spawnRadius = MathUtils.clamp(cityRadius * MathUtils.lerp(0.35, 0.9, hash01(seed, 7123)), 8, cityRadius * 0.96);
+
+  let chosenX = 0;
+  let chosenZ = 0;
+  let placed = false;
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const a = hash01(seed, attempt, 7131) * Math.PI * 2;
+    const r = Math.sqrt(hash01(seed, attempt, 7139)) * spawnRadius;
+    const x = Math.cos(a) * r;
+    const z = Math.sin(a) * r;
+    if (Math.hypot(x, z) > cityRadius * 0.98) continue;
+    let blocked = false;
+    for (let i = 0; i < state.towers.length; i++) {
+      if (parkConflictsTower(x, z, w, d, state.towers[i])) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+    for (let i = 0; i < state.parks.length; i++) {
+      if (parkConflictsPark(x, z, w, d, state.parks[i])) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+    chosenX = x;
+    chosenZ = z;
+    placed = true;
+    break;
+  }
+
+  if (!placed) return false;
+
+  const patchColor = new Color('#172018')
+    .lerp(new Color('#1b2318'), hash01(seed, 7201))
+    .lerp(new Color('#101812'), hash01(seed, 7207) * 0.4);
+  const edgeColor = new Color('#c89a54').lerp(new Color('#f7931a'), 0.18 + hash01(seed, 7211) * 0.25);
+
+  const treeStart = state.parkTrees.length;
+  const requestedTreeCount = Math.floor(MathUtils.lerp(12, 40, hash01(seed, 7217)));
+  for (let i = 0; i < requestedTreeCount; i++) {
+    let localX = 0;
+    let localZ = 0;
+    let ok = false;
+    for (let a = 0; a < 6; a++) {
+      const px = (hash01(seed, i, a, 7229) - 0.5) * (w * 0.82);
+      const pz = (hash01(seed, i, a, 7237) - 0.5) * (d * 0.82);
+      // Reserve a subtle internal path/void so parks read as planned spaces.
+      if (Math.abs(px) < w * 0.13 && hash01(seed, i, a, 7243) > 0.24) continue;
+      if (Math.abs(pz) < d * 0.11 && hash01(seed, i, a, 7249) > 0.72) continue;
+      localX = px;
+      localZ = pz;
+      ok = true;
+      break;
+    }
+    if (!ok) continue;
+
+    const cs = Math.cos(yaw);
+    const sn = Math.sin(yaw);
+    const worldX = chosenX + localX * cs - localZ * sn;
+    const worldZ = chosenZ + localX * sn + localZ * cs;
+    if (Math.hypot(worldX, worldZ) > cityRadius * 1.05) continue;
+
+    state.parkTrees.push({
+      x: worldX,
+      z: worldZ,
+      yaw: hash01(seed, i, 7253) * Math.PI * 2,
+      trunkH: MathUtils.lerp(0.22, 0.42, hash01(seed, i, 7261)),
+      crownH: MathUtils.lerp(0.38, 0.78, hash01(seed, i, 7267)),
+      crownR: MathUtils.lerp(0.18, 0.34, hash01(seed, i, 7273)),
+      tintMix: hash01(seed, i, 7281)
+    });
+  }
+
+  state.parks.push({
+    id: `park-${state.towers.length}-${seed}`,
+    x: chosenX,
+    z: chosenZ,
+    w,
+    d,
+    yaw,
+    patchColor: `#${patchColor.getHexString()}`,
+    edgeColor: `#${edgeColor.getHexString()}`,
+    treeStart,
+    treeCount: state.parkTrees.length - treeStart
+  });
+
+  return true;
+}
+
+function maybeAppendPark(state: AccumState, seed: number) {
+  const towerCount = state.towers.length;
+  if (towerCount < state.nextParkAtCount) return;
+  appendPark(state, seed);
+  state.nextParkAtCount = towerCount + nextParkInterval(seed + towerCount);
 }
 
 function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
@@ -513,6 +763,9 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
 
   const intensity = MathUtils.clamp(clampFinite(event.metrics.intensity, 0), 0, 1);
   const totalVolume = Math.max(0, clampFinite(event.metrics.totalVolume, 0, 0, 10_000_000));
+  const averagePrice = Math.max(0, clampFinite(event.metrics.averagePrice, event.metrics.closePrice ?? 0, 0, 10_000_000));
+  const tradeCount = Math.max(0, Math.round(clampFinite(event.metrics.tradeCount, 0, 0, 10_000_000)));
+  const usdNotional = totalVolume * averagePrice;
   const logV = Math.log1p(totalVolume);
 
   const ema = state.ema;
@@ -553,7 +806,14 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   const heroRoll = hash01(event.sequence, 1901);
   const heroProbBoost = MathUtils.clamp((score - HERO_SCORE_MIN) / Math.max(0.0001, 1 - HERO_SCORE_MIN), 0, 1);
   const heroProb = HERO_PROB_BASE * MathUtils.lerp(0.75, 1.85, heroProbBoost);
-  const isHero = score > HERO_SCORE_MIN && heroRoll < heroProb;
+  const heroCandidate = score > HERO_SCORE_MIN;
+  const heroRollHit = heroCandidate && heroRoll < heroProb;
+  const heroGuarantee =
+    heroCandidate &&
+    state.towersSinceHero >= HERO_GUARANTEE_GAP &&
+    state.heroEligibleSinceLast >= HERO_GUARANTEE_MIN_ELIGIBLE;
+  const isHero = heroRollHit || heroGuarantee;
+  const heroMode: 'none' | 'roll' | 'guarantee' = heroRollHit ? 'roll' : heroGuarantee ? 'guarantee' : 'none';
   const heroMult = isHero
     ? MathUtils.lerp(HERO_HEIGHT_MULT_MIN, HERO_HEIGHT_MULT_MAX, hash01(event.sequence, 1907))
     : 1;
@@ -615,6 +875,7 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     height,
     isHero,
     heroMult,
+    heroMode,
     baseW: shape.baseW,
     baseD: shape.baseD,
     meanLogV: ema.meanLogV,
@@ -622,6 +883,13 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     meanI: ema.meanI,
     stdI: emaStd(ema.varI)
   };
+
+  state.towersSinceHero += 1;
+  if (heroCandidate) state.heroEligibleSinceLast += 1;
+  if (isHero) {
+    state.towersSinceHero = 0;
+    state.heroEligibleSinceLast = 0;
+  }
 
   return {
     sequence: event.sequence,
@@ -644,6 +912,13 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     isHero,
     heroMult,
     capGlowBoost,
+    heroMode,
+    btcVolume: totalVolume,
+    usdNotional,
+    averagePrice,
+    tradeCount,
+    windowStart: event.windowStart,
+    windowEnd: event.windowEnd,
     emittedAt: Math.max(0, clampFinite(event.emittedAt, Date.now()))
   };
 }
@@ -680,6 +955,15 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
       target.lastSequence = Math.max(target.lastSequence, event.sequence);
       target.bounds.radius = Math.max(target.bounds.radius, Math.hypot(tower.x, tower.z) + 8);
       target.bounds.maxY = Math.max(target.bounds.maxY, tower.height + 2.5);
+      if (
+        target.tallestTowerSequence == null ||
+        tower.height > target.tallestTowerHeight ||
+        (Math.abs(tower.height - target.tallestTowerHeight) < 0.0001 && tower.sequence > (target.tallestTowerSequence ?? 0))
+      ) {
+        target.tallestTowerSequence = tower.sequence;
+        target.tallestTowerHeight = tower.height;
+      }
+      maybeAppendPark(target, tower.sequence);
       appended = true;
     }
 
@@ -693,8 +977,12 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
     towers: accumRef.current.towers,
     traces: accumRef.current.traces,
     trafficParticles: accumRef.current.trafficParticles,
+    parks: accumRef.current.parks,
+    parkTrees: accumRef.current.parkTrees,
     bounds: accumRef.current.bounds,
-    latestHeightDebug: accumRef.current.latestHeightDebug
+    latestHeightDebug: accumRef.current.latestHeightDebug,
+    tallestTowerSequence: accumRef.current.tallestTowerSequence,
+    tallestTowerHeight: accumRef.current.tallestTowerHeight
   };
 }
 
@@ -968,14 +1256,33 @@ function buildTowerSegments(tower: TowerDatum): TowerSegmentSpec[] {
     pushSegment('taper-a', h1, fx, fz);
     pushSegment('taper-b', h2, fx * (1 - taperAmt * 0.55), fz * (1 - taperAmt * 0.55));
     pushSegment('taper-c', h3, fx * (1 - taperAmt), fz * (1 - taperAmt));
-  } else {
+  } else if (tower.archetypeId === 3) {
+    const h1 = Math.max(0.34, h * 0.26);
+    const h2 = Math.max(0.34, h * 0.28);
+    const h3 = Math.max(0.34, h * 0.24);
+    const h4 = Math.max(0.34, h - h1 - h2 - h3);
+    pushSegment('setback-base', h1, fx * 1.16, fz * 1.16);
+    pushSegment('setback-low', h2, fx * 0.98, fz * 0.98);
+    pushSegment('setback-mid', h3, fx * (0.84 - taperAmt * 0.28), fz * (0.84 - taperAmt * 0.28));
+    pushSegment('setback-top', h4, fx * (0.72 - taperAmt * 0.45), fz * (0.72 - taperAmt * 0.45));
+  } else if (tower.archetypeId === 4) {
     const crownH = MathUtils.clamp(h * tower.crownRatio, 0.35, h * 0.18);
     const shaftH = Math.max(0.6, h - crownH);
-    const lowerH = shaftH * 0.68;
+    const lowerH = shaftH * 0.62;
     const upperH = Math.max(0.4, shaftH - lowerH);
-    pushSegment('lower', lowerH, fx * 1.04, fz * 1.04);
-    pushSegment('upper', upperH, fx * (0.92 - taperAmt * 0.35), fz * (0.92 - taperAmt * 0.35));
-    pushSegment('crown-block', crownH, fx * (0.72 - taperAmt * 0.2), fz * (0.72 - taperAmt * 0.2));
+    pushSegment('crown-lower', lowerH, fx * 1.02, fz * 1.02);
+    pushSegment('crown-upper', upperH, fx * (0.86 - taperAmt * 0.35), fz * (0.86 - taperAmt * 0.35));
+    pushSegment('crown-cap', crownH * 0.74, fx * (0.68 - taperAmt * 0.16), fz * (0.68 - taperAmt * 0.16));
+    pushSegment('crown-lantern', Math.max(0.18, crownH * 0.26), fx * 0.36, fz * 0.36);
+  } else {
+    const podiumH = MathUtils.clamp(h * (tower.podiumRatio * 0.8), 0.28, h * 0.16);
+    const shaftH = Math.max(0.8, h * 0.74);
+    const spireBaseH = Math.max(0.26, h * 0.08);
+    const spireH = Math.max(0.24, h - podiumH - shaftH - spireBaseH);
+    pushSegment('spire-podium', podiumH, fx * 1.12, fz * 1.12);
+    pushSegment('spire-shaft', shaftH, fx * (0.78 - taperAmt * 0.24), fz * (0.78 - taperAmt * 0.24));
+    pushSegment('spire-base', spireBaseH, fx * 0.46, fz * 0.46);
+    pushSegment('spire-tip', spireH, fx * 0.18, fz * 0.18);
   }
 
   if (segments.length > 0) {
@@ -985,13 +1292,347 @@ function buildTowerSegments(tower: TowerDatum): TowerSegmentSpec[] {
   return segments;
 }
 
-function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
+function TallestBtcDecals({
+  tower,
+  focusMode,
+  isHovered
+}: {
+  tower: TowerDatum;
+  focusMode: boolean;
+  isHovered: boolean;
+}) {
+  const texture = useMemo(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    drawRoundedRect(ctx, -86, -96, 172, 192, 20);
+    ctx.fillStyle = 'rgba(10,13,18,0.78)';
+    ctx.fill();
+    ctx.lineWidth = 8;
+    ctx.strokeStyle = 'rgba(247,147,26,0.72)';
+    ctx.stroke();
+
+    ctx.font = '700 142px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.shadowBlur = 16;
+    ctx.shadowColor = 'rgba(247,147,26,0.55)';
+    ctx.strokeStyle = 'rgba(247,147,26,0.95)';
+    ctx.lineWidth = 7;
+    ctx.strokeText('₿', 0, 8);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(18,22,28,0.95)';
+    ctx.fillText('₿', 0, 8);
+    ctx.restore();
+
+    return finalizeCanvasTexture(new CanvasTexture(canvas));
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      texture?.dispose();
+    };
+  }, [texture]);
+
+  if (!texture) return null;
+
+  const focusScale = focusMode ? (isHovered ? 1 : FOCUS_NON_HOVER_DIM) : 1;
+  const rimOpacity = (isHovered ? 0.42 : 0.24) * focusScale;
+  const faceOpacity = (isHovered ? 0.82 : 0.62) * focusScale;
+  const logoW = Math.max(0.65, Math.min(tower.footprintX * 0.86, 3.6));
+  const logoH = Math.max(1.1, Math.min(tower.height * 0.24, 10));
+  const y = Math.max(logoH * 0.56 + 0.5, Math.min(tower.height * 0.54, tower.height - logoH * 0.5 - 0.2));
+  const zInset = Math.max(tower.footprintZ * 0.5 + 0.012, 0.12);
+  const xInset = Math.max(tower.footprintX * 0.5 + 0.012, 0.12);
+
+  const faces = [
+    { key: 'front', pos: [0, y, zInset] as [number, number, number], rot: [0, 0, 0] as [number, number, number] },
+    { key: 'back', pos: [0, y, -zInset] as [number, number, number], rot: [0, Math.PI, 0] as [number, number, number] },
+    { key: 'right', pos: [xInset, y, 0] as [number, number, number], rot: [0, Math.PI / 2, 0] as [number, number, number] },
+    { key: 'left', pos: [-xInset, y, 0] as [number, number, number], rot: [0, -Math.PI / 2, 0] as [number, number, number] }
+  ];
+
+  return (
+    <group renderOrder={6.45}>
+      {faces.map((face) => (
+        <group key={face.key} position={face.pos} rotation={face.rot}>
+          <mesh position={[0, 0, 0]} renderOrder={6.45}>
+            <planeGeometry args={[logoW, logoH]} />
+            <meshBasicMaterial
+              map={texture}
+              alphaMap={texture}
+              transparent
+              opacity={faceOpacity}
+              color="#171d25"
+              toneMapped={false}
+              depthTest
+              depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-2}
+              polygonOffsetUnits={-2}
+            />
+          </mesh>
+          <mesh position={[0, 0, 0.004]} renderOrder={6.46}>
+            <planeGeometry args={[logoW * 1.02, logoH * 1.02]} />
+            <meshBasicMaterial
+              map={texture}
+              alphaMap={texture}
+              transparent
+              opacity={rimOpacity}
+              color={isHovered ? '#ffb14f' : '#f7931a'}
+              toneMapped={false}
+              depthTest
+              depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-3}
+              polygonOffsetUnits={-3}
+              blending={AdditiveBlending}
+            />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
+function TallestBeacon({
+  tower,
+  sceneMaxY,
+  focusMode,
+  isHovered
+}: {
+  tower: TowerDatum;
+  sceneMaxY: number;
+  focusMode: boolean;
+  isHovered: boolean;
+}) {
+  const beamOuterRef = useRef<Mesh>(null);
+  const beamInnerRef = useRef<Mesh>(null);
+  const topHaloRef = useRef<Mesh>(null);
+  const hoverMixRef = useRef(0);
+
+  const beamLength = Math.max(12, Math.min(52, sceneMaxY * 0.78 + 6));
+  const beamCenterY = tower.height + 0.9 + beamLength * 0.5;
+
+  useFrame(({ clock }, delta) => {
+    hoverMixRef.current = MathUtils.damp(hoverMixRef.current, isHovered ? 1 : 0, 9, delta);
+    const pulse = 0.85 + Math.sin(clock.getElapsedTime() * 1.8 + tower.sequence * 0.07) * 0.05;
+    const dimScale = MathUtils.lerp(1, FOCUS_NON_HOVER_DIM, focusMode && !isHovered ? 1 : 0);
+    const hoverBoost = MathUtils.lerp(1, 1.35, hoverMixRef.current);
+
+    const outerMat = beamOuterRef.current?.material as { opacity?: number } | undefined;
+    if (outerMat) outerMat.opacity = MathUtils.damp(outerMat.opacity ?? 0.16, 0.16 * pulse * dimScale * hoverBoost, 9, delta);
+    const innerMat = beamInnerRef.current?.material as { opacity?: number } | undefined;
+    if (innerMat) innerMat.opacity = MathUtils.damp(innerMat.opacity ?? 0.28, 0.28 * pulse * dimScale * hoverBoost, 9, delta);
+    const haloMat = topHaloRef.current?.material as { opacity?: number } | undefined;
+    if (haloMat) haloMat.opacity = MathUtils.damp(haloMat.opacity ?? 0.34, 0.34 * dimScale * hoverBoost, 9, delta);
+
+    if (topHaloRef.current) {
+      const s = MathUtils.lerp(1.0, 1.16, 0.5 + 0.5 * Math.sin(clock.getElapsedTime() * 1.35 + tower.sequence * 0.11));
+      topHaloRef.current.scale.set(s, 1, s);
+    }
+  });
+
+  return (
+    <group position={[tower.x, 0, tower.z]} renderOrder={6.7}>
+      <mesh ref={beamOuterRef} position={[0, beamCenterY, 0]} renderOrder={6.71}>
+        <cylinderGeometry args={[0.62, 0.22, beamLength, 18, 1, true]} />
+        <meshBasicMaterial
+          color="#f7931a"
+          transparent
+          opacity={0.16}
+          toneMapped={false}
+          depthTest
+          depthWrite={false}
+          side={DoubleSide}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+      <mesh ref={beamInnerRef} position={[0, beamCenterY, 0]} renderOrder={6.72}>
+        <cylinderGeometry args={[0.22, 0.08, beamLength, 14, 1, true]} />
+        <meshBasicMaterial
+          color="#ffe2b7"
+          transparent
+          opacity={0.28}
+          toneMapped={false}
+          depthTest
+          depthWrite={false}
+          side={DoubleSide}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+      <mesh position={[0, tower.height + 0.2, 0]} renderOrder={6.73}>
+        <cylinderGeometry args={[0.56, 0.56, 0.04, 24]} />
+        <meshBasicMaterial
+          color="#f7931a"
+          transparent
+          opacity={0.22}
+          toneMapped={false}
+          depthTest
+          depthWrite={false}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+      <mesh ref={topHaloRef} position={[0, tower.height + 0.32, 0]} renderOrder={6.74}>
+        <cylinderGeometry args={[0.42, 0.42, 0.05, 20]} />
+        <meshBasicMaterial
+          color="#fff3df"
+          transparent
+          opacity={0.34}
+          toneMapped={false}
+          depthTest
+          depthWrite={false}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+function HoverTowerLabel({ tower }: { tower: TowerDatum }) {
+  const { camera } = useThree();
   const groupRef = useRef<Group>(null);
+  const cardRef = useRef<Mesh>(null);
+  const glowRef = useRef<Mesh>(null);
+  const alphaRef = useRef(0);
+
+  const usdText = useMemo(() => fmtUsdCompact(tower.usdNotional), [tower.usdNotional]);
+  const btcText = useMemo(() => `${fmtBtc(tower.btcVolume)} BTC`, [tower.btcVolume]);
+
+  const texture = useMemo(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 768;
+    canvas.height = 320;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const grad = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+    grad.addColorStop(0, 'rgba(13,17,23,0.96)');
+    grad.addColorStop(1, 'rgba(7,9,12,0.92)');
+    drawRoundedRect(ctx, 18, 18, canvas.width - 36, canvas.height - 36, 28);
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(247,147,26,0.72)';
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(48, 114);
+    ctx.lineTo(canvas.width - 48, 114);
+    ctx.strokeStyle = 'rgba(247,147,26,0.18)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.shadowColor = 'rgba(247,147,26,0.35)';
+    ctx.shadowBlur = 18;
+    ctx.fillStyle = '#fff7ec';
+    ctx.font = '700 76px ui-sans-serif, system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(usdText, 52, 100);
+
+    ctx.shadowBlur = 8;
+    ctx.fillStyle = '#f2d7b1';
+    ctx.font = '600 48px ui-sans-serif, system-ui, sans-serif';
+    ctx.fillText(btcText, 52, 182);
+
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(247,147,26,0.92)';
+    ctx.font = '700 34px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillText(`#${tower.sequence}`, 52, 250);
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(244,227,200,0.82)';
+    ctx.font = '500 28px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillText(`trades ${tower.tradeCount}`, canvas.width - 52, 250);
+
+    return finalizeCanvasTexture(new CanvasTexture(canvas));
+  }, [btcText, tower.sequence, tower.tradeCount, usdText]);
+
+  useEffect(() => {
+    return () => {
+      texture?.dispose();
+    };
+  }, [texture]);
+
+  useFrame(({ clock }, delta) => {
+    const group = groupRef.current;
+    if (!group) return;
+    alphaRef.current = MathUtils.damp(alphaRef.current, 1, 10, delta);
+    const bob = Math.sin(clock.getElapsedTime() * 2.1 + tower.sequence * 0.17) * 0.08;
+    group.position.set(tower.x, tower.height + 1.8 + bob, tower.z);
+    group.quaternion.copy(camera.quaternion);
+    const s = MathUtils.lerp(0.9, 1, alphaRef.current);
+    group.scale.setScalar(s);
+
+    const cardMat = cardRef.current?.material as { opacity?: number } | undefined;
+    if (cardMat) cardMat.opacity = alphaRef.current * 0.98;
+    const glowMat = glowRef.current?.material as { opacity?: number } | undefined;
+    if (glowMat) glowMat.opacity = alphaRef.current * 0.38;
+  });
+
+  if (!texture) return null;
+
+  return (
+    <group ref={groupRef} position={[tower.x, tower.height + 1.8, tower.z]} renderOrder={8.2}>
+      <mesh ref={glowRef} position={[0, 0, -0.02]} renderOrder={8.2}>
+        <planeGeometry args={[4.7, 1.95]} />
+        <meshBasicMaterial
+          color="#f7931a"
+          transparent
+          opacity={0}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+          side={DoubleSide}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+      <mesh ref={cardRef} renderOrder={8.25}>
+        <planeGeometry args={[4.25, 1.75]} />
+        <meshBasicMaterial
+          map={texture}
+          alphaMap={texture}
+          transparent
+          opacity={0}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+          side={DoubleSide}
+        />
+      </mesh>
+    </group>
+  );
+}
+
+function AnimatedHoloTower({
+  tower,
+  hoveredTowerSequence,
+  isTallest,
+  onHoverTower
+}: {
+  tower: TowerDatum;
+  hoveredTowerSequence: number | null;
+  isTallest: boolean;
+  onHoverTower?: (sequence: number | null) => void;
+}) {
+  const groupRef = useRef<Group>(null);
+  const coreRefs = useRef<Array<Mesh | null>>([]);
   const shellRefs = useRef<Array<Mesh | null>>([]);
   const edgeRefs = useRef<Array<Mesh | null>>([]);
   const crownRef = useRef<Mesh>(null);
   const bandRefs = useRef<Array<Mesh | null>>([]);
   const settledRef = useRef(false);
+  const focusMixRef = useRef(0);
+  const hoverMixRef = useRef(0);
 
   const glowColor = useMemo(() => new Color(tower.glowColor), [tower.glowColor]);
   const coreColor = useMemo(() => new Color(tower.coreColor), [tower.coreColor]);
@@ -1023,6 +1664,7 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
   }, [tower.sequence]);
 
   useEffect(() => {
+    coreRefs.current.length = segments.length;
     shellRefs.current.length = segments.length;
     edgeRefs.current.length = segments.length;
     bandRefs.current.length = bandFractions.length;
@@ -1037,73 +1679,193 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
     };
   }, [outlineGeometries, outlineMaterial]);
 
-  useFrame(() => {
+  const isHovered = hoveredTowerSequence === tower.sequence;
+  const focusMode = hoveredTowerSequence != null;
+
+  useFrame((_, delta) => {
     const group = groupRef.current;
     if (!group) return;
-    if (settledRef.current) return;
+
+    focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 8.5, delta);
+    hoverMixRef.current = MathUtils.damp(hoverMixRef.current, isHovered ? 1 : 0, 11, delta);
 
     const now = Date.now();
     const elapsed = now - tower.emittedAt;
     const riseT = MathUtils.clamp(elapsed / BIRTH_RISE_MS, 0, 1);
     const riseScaleY = Math.max(0.0001, easeOutBack(riseT, BIRTH_OVERSHOOT));
-    group.scale.y = riseScaleY;
-
     const glowT = MathUtils.clamp((elapsed - BIRTH_GLOW_DELAY_MS) / BIRTH_GLOW_RAMP_MS, 0, 1);
-    const glowAlpha = easeOutCubic(glowT);
+    const glowAlphaBirth = easeOutCubic(glowT);
 
-    const crownMat = crownRef.current?.material as { opacity?: number } | undefined;
-    if (crownMat) crownMat.opacity = MathUtils.clamp(CROWN_OPACITY * tower.glowStrength * tower.capGlowBoost * glowAlpha, 0, 1);
+    if (!settledRef.current) {
+      group.scale.y = riseScaleY;
+      if (riseT >= 1 && glowT >= 1) {
+        group.scale.y = 1;
+        settledRef.current = true;
+      }
+    } else if (group.scale.y !== 1) {
+      group.scale.y = 1;
+    }
+
+    const birthGlowAlpha = settledRef.current ? 1 : glowAlphaBirth;
+    const nonHoverFocusFactor = focusMode && !isHovered ? focusMixRef.current : 0;
+    const focusDim = MathUtils.lerp(1, FOCUS_NON_HOVER_DIM, nonHoverFocusFactor);
+    const hoverBoost = MathUtils.lerp(1, HOVER_ORANGE_BOOST, hoverMixRef.current);
+
+    outlineMaterial.opacity = MathUtils.damp(
+      outlineMaterial.opacity,
+      MathUtils.clamp(0.72 * focusDim * MathUtils.lerp(1, 1.25, hoverMixRef.current), 0, 1),
+      10,
+      delta
+    );
+    outlineMaterial.color.copy(
+      tempColorA.copy(BTC_SELL_WARM).lerp(BTC_ORANGE, hoverMixRef.current * 0.92 + (tower.isHero ? 0.08 : 0))
+    );
+
+    const crownMat = crownRef.current?.material as { opacity?: number; color?: Color } | undefined;
+    if (crownMat?.color) {
+      crownMat.color.copy(tempColorA.copy(glowColor).lerp(BTC_ORANGE, hoverMixRef.current * 0.72));
+    }
+    if (crownMat) {
+      const crownTarget =
+        CROWN_OPACITY * tower.glowStrength * tower.capGlowBoost * birthGlowAlpha * focusDim * hoverBoost * (isTallest ? 1.06 : 1);
+      crownMat.opacity = MathUtils.damp(crownMat.opacity ?? 0, MathUtils.clamp(crownTarget, 0, 1), 10, delta);
+    }
 
     for (let i = 0; i < segments.length; i++) {
+      const core = coreRefs.current[i];
       const shell = shellRefs.current[i];
       const edge = edgeRefs.current[i];
       const segBoost = segments[i]?.isTop ? 1.08 : 1;
-      const shellMat = shell?.material as { opacity?: number } | undefined;
-      const edgeMat = edge?.material as { opacity?: number } | undefined;
-      if (shellMat) shellMat.opacity = MathUtils.clamp(GLOW_SHELL_OPACITY * tower.glowStrength * segBoost * glowAlpha, 0, 1);
-      if (edgeMat) edgeMat.opacity = MathUtils.clamp(GLOW_EDGE_OPACITY * tower.glowStrength * segBoost * glowAlpha, 0, 1);
+      const coreMat = core?.material as
+        | { color?: Color; emissive?: Color; emissiveIntensity?: number }
+        | undefined;
+      const shellMat = shell?.material as { opacity?: number; color?: Color } | undefined;
+      const edgeMat = edge?.material as { opacity?: number; color?: Color } | undefined;
+
+      if (coreMat?.color) {
+        const colorTarget = tempColorA.copy(coreColor);
+        if (focusMode && !isHovered) colorTarget.lerp(tempColorB.set('#11161d'), 0.68);
+        if (tower.isHero && !isHovered) colorTarget.lerp(BTC_ORANGE, 0.04);
+        if (isHovered) colorTarget.lerp(BTC_ORANGE, 0.54 * hoverMixRef.current);
+        coreMat.color.copy(colorTarget);
+      }
+      if (coreMat?.emissive) {
+        const emissiveTarget = tempColorB.copy(coreColor).lerp(glowColor, 0.18 + tower.heightScore * 0.12);
+        if (focusMode && !isHovered) emissiveTarget.multiplyScalar(0.44);
+        if (isHovered) emissiveTarget.lerp(BTC_ORANGE, 0.74 * hoverMixRef.current);
+        coreMat.emissive.copy(emissiveTarget);
+      }
+      if (typeof coreMat?.emissiveIntensity === 'number') {
+        const baseEi = (segments[i]?.isTop ? 0.055 : 0.045) * (tower.isHero ? 1.08 : 1);
+        coreMat.emissiveIntensity = MathUtils.damp(
+          coreMat.emissiveIntensity,
+          baseEi * focusDim * MathUtils.lerp(1, 1.6, hoverMixRef.current),
+          10,
+          delta
+        );
+      }
+
+      if (shellMat?.color) {
+        shellMat.color.copy(tempColorA.copy(glowColor).lerp(BTC_ORANGE, hoverMixRef.current * 0.85));
+      }
+      if (shellMat) {
+        const shellTarget = GLOW_SHELL_OPACITY * tower.glowStrength * segBoost * birthGlowAlpha * focusDim * hoverBoost;
+        shellMat.opacity = MathUtils.damp(shellMat.opacity ?? 0, MathUtils.clamp(shellTarget, 0, 1), 10, delta);
+      }
+
+      if (edgeMat?.color) {
+        edgeMat.color.copy(tempColorA.copy(BTC_SELL_WARM).lerp(BTC_ORANGE, hoverMixRef.current * 0.95));
+      }
+      if (edgeMat) {
+        const edgeTarget = GLOW_EDGE_OPACITY * tower.glowStrength * segBoost * birthGlowAlpha * focusDim * hoverBoost;
+        edgeMat.opacity = MathUtils.damp(edgeMat.opacity ?? 0, MathUtils.clamp(edgeTarget, 0, 1), 10, delta);
+      }
     }
 
     for (let i = 0; i < bandRefs.current.length; i++) {
       const band = bandRefs.current[i];
       if (!band) continue;
       band.visible = i < tower.bandCount;
-      const mat = band.material as { opacity?: number } | undefined;
+      const mat = band.material as { opacity?: number; color?: Color } | undefined;
       if (mat) {
         const localFade = 0.9 - i * 0.08;
-        mat.opacity = MathUtils.clamp(BAND_OPACITY * tower.glowStrength * glowAlpha * localFade, 0, 1);
+        if (mat.color) {
+          mat.color.copy(tempColorA.copy(glowColor).lerp(BTC_ORANGE, hoverMixRef.current * 0.75));
+        }
+        const bandTarget = BAND_OPACITY * tower.glowStrength * birthGlowAlpha * localFade * focusDim * hoverBoost;
+        mat.opacity = MathUtils.damp(mat.opacity ?? 0, MathUtils.clamp(bandTarget, 0, 1), 10, delta);
       }
-    }
-
-    if (riseT >= 1 && glowT >= 1) {
-      group.scale.y = 1;
-      settledRef.current = true;
     }
   });
 
   return (
     <group ref={groupRef} position={[tower.x, TOWER_GROUND_LIFT_Y, tower.z]} scale={[1, 0.0001, 1]}>
+      <mesh
+        position={[0, Math.max(0.25, tower.height * 0.5), 0]}
+        renderOrder={6.01}
+        userData={{ towerSequence: tower.sequence }}
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          onHoverTower?.(tower.sequence);
+        }}
+        onPointerMove={(e) => {
+          e.stopPropagation();
+          onHoverTower?.(tower.sequence);
+        }}
+        onPointerOut={(e) => {
+          e.stopPropagation();
+          const stillSameTower =
+            e.intersections?.some(
+              (hit) =>
+                (hit.object as { userData?: { towerSequence?: number } }).userData?.towerSequence === tower.sequence
+            ) ?? false;
+          if (!stillSameTower) onHoverTower?.(null);
+        }}
+      >
+        <boxGeometry
+          args={[
+            Math.max(tower.baseW, tower.footprintX) * 1.22,
+            Math.max(0.4, tower.height + 0.25),
+            Math.max(tower.baseD, tower.footprintZ) * 1.22
+          ]}
+        />
+        <meshBasicMaterial transparent opacity={0} colorWrite={false} depthTest={false} depthWrite={false} />
+      </mesh>
+
       {segments.map((seg, i) => (
-        <group key={`${tower.sequence}-seg-${seg.id}-${i}`} position={[0, seg.y, 0]}>
-          <mesh castShadow={RUNTIME_QUALITY_CONFIG.shadows} receiveShadow={RUNTIME_QUALITY_CONFIG.shadows}>
+        <group key={`${tower.sequence}-seg-${seg.id}-${i}`} position={[seg.ox ?? 0, seg.y, seg.oz ?? 0]}>
+          <mesh
+            castShadow={RUNTIME_QUALITY_CONFIG.shadows}
+            receiveShadow={RUNTIME_QUALITY_CONFIG.shadows}
+            ref={(el) => {
+              coreRefs.current[i] = el;
+            }}
+          >
             <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
-          <meshStandardMaterial
-            color={coreColor}
-            transparent={false}
-            roughness={0.38}
-            metalness={0.16}
-            emissive={coreColor}
-            emissiveIntensity={seg.isTop ? 0.055 : 0.045}
-            depthTest
-            depthWrite
-          />
+            <meshStandardMaterial
+              color={coreColor}
+              transparent={false}
+              roughness={0.38}
+              metalness={0.16}
+              emissive={coreColor}
+              emissiveIntensity={seg.isTop ? 0.055 : 0.045}
+              depthTest
+              depthWrite
+            />
           </mesh>
-          <lineSegments scale={[1.002, 1.002, 1.002]} geometry={outlineGeometries[i]} material={outlineMaterial} renderOrder={6.05} />
+          <lineSegments
+            scale={[1.004, 1.004, 1.004]}
+            geometry={outlineGeometries[i]}
+            material={outlineMaterial}
+            renderOrder={6.08}
+            frustumCulled={false}
+          />
           <mesh
             ref={(el) => {
               shellRefs.current[i] = el;
             }}
             scale={[GLOW_SHELL_SCALE, 1.002, GLOW_SHELL_SCALE]}
+            renderOrder={6.12}
           >
             <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
             <meshBasicMaterial
@@ -1113,6 +1875,9 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
               toneMapped={false}
               depthTest
               depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-1}
               blending={AdditiveBlending}
             />
           </mesh>
@@ -1121,6 +1886,7 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
               edgeRefs.current[i] = el;
             }}
             scale={[GLOW_EDGE_SCALE, 1.006, GLOW_EDGE_SCALE]}
+            renderOrder={6.14}
           >
             <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
             <meshBasicMaterial
@@ -1131,6 +1897,9 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
               toneMapped={false}
               depthTest
               depthWrite={false}
+              polygonOffset
+              polygonOffsetFactor={-1}
+              polygonOffsetUnits={-1}
               blending={AdditiveBlending}
             />
           </mesh>
@@ -1144,6 +1913,7 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
             bandRefs.current[i] = el;
           }}
           position={[0, tower.height * f, 0]}
+          renderOrder={6.18}
           visible={i < tower.bandCount}
         >
           <boxGeometry
@@ -1165,7 +1935,9 @@ function AnimatedHoloTower({ tower }: { tower: TowerDatum }) {
         </mesh>
       ))}
 
-      <mesh ref={crownRef} position={[0, tower.height + 0.08, 0]}>
+      {isTallest ? <TallestBtcDecals tower={tower} focusMode={focusMode} isHovered={isHovered} /> : null}
+
+      <mesh ref={crownRef} position={[0, tower.height + 0.08, 0]} renderOrder={6.2}>
         <boxGeometry
           args={[
             Math.max(0.16, (topSegment?.sx ?? tower.footprintX) * 0.9),
@@ -1253,7 +2025,9 @@ function ScreenSpaceGroundLine({
   opacity,
   lineWidth,
   renderOrder,
-  additive = false
+  additive = false,
+  focusMode = false,
+  focusDim = FOCUS_GROUND_DIM
 }: {
   points: LinePoints;
   y: number;
@@ -1262,8 +2036,11 @@ function ScreenSpaceGroundLine({
   lineWidth: number;
   renderOrder: number;
   additive?: boolean;
+  focusMode?: boolean;
+  focusDim?: number;
 }) {
   const { size } = useThree();
+  const opacityRef = useRef(opacity);
   const geometry = useMemo(() => {
     const g = new LineGeometry();
     const flat: number[] = [];
@@ -1295,6 +2072,7 @@ function ScreenSpaceGroundLine({
 
   const line = useMemo(() => {
     const l = new Line2(geometry, material);
+    l.computeLineDistances();
     l.frustumCulled = false;
     l.renderOrder = renderOrder;
     l.position.set(0, y, 0);
@@ -1308,9 +2086,17 @@ function ScreenSpaceGroundLine({
   useEffect(() => {
     line.renderOrder = renderOrder;
     line.position.y = y;
-    material.opacity = opacity;
     material.linewidth = lineWidth;
   }, [line, material, renderOrder, y, opacity, lineWidth]);
+
+  useEffect(() => {
+    opacityRef.current = opacity;
+  }, [opacity]);
+
+  useFrame((_, delta) => {
+    const target = opacityRef.current * (focusMode ? focusDim : 1);
+    material.opacity = MathUtils.damp(material.opacity, target, 9.5, delta);
+  });
 
   useEffect(() => {
     return () => {
@@ -1322,16 +2108,26 @@ function ScreenSpaceGroundLine({
   return <primitive object={line} />;
 }
 
-function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
+function CircuitBoardGround({
+  bounds,
+  focusMode = false
+}: {
+  bounds: SandboxBounds;
+  focusMode?: boolean;
+}) {
   const boardSize = MathUtils.clamp(Math.max(420, bounds.radius * 8 + 180), 420, 1400);
   const targetGlowRadius = clampFinite(Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT), 64, 30, boardSize * 0.48);
   const arteryLen = Math.min(boardSize * 0.92, Math.max(140, bounds.radius * 3.6));
   const groundGraphicY = GROUND_GRAPHIC_Y;
   const lineExtent = MathUtils.clamp(Math.max(200, bounds.radius * 4.2), 200, boardSize * 0.94);
+  const gridStep = MathUtils.clamp(Math.round(Math.max(10, bounds.radius * 0.16)), 10, 20);
   const windRoseRadius = MathUtils.clamp(Math.max(68, bounds.radius * 2.35), 68, lineExtent * 0.62);
   const glowMeshRef = useRef<Mesh>(null);
   const smoothGlowRadiusRef = useRef(targetGlowRadius);
+  const focusMixRef = useRef(0);
   const glowGeometry = useMemo(() => new PlaneGeometry(1, 1, 1, 1), []);
+  const gridSegments = useMemo(() => buildGridSegments(lineExtent, gridStep), [lineExtent, gridStep]);
+  const gridLinePairs = useMemo(() => segmentsToLinePointPairs(gridSegments), [gridSegments]);
   const windRoseSegments = useMemo(() => buildWindRoseSegments(windRoseRadius), [windRoseRadius]);
   const windRoseAxisLines = useMemo(() => segmentsToLinePointPairs(windRoseSegments.slice(0, 4)), [windRoseSegments]);
   const windRoseDiagonalLines = useMemo(() => segmentsToLinePointPairs(windRoseSegments.slice(4, 8)), [windRoseSegments]);
@@ -1367,6 +2163,7 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
   }, [glowGeometry, glowMaterial]);
 
   useFrame((_, delta) => {
+    focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 6.5, delta);
     const safeTarget = clampFinite(targetGlowRadius, smoothGlowRadiusRef.current || 64, 30, boardSize * 0.48);
     if (!Number.isFinite(smoothGlowRadiusRef.current)) {
       smoothGlowRadiusRef.current = safeTarget;
@@ -1375,11 +2172,13 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
     const r = MathUtils.clamp(smoothGlowRadiusRef.current, 30, boardSize * 0.48);
     if (glowMeshRef.current) {
       glowMeshRef.current.scale.set(r * 2.2, r * 2.2, 1);
-      glowUniforms.uOpacity.value = 0.86;
+      glowUniforms.uOpacity.value = MathUtils.lerp(0.86, 0.62, focusMixRef.current);
     }
   });
 
-    return (
+  const focusStaticScale = focusMode ? FOCUS_GROUND_DIM : 1;
+
+  return (
     <group>
       {/* Layer stack: 0=deck, 1=radial glow (only depthTest off), 2=grid/wind-rose overlay lines, 3=guide lines */}
       <mesh
@@ -1418,6 +2217,19 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
         />
       </mesh>
 
+      {gridLinePairs.map((points, i) => (
+        <ScreenSpaceGroundLine
+          key={`grid-${i}`}
+          points={points}
+          y={groundGraphicY + 0.0005}
+          color={i % 2 === 0 ? '#d2b788' : '#bca173'}
+          opacity={i % 4 === 0 ? 0.055 : 0.035}
+          lineWidth={i % 4 === 0 ? 1.1 : 0.8}
+          renderOrder={2.02}
+          focusMode={focusMode}
+          focusDim={FOCUS_GROUND_DIM}
+        />
+      ))}
       {windRoseDiagonalLines.map((points, i) => (
         <ScreenSpaceGroundLine
           key={`wr-diag-${i}`}
@@ -1428,6 +2240,8 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
           lineWidth={2.2}
           renderOrder={2.08}
           additive
+          focusMode={focusMode}
+          focusDim={FOCUS_GROUND_DIM}
         />
       ))}
       {windRoseAxisLines.map((points, i) => (
@@ -1440,6 +2254,8 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
           lineWidth={3.1}
           renderOrder={2.1}
           additive
+          focusMode={focusMode}
+          focusDim={FOCUS_GROUND_DIM}
         />
       ))}
       {windRoseCrosshairLines.map((points, i) => (
@@ -1451,6 +2267,8 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
           opacity={0.14}
           lineWidth={2.0}
           renderOrder={2.12}
+          focusMode={focusMode}
+          focusDim={FOCUS_GROUND_DIM}
         />
       ))}
       <ScreenSpaceGroundLine
@@ -1461,6 +2279,8 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
         lineWidth={2.6}
         renderOrder={2.16}
         additive
+        focusMode={focusMode}
+        focusDim={FOCUS_GROUND_DIM}
       />
       <ScreenSpaceGroundLine
         points={innerRingPoints}
@@ -1469,44 +2289,337 @@ function CircuitBoardGround({ bounds }: { bounds: SandboxBounds }) {
         opacity={0.09}
         lineWidth={1.7}
         renderOrder={2.14}
+        focusMode={focusMode}
+        focusDim={FOCUS_GROUND_DIM}
       />
 
       <mesh position={[0, groundGraphicY + 0.002, 0]} renderOrder={3}>
         <boxGeometry args={[0.18, 0.01, arteryLen]} />
-        <meshBasicMaterial color="#F7931A" transparent opacity={0.22} toneMapped={false} depthWrite={false} depthTest />
+        <meshBasicMaterial
+          color="#F7931A"
+          transparent
+          opacity={0.22 * focusStaticScale}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+        />
       </mesh>
       <mesh position={[0, groundGraphicY + 0.0025, 0]} renderOrder={3}>
         <boxGeometry args={[arteryLen * 0.72, 0.01, 0.16]} />
-        <meshBasicMaterial color="#f4e8d6" transparent opacity={0.11} toneMapped={false} depthWrite={false} depthTest />
+        <meshBasicMaterial
+          color="#f4e8d6"
+          transparent
+          opacity={0.11 * focusStaticScale}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+        />
       </mesh>
       <mesh rotation={[0, Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.8]} />
-        <meshBasicMaterial color="#F7931A" transparent opacity={0.12} toneMapped={false} depthWrite={false} depthTest />
+        <meshBasicMaterial
+          color="#F7931A"
+          transparent
+          opacity={0.12 * focusStaticScale}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+        />
       </mesh>
       <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
         <boxGeometry args={[0.12, 0.008, arteryLen * 0.62]} />
-        <meshBasicMaterial color="#ffe7c4" transparent opacity={0.095} toneMapped={false} depthWrite={false} depthTest />
+        <meshBasicMaterial
+          color="#ffe7c4"
+          transparent
+          opacity={0.095 * focusStaticScale}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+        />
       </mesh>
     </group>
   );
 }
 
-function TraceStrips({ traces }: { traces: TraceDatum[] }) {
+function ParksLayer({
+  parks,
+  trees,
+  focusMode = false
+}: {
+  parks: ParkDatum[];
+  trees: ParkTreeDatum[];
+  focusMode?: boolean;
+}) {
+  const patchRefs = useRef<Array<Mesh | null>>([]);
+  const pathRefs = useRef<Array<Mesh | null>>([]);
+  const trunkRef = useRef<ThreeInstancedMesh>(null);
+  const crownRef = useRef<ThreeInstancedMesh>(null);
+  const focusMixRef = useRef(0);
+  const matrixRef = useRef(new Matrix4());
+  const posRef = useRef(new Vector3());
+  const sclRef = useRef(new Vector3());
+  const quatRef = useRef(new Quaternion());
+  const upRef = useRef(new Vector3(0, 1, 0));
+  const crownColorRef = useRef(new Color());
+  const trunkColorRef = useRef(new Color());
+
+  useEffect(() => {
+    patchRefs.current.length = parks.length;
+    pathRefs.current.length = parks.length * 2;
+  }, [parks.length]);
+
+  useEffect(() => {
+    const trunk = trunkRef.current;
+    const crown = crownRef.current;
+    if (!trunk || !crown) return;
+
+    const count = Math.min(trees.length, Math.max(1, trunk.instanceMatrix.count));
+    trunk.count = count;
+    crown.count = count;
+    const matrix = matrixRef.current;
+    const pos = posRef.current;
+    const scl = sclRef.current;
+    const quat = quatRef.current;
+    const up = upRef.current;
+    const crownColor = crownColorRef.current;
+    const trunkColor = trunkColorRef.current;
+
+    for (let i = 0; i < count; i++) {
+      const tree = trees[i];
+      if (!tree) continue;
+      quat.setFromAxisAngle(up, tree.yaw);
+
+      pos.set(tree.x, TREE_BASE_Y + tree.trunkH * 0.5, tree.z);
+      scl.set(Math.max(0.05, tree.crownR * 0.28), tree.trunkH, Math.max(0.05, tree.crownR * 0.28));
+      matrix.compose(pos, quat, scl);
+      trunk.setMatrixAt(i, matrix);
+      trunk.setColorAt(i, trunkColor.set('#2a241a').lerp(new Color('#3a2d1f'), tree.tintMix * 0.45));
+
+      pos.set(tree.x, TREE_BASE_Y + tree.trunkH + tree.crownH * 0.5, tree.z);
+      scl.set(tree.crownR, tree.crownH, tree.crownR);
+      matrix.compose(pos, quat, scl);
+      crown.setMatrixAt(i, matrix);
+      crown.setColorAt(i, crownColor.set('#1a2418').lerp(new Color('#2b3321'), tree.tintMix));
+    }
+
+    trunk.instanceMatrix.needsUpdate = true;
+    crown.instanceMatrix.needsUpdate = true;
+    if (trunk.instanceColor) trunk.instanceColor.needsUpdate = true;
+    if (crown.instanceColor) crown.instanceColor.needsUpdate = true;
+  }, [trees.length]);
+
+  useFrame((_, delta) => {
+    focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 7.5, delta);
+    const dimScale = MathUtils.lerp(1, FOCUS_GROUND_DIM, focusMixRef.current);
+    for (let i = 0; i < patchRefs.current.length; i++) {
+      const patch = patchRefs.current[i];
+      const pathA = pathRefs.current[i * 2];
+      const pathB = pathRefs.current[i * 2 + 1];
+      const patchMat = patch?.material as { opacity?: number } | undefined;
+      const pathAMat = pathA?.material as { opacity?: number } | undefined;
+      const pathBMat = pathB?.material as { opacity?: number } | undefined;
+      if (patchMat) patchMat.opacity = MathUtils.damp(patchMat.opacity ?? 0.92, 0.92 * dimScale, 8.5, delta);
+      if (pathAMat) pathAMat.opacity = MathUtils.damp(pathAMat.opacity ?? 0.14, 0.14 * dimScale, 8.5, delta);
+      if (pathBMat) pathBMat.opacity = MathUtils.damp(pathBMat.opacity ?? 0.1, 0.1 * dimScale, 8.5, delta);
+    }
+
+    const trunkMat = trunkRef.current?.material as { opacity?: number; color?: Color } | undefined;
+    if (trunkMat) {
+      trunkMat.opacity = MathUtils.damp(trunkMat.opacity ?? 0.96, 0.96 * dimScale, 8.5, delta);
+      if (trunkMat.color) trunkMat.color.copy(tempColorA.set('#2e261c').lerp(tempColorB.set('#211d18'), focusMixRef.current * 0.7));
+    }
+    const crownMat = crownRef.current?.material as { opacity?: number; color?: Color } | undefined;
+    if (crownMat) {
+      crownMat.opacity = MathUtils.damp(crownMat.opacity ?? 0.94, 0.94 * dimScale, 8.5, delta);
+      if (crownMat.color) crownMat.color.copy(tempColorA.set('#27301f').lerp(tempColorB.set('#1a2016'), focusMixRef.current * 0.8));
+    }
+  });
+
+  return (
+    <group>
+      {parks.map((park, parkIndex) => {
+        const lineLen = Math.min(park.w, park.d) * MathUtils.lerp(0.42, 0.78, hash01(parkIndex, park.w, park.d, 8011));
+        return (
+          <group
+            key={park.id}
+            position={[park.x, PARK_PATCH_Y, park.z]}
+            rotation={[-Math.PI / 2, park.yaw, 0]}
+            renderOrder={2.55}
+          >
+            <mesh
+              ref={(el) => {
+                patchRefs.current[parkIndex] = el;
+              }}
+              renderOrder={2.55}
+            >
+              <planeGeometry args={[park.w, park.d]} />
+              <meshStandardMaterial
+                color={park.patchColor}
+                roughness={0.97}
+                metalness={0.03}
+                emissive="#101710"
+                emissiveIntensity={0.025}
+                transparent
+                opacity={0.92}
+                depthTest
+                depthWrite
+                polygonOffset
+                polygonOffsetFactor={-1}
+                polygonOffsetUnits={-1}
+              />
+            </mesh>
+
+            <mesh position={[0, 0.003, 0]} renderOrder={2.58}>
+              <boxGeometry args={[park.w * 0.98, 0.01, 0.04]} />
+              <meshBasicMaterial
+                color={park.edgeColor}
+                transparent
+                opacity={0.08}
+                toneMapped={false}
+                depthTest
+                depthWrite={false}
+                blending={AdditiveBlending}
+              />
+            </mesh>
+            <mesh position={[0, -0.003, 0]} renderOrder={2.58}>
+              <boxGeometry args={[park.w * 0.98, 0.01, 0.04]} />
+              <meshBasicMaterial
+                color={park.edgeColor}
+                transparent
+                opacity={0.08}
+                toneMapped={false}
+                depthTest
+                depthWrite={false}
+                blending={AdditiveBlending}
+              />
+            </mesh>
+            <mesh position={[park.w * 0.5 - 0.02, 0, 0]} renderOrder={2.58}>
+              <boxGeometry args={[0.04, 0.01, park.d * 0.98]} />
+              <meshBasicMaterial
+                color={park.edgeColor}
+                transparent
+                opacity={0.08}
+                toneMapped={false}
+                depthTest
+                depthWrite={false}
+                blending={AdditiveBlending}
+              />
+            </mesh>
+            <mesh position={[-park.w * 0.5 + 0.02, 0, 0]} renderOrder={2.58}>
+              <boxGeometry args={[0.04, 0.01, park.d * 0.98]} />
+              <meshBasicMaterial
+                color={park.edgeColor}
+                transparent
+                opacity={0.08}
+                toneMapped={false}
+                depthTest
+                depthWrite={false}
+                blending={AdditiveBlending}
+              />
+            </mesh>
+
+            <mesh
+              ref={(el) => {
+                pathRefs.current[parkIndex * 2] = el;
+              }}
+              position={[0, 0.006, 0]}
+              renderOrder={2.6}
+            >
+              <boxGeometry args={[Math.max(0.12, park.w * 0.12), 0.012, lineLen]} />
+              <meshBasicMaterial
+                color="#f7d8ac"
+                transparent
+                opacity={0.14}
+                toneMapped={false}
+                depthTest
+                depthWrite={false}
+                polygonOffset
+                polygonOffsetFactor={-1}
+                polygonOffsetUnits={-2}
+              />
+            </mesh>
+            <mesh
+              ref={(el) => {
+                pathRefs.current[parkIndex * 2 + 1] = el;
+              }}
+              position={[0, 0.0065, 0]}
+              rotation={[0, 0, Math.PI / 2]}
+              renderOrder={2.6}
+            >
+              <boxGeometry args={[Math.max(0.12, park.w * 0.08), 0.012, lineLen * 0.58]} />
+              <meshBasicMaterial
+                color="#f7931a"
+                transparent
+                opacity={0.1}
+                toneMapped={false}
+                depthTest
+                depthWrite={false}
+                polygonOffset
+                polygonOffsetFactor={-1}
+                polygonOffsetUnits={-2}
+              />
+            </mesh>
+          </group>
+        );
+      })}
+
+      <instancedMesh ref={trunkRef} args={[undefined, undefined, Math.max(1, trees.length)]} renderOrder={2.72} frustumCulled={false}>
+        <cylinderGeometry args={[0.08, 0.1, 1, 6]} />
+        <meshBasicMaterial
+          vertexColors
+          transparent
+          opacity={0.96}
+          toneMapped={false}
+          depthTest
+          depthWrite
+          polygonOffset
+          polygonOffsetFactor={-1}
+          polygonOffsetUnits={-1}
+        />
+      </instancedMesh>
+      <instancedMesh ref={crownRef} args={[undefined, undefined, Math.max(1, trees.length)]} renderOrder={2.75} frustumCulled={false}>
+        <coneGeometry args={[1, 1, 7]} />
+        <meshBasicMaterial
+          vertexColors
+          transparent
+          opacity={0.94}
+          toneMapped={false}
+          depthTest
+          depthWrite
+          polygonOffset
+          polygonOffsetFactor={-1}
+          polygonOffsetUnits={-1}
+        />
+      </instancedMesh>
+    </group>
+  );
+}
+
+function TraceStrips({
+  traces,
+  focusMode = false
+}: {
+  traces: TraceDatum[];
+  focusMode?: boolean;
+}) {
   const { camera } = useThree();
   const glowRefs = useRef<Array<Mesh | null>>([]);
   const coreRefs = useRef<Array<Mesh | null>>([]);
+  const focusMixRef = useRef(0);
 
   useEffect(() => {
     glowRefs.current.length = traces.length;
     coreRefs.current.length = traces.length;
   }, [traces.length]);
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     const visCurve = distanceVisibilityCurve(camera.position.length());
+    focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 7.5, delta);
     const glowWidthScale = MathUtils.lerp(1, 2.4, visCurve);
     const coreWidthScale = MathUtils.lerp(1, 1.95, visCurve);
-    const glowOpacity = MathUtils.lerp(0.13, 0.22, visCurve);
-    const coreOpacity = MathUtils.lerp(0.62, 0.82, visCurve);
+    const dimScale = MathUtils.lerp(1, FOCUS_TRACE_DIM, focusMixRef.current);
+    const glowOpacity = MathUtils.lerp(0.13, 0.22, visCurve) * dimScale;
+    const coreOpacity = MathUtils.lerp(0.62, 0.82, visCurve) * dimScale;
     for (let i = 0; i < traces.length; i++) {
       const glow = glowRefs.current[i];
       const core = coreRefs.current[i];
@@ -1575,7 +2688,13 @@ function TraceStrips({ traces }: { traces: TraceDatum[] }) {
   );
 }
 
-function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) {
+function TrafficParticles({
+  particles,
+  focusMode = false
+}: {
+  particles: TrafficParticleDatum[];
+  focusMode?: boolean;
+}) {
   const { camera } = useThree();
   const bodyRef = useRef<ThreeInstancedMesh>(null);
   const cabinRef = useRef<ThreeInstancedMesh>(null);
@@ -1594,6 +2713,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
   const tempColorRef = useRef(new Color());
   const trafficUpRef = useRef(new Vector3(0, 1, 0));
   const trafficQuatRef = useRef(new Quaternion());
+  const focusMixRef = useRef(0);
   useEffect(() => {
     const body = bodyRef.current;
     const cabin = cabinRef.current;
@@ -1626,9 +2746,10 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
     if (glow.instanceColor) glow.instanceColor.needsUpdate = true;
   }, [particles.length]);
 
-  useFrame(({ clock }) => {
+  useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
+    focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 7.5, delta);
     const sizeScale = MathUtils.lerp(1.15, 1.95, visCurve);
     const body = bodyRef.current;
     const cabin = cabinRef.current;
@@ -1739,10 +2860,23 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
     if (glow.instanceColor) glow.instanceColor.needsUpdate = true;
 
     // Keep traffic readable at wide zoom: stronger glow shell + lights; bodies stay bright (meshBasic).
+    const dimScale = MathUtils.lerp(1, FOCUS_TRAFFIC_DIM, focusMixRef.current);
+    const bodyMat = body.material as { color?: Color } | undefined;
+    if (bodyMat?.color && !DEBUG_FORCE_TRAFFIC_VIS) {
+      bodyMat.color.copy(tempColorA.set('#f4fbff').lerp(tempColorB.set('#43505c'), focusMixRef.current));
+    }
+    const cabinMat = cabin.material as { color?: Color } | undefined;
+    if (cabinMat?.color && !DEBUG_FORCE_TRAFFIC_VIS) {
+      cabinMat.color.copy(tempColorA.set('#ffffff').lerp(tempColorB.set('#48525e'), focusMixRef.current * 0.95));
+    }
+    const bodyWireMat = bodyWire.material as { opacity?: number } | undefined;
+    if (bodyWireMat) bodyWireMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 0.98 : 0.98 * dimScale;
+    const cabinWireMat = cabinWire.material as { opacity?: number } | undefined;
+    if (cabinWireMat) cabinWireMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 0.96 : 0.96 * dimScale;
     const glowMat = glow.material as { opacity?: number } | undefined;
-    if (glowMat) glowMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.92, 1.0, visCurve);
+    if (glowMat) glowMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.92, 1.0, visCurve) * dimScale;
     const lightMat = light.material as { opacity?: number } | undefined;
-    if (lightMat) lightMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.95, 1, visCurve);
+    if (lightMat) lightMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.95, 1, visCurve) * Math.max(0.35, dimScale);
   });
 
   return (
@@ -1843,20 +2977,43 @@ function SandboxScene({
   towers,
   traces,
   trafficParticles,
+  parks,
+  parkTrees,
   bounds,
+  hoveredTowerSequence,
+  tallestTowerSequence,
+  onHoverTowerChange,
   onCameraDebug
 }: {
   towers: TowerDatum[];
   traces: TraceDatum[];
   trafficParticles: TrafficParticleDatum[];
+  parks: ParkDatum[];
+  parkTrees: ParkTreeDatum[];
   bounds: SandboxBounds;
+  hoveredTowerSequence: number | null;
+  tallestTowerSequence: number | null;
+  onHoverTowerChange?: (sequence: number | null) => void;
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
 }) {
+  const hoveredTower = useMemo(
+    () => (hoveredTowerSequence == null ? null : towers.find((tower) => tower.sequence === hoveredTowerSequence) ?? null),
+    [hoveredTowerSequence, towers]
+  );
+  const tallestTower = useMemo(
+    () => (tallestTowerSequence == null ? null : towers.find((tower) => tower.sequence === tallestTowerSequence) ?? null),
+    [tallestTowerSequence, towers]
+  );
+  const focusMode = hoveredTowerSequence != null;
+
   return (
     <Canvas
       camera={{ position: [20, 12, 20], fov: 50, near: 0.15, far: 420 }}
       dpr={[1, RUNTIME_QUALITY_CONFIG.dprCap]}
       gl={{ antialias: RUNTIME_QUALITY_CONFIG.antialias, alpha: false, powerPreference: 'high-performance' }}
+      onPointerMissed={() => {
+        onHoverTowerChange?.(null);
+      }}
       onCreated={({ scene, gl }) => {
         scene.background = new Color('#06080c');
         scene.fog = null;
@@ -1873,24 +3030,50 @@ function SandboxScene({
       <directionalLight position={[-14, 20, -10]} intensity={0.34} color="#7fd3ff" />
       <MinimalOrbitRig bounds={bounds} onCameraDebug={onCameraDebug} />
 
-      <CircuitBoardGround bounds={bounds} />
-      <TraceStrips traces={traces} />
-      <TrafficParticles particles={trafficParticles} />
+      <CircuitBoardGround bounds={bounds} focusMode={focusMode} />
+      <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} />
+      <TraceStrips traces={traces} focusMode={focusMode} />
+      <TrafficParticles particles={trafficParticles} focusMode={focusMode} />
 
       {/* Render band 6: tower bodies and holo layers remain the top visual anchors */}
       <group renderOrder={6}>
         {towers.map((tower) => (
-          <AnimatedHoloTower key={tower.sequence} tower={tower} />
+          <AnimatedHoloTower
+            key={tower.sequence}
+            tower={tower}
+            hoveredTowerSequence={hoveredTowerSequence}
+            isTallest={tallestTowerSequence === tower.sequence}
+            onHoverTower={onHoverTowerChange}
+          />
         ))}
       </group>
+
+      {tallestTower ? (
+        <TallestBeacon
+          tower={tallestTower}
+          sceneMaxY={bounds.maxY}
+          focusMode={focusMode}
+          isHovered={hoveredTowerSequence === tallestTower.sequence}
+        />
+      ) : null}
+      {hoveredTower ? <HoverTowerLabel tower={hoveredTower} /> : null}
     </Canvas>
   );
 }
 
 export function MinimalVizSandbox() {
   const { events, latest } = useBlockEventStore();
-  const { towers, traces, trafficParticles, bounds, latestHeightDebug } = useAppendOnlyTowers(events);
+  const { towers, traces, trafficParticles, parks, parkTrees, bounds, latestHeightDebug, tallestTowerSequence, tallestTowerHeight } =
+    useAppendOnlyTowers(events);
   const [cameraDebug, setCameraDebug] = useState<CameraDebugSnapshot>({ camDist: 0, visCurve: 0 });
+  const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (hoveredTowerSequence == null) return;
+    if (!towers.some((tower) => tower.sequence === hoveredTowerSequence)) {
+      setHoveredTowerSequence(null);
+    }
+  }, [hoveredTowerSequence, towers]);
 
   const overlay = useMemo(
     () => ({
@@ -1899,12 +3082,28 @@ export function MinimalVizSandbox() {
       towerCount: towers.length,
       traceCount: traces.length,
       trafficCount: trafficParticles.length,
+      parkCount: parks.length,
       cityRadius: bounds.radius,
       glowRadius: Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT),
       camDist: cameraDebug.camDist,
-      visCurve: cameraDebug.visCurve
+      visCurve: cameraDebug.visCurve,
+      hoveredTowerSequence,
+      tallestTowerSequence,
+      tallestTowerHeight
     }),
-    [latest, towers.length, traces.length, trafficParticles.length, bounds.radius, cameraDebug.camDist, cameraDebug.visCurve]
+    [
+      latest,
+      towers.length,
+      traces.length,
+      trafficParticles.length,
+      parks.length,
+      bounds.radius,
+      cameraDebug.camDist,
+      cameraDebug.visCurve,
+      hoveredTowerSequence,
+      tallestTowerSequence,
+      tallestTowerHeight
+    ]
   );
 
   return (
@@ -1913,7 +3112,12 @@ export function MinimalVizSandbox() {
         towers={towers}
         traces={traces}
         trafficParticles={trafficParticles}
+        parks={parks}
+        parkTrees={parkTrees}
         bounds={bounds}
+        hoveredTowerSequence={hoveredTowerSequence}
+        tallestTowerSequence={tallestTowerSequence}
+        onHoverTowerChange={setHoveredTowerSequence}
         onCameraDebug={setCameraDebug}
       />
       <div className="minimal-viz__overlay" aria-hidden="true">
@@ -1940,6 +3144,10 @@ export function MinimalVizSandbox() {
             <span>{overlay.trafficCount}</span>
           </div>
           <div className="minimal-viz__row">
+            <span>Parks</span>
+            <span>{overlay.parkCount}</span>
+          </div>
+          <div className="minimal-viz__row">
             <span>TrafficMode</span>
             <span>solid</span>
           </div>
@@ -1958,6 +3166,18 @@ export function MinimalVizSandbox() {
           <div className="minimal-viz__row">
             <span>VisCurve</span>
             <span>{fmtFixed(overlay.visCurve, 2)}</span>
+          </div>
+          <div className="minimal-viz__row">
+            <span>Hover</span>
+            <span>{overlay.hoveredTowerSequence ?? 'none'}</span>
+          </div>
+          <div className="minimal-viz__row">
+            <span>Tallest</span>
+            <span>{overlay.tallestTowerSequence ?? 'none'}</span>
+          </div>
+          <div className="minimal-viz__row">
+            <span>Tall H</span>
+            <span>{fmtFixed(overlay.tallestTowerHeight, 1)}</span>
           </div>
           {latestHeightDebug ? (
             <>
@@ -1979,7 +3199,7 @@ export function MinimalVizSandbox() {
               </div>
               <div className="minimal-viz__row">
                 <span>Hero</span>
-                <span>{latestHeightDebug.isHero ? 'yes' : 'no'}</span>
+                <span>{latestHeightDebug.isHero ? latestHeightDebug.heroMode : 'no'}</span>
               </div>
               <div className="minimal-viz__row">
                 <span>HeroMult</span>
