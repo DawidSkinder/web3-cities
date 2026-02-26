@@ -205,9 +205,10 @@ const GROUND_GRAPHIC_Y = GROUND_DECK_Y + 0.006;
 const TRACE_BASE_Y = GROUND_DECK_Y + 0.012;
 const TRACE_LAYER_STEP_Y = 0.00035;
 const TRAFFIC_BASE_OFFSET_Y = 0.005;
-const TRAFFIC_SOLID_Y = TRACE_BASE_Y + 0.045;
+const TRAFFIC_SOLID_BASE_Y = TRACE_BASE_Y + 0.02;
 const TOWER_GROUND_LIFT_Y = 0.002;
 const DEBUG_FORCE_TRAFFIC_VIS = false;
+const MAX_TRAFFIC_INSTANCES = 4096;
 
 const RADIAL_GLOW_VERTEX = `
 varying vec2 vUv;
@@ -1605,8 +1606,8 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
-    const sizeScale = Math.max(0.6, MathUtils.lerp(1, 2.15, visCurve));
-    const opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : Math.max(0.45, MathUtils.lerp(0.8, 0.95, visCurve));
+    const sizeScale = Math.max(0.8, MathUtils.lerp(1.15, 2.35, visCurve));
+    const opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : Math.max(0.62, MathUtils.lerp(0.86, 0.97, visCurve));
     const mesh = instancedRef.current;
     if (!mesh) return;
     const capacity = Math.max(1, mesh.instanceMatrix.count);
@@ -1619,11 +1620,11 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
       const p = particles[i];
       if (!mesh || !p) continue;
       const u = (p.phase + t * p.speed) % 1;
-      pos.set(MathUtils.lerp(p.ax, p.bx, u), TRAFFIC_SOLID_Y, MathUtils.lerp(p.az, p.bz, u));
+      const h = Math.max(0.1, p.sizeY * 2.2) * MathUtils.lerp(1, 1.18, visCurve);
+      pos.set(MathUtils.lerp(p.ax, p.bx, u), TRAFFIC_SOLID_BASE_Y + h * 0.5, MathUtils.lerp(p.az, p.bz, u));
       // Box geometry forward axis is +X, so quaternion(+X -> segment dir) aligns car length with the trace.
-      const len = Math.max(0.55, p.sizeZ * 1.9) * sizeScale;
-      const h = Math.max(0.1, p.sizeY * 1.7) * MathUtils.lerp(1, 1.12, visCurve);
-      const w = Math.max(0.14, p.sizeX * 1.35) * MathUtils.lerp(1, 1.35, visCurve);
+      const len = Math.max(0.75, p.sizeZ * 2.5) * sizeScale;
+      const w = Math.max(0.18, p.sizeX * 1.9) * MathUtils.lerp(1, 1.42, visCurve);
       scl.set(len, h, w);
       matrix.compose(pos, orientationQuats[i] ?? identityQuatRef.current, scl);
       mesh.setMatrixAt(i, matrix);
@@ -1638,12 +1639,12 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
   return (
     <group>
       {/* Render band 5: traffic cues, still depth-tested so they do not draw through towers */}
-      <instancedMesh ref={instancedRef} args={[undefined, undefined, Math.max(1, particles.length)]} renderOrder={5} frustumCulled={false}>
+      <instancedMesh ref={instancedRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshBasicMaterial
           vertexColors
           transparent
-          opacity={0.82}
+          opacity={0.9}
           toneMapped={false}
           depthWrite={false}
           depthTest
