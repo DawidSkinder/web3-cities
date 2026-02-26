@@ -435,13 +435,14 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
     const y = TRACE_BASE_Y + i * TRACE_LAYER_STEP_Y;
 
     const traceId = `T-${traceKey}`;
+    const visibleTraceLen = Math.max(0.9, seg.length - TOWER_FOOTPRINT * 0.7);
     state.traces.push({
       id: traceId,
       aSequence: aSeq,
       bSequence: bSeq,
       midX: seg.midX,
       midZ: seg.midZ,
-      length: Math.max(0.9, seg.length - TOWER_FOOTPRINT * 0.7),
+      length: visibleTraceLen,
       yaw: seg.yaw,
       y,
       width,
@@ -457,7 +458,9 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
       RUNTIME_QUALITY_CONFIG.reducedMotion ? 1 : 2,
       Math.round((1 + seg.length / 8) * densityScale)
     );
-    const halfVisibleLen = Math.max(0.08, seg.length * 0.5);
+    // Traffic must follow the rendered (shortened) street strip, not the raw tower-center segment.
+    const trafficTravelLen = Math.max(0.18, visibleTraceLen - 0.18);
+    const halfVisibleLen = Math.max(0.08, trafficTravelLen * 0.5);
     const dirX = Math.cos(seg.yaw);
     const dirZ = Math.sin(seg.yaw);
     const visAx = seg.midX - dirX * halfVisibleLen;
@@ -1632,7 +1635,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
       const dx = p.bx - p.ax;
       const dz = p.bz - p.az;
       const segLen = Math.hypot(dx, dz);
-      const trim = Math.min(TRAFFIC_PATH_TRIM, Math.max(0, segLen * 0.32));
+      const trim = Math.min(0.12, Math.max(0, segLen * 0.08));
       const invLen = segLen > 1e-6 ? 1 / segLen : 0;
       const dirX = dx * invLen;
       const dirZ = dz * invLen;
