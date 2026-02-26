@@ -10,6 +10,7 @@ import {
   LineBasicMaterial,
   Matrix4,
   MathUtils,
+  NormalBlending,
   PlaneGeometry,
   Quaternion,
   ShaderMaterial,
@@ -1571,7 +1572,8 @@ function TraceStrips({ traces }: { traces: TraceDatum[] }) {
 
 function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) {
   const { camera } = useThree();
-  const instancedRef = useRef<ThreeInstancedMesh>(null);
+  const coreRef = useRef<ThreeInstancedMesh>(null);
+  const glowRef = useRef<ThreeInstancedMesh>(null);
   const orientationQuats = useMemo(() => {
     const forward = new Vector3(1, 0, 0);
     const dir = new Vector3();
@@ -1599,35 +1601,45 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
   const tempColorRef = useRef(new Color());
 
   useEffect(() => {
-    const mesh = instancedRef.current;
-    if (!mesh) return;
-    const capacity = Math.max(1, mesh.instanceMatrix.count);
-    mesh.count = Math.min(particles.length, capacity);
-    for (let i = 0; i < Math.min(particles.length, capacity); i++) {
+    const core = coreRef.current;
+    const glow = glowRef.current;
+    if (!core || !glow) return;
+    const capacity = Math.max(1, core.instanceMatrix.count);
+    const count = Math.min(particles.length, capacity);
+    core.count = count;
+    glow.count = count;
+    for (let i = 0; i < count; i++) {
       const p = particles[i];
       if (!p) continue;
-      mesh.setColorAt(i, tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : p.color));
+      const baseColor = tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : p.color);
+      core.setColorAt(i, baseColor);
+      glow.setColorAt(i, baseColor);
     }
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    mesh.instanceMatrix.needsUpdate = true;
+    if (core.instanceColor) core.instanceColor.needsUpdate = true;
+    if (glow.instanceColor) glow.instanceColor.needsUpdate = true;
+    core.instanceMatrix.needsUpdate = true;
+    glow.instanceMatrix.needsUpdate = true;
   }, [particles, orientationQuats]);
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
-    const sizeScale = Math.max(0.8, MathUtils.lerp(1.15, 2.35, visCurve));
-    const opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : Math.max(0.78, MathUtils.lerp(0.9, 0.98, visCurve));
-    const mesh = instancedRef.current;
-    if (!mesh) return;
-    const capacity = Math.max(1, mesh.instanceMatrix.count);
+    const sizeScale = Math.max(1.0, MathUtils.lerp(1.25, 2.65, visCurve));
+    const coreOpacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : Math.max(0.82, MathUtils.lerp(0.92, 1, visCurve));
+    const glowOpacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : Math.max(0.62, MathUtils.lerp(0.74, 0.95, visCurve));
+    const core = coreRef.current;
+    const glow = glowRef.current;
+    if (!core || !glow) return;
+    const capacity = Math.max(1, core.instanceMatrix.count);
     const instanceCount = Math.min(particles.length, capacity);
-    mesh.count = instanceCount;
+    core.count = instanceCount;
+    glow.count = instanceCount;
     const matrix = tempMatrixRef.current;
     const pos = tempPosRef.current;
     const scl = tempScaleRef.current;
     for (let i = 0; i < instanceCount; i++) {
       const p = particles[i];
-      if (!mesh || !p) continue;
+      if (!p) continue;
       const dx = p.bx - p.ax;
       const dz = p.bz - p.az;
       const segLen = Math.hypot(dx, dz);
@@ -1640,39 +1652,64 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
       const bx = p.bx - dirX * trim;
       const bz = p.bz - dirZ * trim;
       const u = (p.phase + t * p.speed) % 1;
-      const h = Math.max(0.14, p.sizeY * 2.9) * MathUtils.lerp(1, 1.25, visCurve);
+      const h = Math.max(0.22, p.sizeY * 4.0) * MathUtils.lerp(1, 1.35, visCurve);
       const carBaseY = Math.max(TRAFFIC_SOLID_BASE_Y, p.y + 0.02);
       pos.set(MathUtils.lerp(ax, bx, u), carBaseY + h * 0.5, MathUtils.lerp(az, bz, u));
       // Box geometry forward axis is +X, so quaternion(+X -> segment dir) aligns car length with the trace.
-      const len = Math.max(1.35, p.sizeZ * 3.6) * sizeScale;
-      const w = Math.max(0.28, p.sizeX * 2.7) * MathUtils.lerp(1, 1.55, visCurve);
+      const len = Math.max(1.8, p.sizeZ * 4.8) * sizeScale;
+      const w = Math.max(0.42, p.sizeX * 4.1) * MathUtils.lerp(1, 1.85, visCurve);
       scl.set(len, h, w);
       matrix.compose(pos, orientationQuats[i] ?? identityQuatRef.current, scl);
-      mesh.setMatrixAt(i, matrix);
-      mesh.setColorAt(i, tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ffffff' : p.color));
+      core.setMatrixAt(i, matrix);
+      core.setColorAt(i, tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ffffff' : p.color));
+      core.instanceColor && (core.instanceColor.needsUpdate = true);
+
+      scl.set(len * 1.22, h * 1.45, w * 1.22);
+      matrix.compose(pos, orientationQuats[i] ?? identityQuatRef.current, scl);
+      glow.setMatrixAt(i, matrix);
+      glow.setColorAt(i, tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : p.color));
     }
-    mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    const mat = mesh.material as { opacity?: number } | undefined;
-    if (mat) mat.opacity = opacity;
+    core.instanceMatrix.needsUpdate = true;
+    glow.instanceMatrix.needsUpdate = true;
+    if (core.instanceColor) core.instanceColor.needsUpdate = true;
+    if (glow.instanceColor) glow.instanceColor.needsUpdate = true;
+    const coreMat = core.material as { opacity?: number } | undefined;
+    if (coreMat) coreMat.opacity = coreOpacity;
+    const glowMat = glow.material as { opacity?: number } | undefined;
+    if (glowMat) glowMat.opacity = glowOpacity;
   });
 
   return (
     <group>
       {/* Render band 5: traffic cues, still depth-tested so they do not draw through towers */}
-      <instancedMesh ref={instancedRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5} frustumCulled={false}>
+      <instancedMesh ref={glowRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshBasicMaterial
           vertexColors
           transparent
-          opacity={0.95}
+          opacity={0.8}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+          polygonOffset
+          polygonOffsetFactor={-1}
+          polygonOffsetUnits={-1}
+          blending={AdditiveBlending}
+        />
+      </instancedMesh>
+      <instancedMesh ref={coreRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.2} frustumCulled={false}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial
+          vertexColors
+          transparent
+          opacity={0.96}
           toneMapped={false}
           depthWrite={false}
           depthTest
           polygonOffset
           polygonOffsetFactor={-2}
           polygonOffsetUnits={-2}
-          blending={AdditiveBlending}
+          blending={NormalBlending}
         />
       </instancedMesh>
     </group>
