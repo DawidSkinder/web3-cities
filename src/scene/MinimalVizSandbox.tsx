@@ -337,8 +337,8 @@ const TALLEST_BADGE_SIZE_MAX = 2.3;
 const TALLEST_BADGE_SIZE_BASE_MULT = 0.9;
 const TALLEST_BADGE_FACE_OPACITY = 0.82;
 const TALLEST_BADGE_RIM_OPACITY = 0.34;
-const PARK_CADENCE_BASE = 40;
-const PARK_CADENCE_JITTER = 10;
+const PARK_CADENCE_BASE = 16;
+const PARK_CADENCE_JITTER = 5;
 const PARK_BASE_CLEARANCE = 1.2;
 const DISTRICT_SIZE = 28;
 const MAX_VISIBLE_DISTRICT_LOOPS = 12;
@@ -354,6 +354,8 @@ const ENABLE_RECORD_CEREMONY = true;
 const ENABLE_CINEMATIC_BACKDROP = true;
 const ENABLE_FAKE_VIGNETTE = true;
 const ENABLE_DATA_FORM_EXTRAS = true;
+const ENABLE_TOWER_MICRO_BANDS = false;
+const ENABLE_TOWER_TERRACES = false;
 
 const SHOCKWAVE_POOL_CAP = RUNTIME_QUALITY_CONFIG.reducedMotion ? 16 : 28;
 const RECORD_CEREMONY_POOL_CAP = 8;
@@ -893,6 +895,7 @@ function appendArteriesForNewTower(state: AccumState, tower: TowerDatum) {
     if (state.arteryKeySet.has(key)) continue;
     const seg = segmentFromPoints(tower.x, tower.z, target.x, target.z);
     if (!Number.isFinite(seg.length) || seg.length < 8) continue;
+    if (traceCrossesPark(state, tower.x, tower.z, target.x, target.z)) continue;
 
     state.arteryKeySet.add(key);
     const warm = hash01(aSeq, bSeq, 9901);
@@ -974,6 +977,126 @@ function parkConflictsPark(x: number, z: number, w: number, d: number, park: Par
   const dx = Math.abs(x - park.x);
   const dz = Math.abs(z - park.z);
   return dx < w * 0.5 + park.w * 0.5 + 1.2 && dz < d * 0.5 + park.d * 0.5 + 1.2;
+}
+
+function pointSegmentDistanceXZ(px: number, pz: number, ax: number, az: number, bx: number, bz: number) {
+  const abx = bx - ax;
+  const abz = bz - az;
+  const abLenSq = abx * abx + abz * abz;
+  if (abLenSq <= 1e-6) return Math.hypot(px - ax, pz - az);
+  const apx = px - ax;
+  const apz = pz - az;
+  const t = MathUtils.clamp((apx * abx + apz * abz) / abLenSq, 0, 1);
+  const cx = ax + abx * t;
+  const cz = az + abz * t;
+  return Math.hypot(px - cx, pz - cz);
+}
+
+function traceCrossesPark(state: AccumState, ax: number, az: number, bx: number, bz: number) {
+  for (let i = 0; i < state.parks.length; i++) {
+    const park = state.parks[i];
+    if (!park) continue;
+    const d = pointSegmentDistanceXZ(park.x, park.z, ax, az, bx, bz);
+    if (d < park.radius + 0.25) return true;
+  }
+  return false;
+}
+
+function appendParkAtTowerSlot(state: AccumState, sourceTower: TowerDatum, seed: number) {
+  state.parksAttempted += 1;
+  if (state.parks.length >= MAX_PARKS_VISIBLE) {
+    state.lastParkSkipReason = 'park-cap';
+    return false;
+  }
+  const cityRadius = Math.max(18, state.bounds.radius);
+  const radius = MathUtils.clamp(
+    Math.max(sourceTower.footprintX, sourceTower.footprintZ) * MathUtils.lerp(1.4, 2.35, hash01(seed, 7311)),
+    1.7,
+    4.8
+  );
+  const w = radius * MathUtils.lerp(1.45, 1.85, hash01(seed, 7317));
+  const d = radius * MathUtils.lerp(1.35, 1.78, hash01(seed, 7321));
+  const yaw = hash01(seed, 7327) * Math.PI;
+  const chosenX = sourceTower.x;
+  const chosenZ = sourceTower.z;
+
+  for (let i = 0; i < state.parks.length; i++) {
+    const otherPark = state.parks[i];
+    if (!otherPark) continue;
+    if (Math.hypot(otherPark.x - chosenX, otherPark.z - chosenZ) < otherPark.radius + radius + 0.6) {
+      state.lastParkSkipReason = 'park-overlap';
+      return false;
+    }
+  }
+
+  const patchColor = CORE_GRAPHITE.clone().lerp(CORE_GRAPHITE_HI, 0.52).lerp(BTC_ORANGE, 0.03);
+  const edgeColor = BTC_SELL_WARM.clone().lerp(BTC_PALE_AMBER, 0.34).lerp(BTC_ORANGE, 0.18);
+
+  const treeStart = state.parkTrees.length;
+  const requestedTreeCount = Math.max(
+    8,
+    Math.round(MathUtils.lerp(12, 28, hash01(seed, 7331)) * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.75 : 1))
+  );
+  for (let i = 0; i < requestedTreeCount; i++) {
+    const a = hash01(seed, i, 7337) * Math.PI * 2;
+    const r = Math.sqrt(hash01(seed, i, 7341)) * (radius * 0.9);
+    const localX = Math.cos(a) * r;
+    const localZ = Math.sin(a) * r;
+    const cs = Math.cos(yaw);
+    const sn = Math.sin(yaw);
+    const worldX = chosenX + localX * cs - localZ * sn;
+    const worldZ = chosenZ + localX * sn + localZ * cs;
+    if (Math.hypot(worldX, worldZ) > cityRadius * 1.08) continue;
+    state.parkTrees.push({
+      x: worldX,
+      z: worldZ,
+      yaw: hash01(seed, i, 7349) * Math.PI * 2,
+      trunkH: MathUtils.lerp(0.24, 0.46, hash01(seed, i, 7351)),
+      crownH: MathUtils.lerp(0.38, 0.72, hash01(seed, i, 7357)),
+      crownR: MathUtils.lerp(0.14, 0.28, hash01(seed, i, 7361)),
+      tintMix: hash01(seed, i, 7367)
+    });
+  }
+
+  let linkX: number | null = null;
+  let linkZ: number | null = null;
+  let linkDistBest = Infinity;
+  for (let i = 0; i < state.towers.length; i++) {
+    const t = state.towers[i];
+    if (!t) continue;
+    const dToTower = Math.hypot(t.x - chosenX, t.z - chosenZ);
+    if (dToTower < linkDistBest) {
+      linkDistBest = dToTower;
+      linkX = t.x;
+      linkZ = t.z;
+    }
+  }
+
+  const fireflyCount = Math.max(
+    4,
+    Math.min(state.parkTrees.length - treeStart, Math.round((state.parkTrees.length - treeStart) * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.4 : 0.7)))
+  );
+
+  state.parks.push({
+    id: `park-slot-${sourceTower.sequence}`,
+    x: chosenX,
+    z: chosenZ,
+    w,
+    d,
+    yaw,
+    patchColor: `#${patchColor.getHexString()}`,
+    edgeColor: `#${edgeColor.getHexString()}`,
+    seed,
+    radius,
+    fireflyCount,
+    linkX,
+    linkZ,
+    treeStart,
+    treeCount: state.parkTrees.length - treeStart
+  });
+  state.parksPlaced += 1;
+  state.lastParkSkipReason = 'placed-slot';
+  return true;
 }
 
 function parkSpiralCandidate(seed: number, state: AccumState, attempt: number) {
@@ -1218,6 +1341,7 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
 
     const seg = segmentFromPoints(tower.x, tower.z, neighbor.x, neighbor.z);
     if (!Number.isFinite(seg.length) || seg.length < 0.8) continue;
+    if (traceCrossesPark(state, tower.x, tower.z, neighbor.x, neighbor.z)) continue;
 
     state.traceKeySet.add(traceKey);
     const warmBias = hash01(aSeq, bSeq, seg.length);
@@ -1529,6 +1653,24 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
     for (const event of ordered) {
       if (target.processedSequences.has(event.sequence)) continue;
       const tower = mapEventToTower(event, target);
+      const processedCount = target.processedSequences.size + 1;
+      const parkEligible =
+        ENABLE_PARKS_V2 &&
+        target.parks.length < MAX_PARKS_VISIBLE &&
+        processedCount >= Math.max(8, target.nextParkAtCount) &&
+        !tower.isHero &&
+        tower.height < target.tallestTowerHeight * 0.92;
+      if (parkEligible) {
+        const placedPark = appendParkAtTowerSlot(target, tower, tower.sequence);
+        target.processedSequences.add(event.sequence);
+        target.lastSequence = Math.max(target.lastSequence, event.sequence);
+        target.bounds.radius = Math.max(target.bounds.radius, Math.hypot(tower.x, tower.z) + 8);
+        target.nextParkAtCount = processedCount + nextParkInterval(event.sequence);
+        if (placedPark) {
+          appended = true;
+          continue;
+        }
+      }
       ensureDistrictForNextTower(target, tower);
       target.towers.push(tower);
       appendTracesForNewTower(target, tower);
@@ -1552,7 +1694,6 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
       }
       if (recordChanged) pushRecordCeremony(target, tower);
       appendArteriesForNewTower(target, tower);
-      maybeAppendPark(target, tower.sequence);
       appended = true;
     }
 
@@ -2487,10 +2628,12 @@ function AnimatedHoloTower({
     return base.map((v, i) => MathUtils.clamp(v + wobble * (i + 1), 0.12, 0.92));
   }, [tower.sequence]);
   const microPanelFractions = useMemo(() => {
+    if (!ENABLE_TOWER_MICRO_BANDS) return [] as number[];
     const base = tower.height > 12 ? [0.31, 0.58] : [0.44];
     return base.map((v, i) => MathUtils.clamp(v + (hash01(tower.sequence, i, 5401) - 0.5) * 0.06, 0.2, 0.92));
   }, [tower.height, tower.sequence]);
-  const terraceEnabled = ENABLE_DATA_FORM_EXTRAS && Math.max(tower.baseW, tower.baseD) > 1.42 && tower.height > 8;
+  const terraceEnabled =
+    ENABLE_DATA_FORM_EXTRAS && ENABLE_TOWER_TERRACES && Math.max(tower.baseW, tower.baseD) > 1.42 && tower.height > 8;
   const terraceY = MathUtils.clamp(tower.height * MathUtils.lerp(0.34, 0.62, hash01(tower.sequence, 5411)), 2.2, tower.height - 0.9);
   const antennaCount =
     ENABLE_DATA_FORM_EXTRAS && (tower.intensity > 0.82 || tower.heightScore > 0.9) ? (hash01(tower.sequence, 5423) > 0.55 ? 2 : 1) : 0;
@@ -3138,7 +3281,7 @@ function CircuitBoardGround({
     () => ({
       uCenterColor: { value: new Color('#F5D8AE') },
       uRingColor: { value: new Color('#F7931A') },
-      uOpacity: { value: 0.86 }
+      uOpacity: { value: 1.02 }
     }),
     []
   );
@@ -3175,7 +3318,7 @@ function CircuitBoardGround({
     if (glowMeshRef.current) {
       glowMeshRef.current.scale.set(r * 2.2, r * 2.2, 1);
       glowUniforms.uOpacity.value =
-        MathUtils.lerp(0.86, 0.62, focusMixRef.current) *
+        MathUtils.lerp(1.08, 0.8, focusMixRef.current) *
         MathUtils.lerp(1 - MARKET_PULSE_GROUND_OPACITY_BREATH, 1 + MARKET_PULSE_GROUND_OPACITY_BREATH, mood);
     }
     glowUniforms.uCenterColor.value.copy(tempColorA.set('#F0D0A7').lerp(tempColorB.set('#FFD8A1'), mood * 0.35));
@@ -3229,8 +3372,8 @@ function CircuitBoardGround({
           points={points}
           y={groundGraphicY + 0.0005}
           color={i % 2 === 0 ? '#d2b788' : '#bca173'}
-          opacity={i % 4 === 0 ? 0.055 : 0.035}
-          lineWidth={i % 4 === 0 ? 1.1 : 0.8}
+          opacity={i % 4 === 0 ? 0.085 : 0.05}
+          lineWidth={i % 4 === 0 ? 1.25 : 0.95}
           renderOrder={2.02}
           focusMode={focusMode}
           focusDim={FOCUS_GROUND_DIM}
@@ -3242,8 +3385,8 @@ function CircuitBoardGround({
           points={points}
           y={groundGraphicY + 0.0007}
           color="#d7c09a"
-          opacity={0.18}
-          lineWidth={2.2}
+          opacity={0.24}
+          lineWidth={2.6}
           renderOrder={2.08}
           additive
           focusMode={focusMode}
@@ -3256,8 +3399,8 @@ function CircuitBoardGround({
           points={points}
           y={groundGraphicY + 0.0009}
           color={i % 2 === 0 ? '#F4D3A2' : '#F7931A'}
-          opacity={i % 2 === 0 ? 0.22 : 0.2}
-          lineWidth={3.1}
+          opacity={i % 2 === 0 ? 0.33 : 0.3}
+          lineWidth={3.6}
           renderOrder={2.1}
           additive
           focusMode={focusMode}
@@ -3270,8 +3413,8 @@ function CircuitBoardGround({
           points={points}
           y={groundGraphicY + 0.001}
           color="#f6ead7"
-          opacity={0.14}
-          lineWidth={2.0}
+          opacity={0.2}
+          lineWidth={2.4}
           renderOrder={2.12}
           focusMode={focusMode}
           focusDim={FOCUS_GROUND_DIM}
@@ -3281,8 +3424,8 @@ function CircuitBoardGround({
         points={outerRingPoints}
         y={groundGraphicY + 0.0011}
         color="#F7931A"
-        opacity={0.16}
-        lineWidth={2.6}
+        opacity={0.24}
+        lineWidth={3.0}
         renderOrder={2.16}
         additive
         focusMode={focusMode}
@@ -3292,8 +3435,8 @@ function CircuitBoardGround({
         points={innerRingPoints}
         y={groundGraphicY + 0.00115}
         color="#f2e4cf"
-        opacity={0.09}
-        lineWidth={1.7}
+        opacity={0.14}
+        lineWidth={2.0}
         renderOrder={2.14}
         focusMode={focusMode}
         focusDim={FOCUS_GROUND_DIM}
@@ -3304,7 +3447,7 @@ function CircuitBoardGround({
         <meshBasicMaterial
           color="#F7931A"
           transparent
-          opacity={0.22 * focusStaticScale}
+          opacity={0.34 * focusStaticScale}
           toneMapped={false}
           depthWrite={false}
           depthTest
@@ -3315,7 +3458,7 @@ function CircuitBoardGround({
         <meshBasicMaterial
           color="#f4e8d6"
           transparent
-          opacity={0.11 * focusStaticScale}
+          opacity={0.18 * focusStaticScale}
           toneMapped={false}
           depthWrite={false}
           depthTest
@@ -3326,7 +3469,7 @@ function CircuitBoardGround({
         <meshBasicMaterial
           color="#F7931A"
           transparent
-          opacity={0.12 * focusStaticScale}
+          opacity={0.2 * focusStaticScale}
           toneMapped={false}
           depthWrite={false}
           depthTest
@@ -3337,7 +3480,7 @@ function CircuitBoardGround({
         <meshBasicMaterial
           color="#ffe7c4"
           transparent
-          opacity={0.095 * focusStaticScale}
+          opacity={0.15 * focusStaticScale}
           toneMapped={false}
           depthWrite={false}
           depthTest
@@ -4043,7 +4186,6 @@ function TrafficParticles({
     const trafficSpeedMul = ENABLE_MARKET_PULSE
       ? MathUtils.lerp(1 - MARKET_PULSE_TRAFFIC_SPEED_GAIN, 1 + MARKET_PULSE_TRAFFIC_SPEED_GAIN, pulseRef.current)
       : 1;
-    const sizeScale = MathUtils.lerp(1.15, 1.95, visCurve);
     const body = bodyRef.current;
     const cabin = cabinRef.current;
     const bodyWire = bodyWireRef.current;
@@ -4092,11 +4234,11 @@ function TrafficParticles({
       const cx = MathUtils.lerp(ax, bx, u);
       const cz = MathUtils.lerp(az, bz, u);
       // Sit just above the orange trace core so cars appear attached to streets, not floating.
-      const bodyH = Math.max(0.034, p.sizeY * 1.34) * MathUtils.lerp(1, 1.07, visCurve);
+      const bodyH = Math.max(0.04, p.sizeY * 1.42) * MathUtils.lerp(1.08, 1.22, visCurve);
       const arteryWeight = p.isArtery ? 1.14 : 1;
-      const bodyLen = Math.max(0.26, p.sizeZ * 1.05) * MathUtils.lerp(1.0, 1.35, visCurve) * arteryWeight;
-      const bodyW = Math.max(0.060, p.sizeX * 0.44) * MathUtils.lerp(1.0, 1.05, visCurve) * (p.isArtery ? 1.08 : 1);
-      const carBaseY = Math.max(TRACE_BASE_Y + 0.0118, p.y + 0.003);
+      const bodyLen = Math.max(0.28, p.sizeZ * 1.14) * MathUtils.lerp(1.08, 1.5, visCurve) * arteryWeight;
+      const bodyW = Math.max(0.07, p.sizeX * 0.52) * MathUtils.lerp(1.05, 1.16, visCurve) * (p.isArtery ? 1.1 : 1);
+      const carBaseY = Math.max(TRACE_BASE_Y + 0.0145, p.y + 0.0065);
       pos.set(cx, carBaseY + bodyH * 0.5, cz);
       // Car forward axis is +Z to match trace strips, so scale [width, height, length].
       scl.set(bodyW, bodyH, bodyLen);
@@ -4168,9 +4310,9 @@ function TrafficParticles({
     const cabinWireMat = cabinWire.material as { opacity?: number } | undefined;
     if (cabinWireMat) cabinWireMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 0.96 : 0.96 * dimScale;
     const glowMat = glow.material as { opacity?: number } | undefined;
-    if (glowMat) glowMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.92, 1.0, visCurve) * dimScale;
-    const lightMat = light.material as { opacity?: number } | undefined;
-    if (lightMat) lightMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.95, 1, visCurve) * Math.max(0.35, dimScale);
+      if (glowMat) glowMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.98, 1.08, visCurve) * Math.max(0.55, dimScale);
+      const lightMat = light.material as { opacity?: number } | undefined;
+    if (lightMat) lightMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.98, 1, visCurve) * Math.max(0.55, dimScale);
   });
 
   return (
@@ -4181,7 +4323,7 @@ function TrafficParticles({
         <meshBasicMaterial
           vertexColors
           transparent
-          opacity={0.95}
+          opacity={1}
           toneMapped={false}
           depthWrite={false}
           depthTest
@@ -4194,7 +4336,7 @@ function TrafficParticles({
       <instancedMesh ref={bodyRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.2} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshBasicMaterial
-          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : '#f4fbff'}
+          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : '#fffaf1'}
           transparent={false}
           opacity={1}
           toneMapped={false}
@@ -4208,7 +4350,7 @@ function TrafficParticles({
       <instancedMesh ref={bodyWireRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.23} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshBasicMaterial
-          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ffd9f5' : '#fff7e3'}
+          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ffd9f5' : '#fff7eb'}
           wireframe
           transparent
           opacity={0.98}
