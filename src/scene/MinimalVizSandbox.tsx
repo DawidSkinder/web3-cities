@@ -459,8 +459,8 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
       Math.round((1 + seg.length / 8) * densityScale)
     );
     // Traffic must follow the rendered (shortened) street strip, not the raw tower-center segment.
-    // Keep cars on the visibly open center of the street so they do not hide under tower bases.
-    const trafficTravelLen = Math.max(0.22, visibleTraceLen * 0.42);
+    // Cars should run on the same visible orange street strip, with only a tiny inset from the ends.
+    const trafficTravelLen = Math.max(0.35, visibleTraceLen - 0.36);
     const halfVisibleLen = Math.max(0.08, trafficTravelLen * 0.5);
     const dirX = Math.cos(seg.yaw);
     const dirZ = Math.sin(seg.yaw);
@@ -1613,7 +1613,6 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
     const sizeScale = Math.max(0.9, MathUtils.lerp(1.0, 1.55, visCurve));
-    const opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : Math.max(0.9, MathUtils.lerp(0.92, 0.98, visCurve));
     const mesh = meshRef.current;
     if (!mesh) return;
     const capacity = Math.max(1, mesh.instanceMatrix.count);
@@ -1628,7 +1627,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
       const dx = p.bx - p.ax;
       const dz = p.bz - p.az;
       const segLen = Math.hypot(dx, dz);
-      const trim = Math.min(0.05, Math.max(0, segLen * 0.03));
+      const trim = Math.min(0.015, Math.max(0, segLen * 0.01));
       const invLen = segLen > 1e-6 ? 1 / segLen : 0;
       const dirX = dx * invLen;
       const dirZ = dz * invLen;
@@ -1637,19 +1636,18 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
       const bx = p.bx - dirX * trim;
       const bz = p.bz - dirZ * trim;
       const u = (p.phase + t * p.speed) % 1;
-      const h = Math.max(0.045, p.sizeY * 1.8) * MathUtils.lerp(1, 1.08, visCurve);
-      const carBaseY = Math.max(TRAFFIC_SOLID_BASE_Y, p.y + 0.01);
+      const h = Math.max(0.055, p.sizeY * 2.1) * MathUtils.lerp(1, 1.05, visCurve);
+      // Sit just above the orange trace core so cars appear attached to streets, not floating.
+      const carBaseY = Math.max(TRACE_BASE_Y + 0.0105, p.y + 0.0045);
       pos.set(MathUtils.lerp(ax, bx, u), carBaseY + h * 0.5, MathUtils.lerp(az, bz, u));
       // Box geometry forward axis is +X, so quaternion(+X -> segment dir) aligns car length with the trace.
-      const len = Math.max(0.52, p.sizeZ * 2.0) * sizeScale;
-      const w = Math.max(0.16, p.sizeX * 2.0) * MathUtils.lerp(1, 1.15, visCurve);
+      const len = Math.max(0.34, p.sizeZ * 1.55) * MathUtils.lerp(1, 1.2, visCurve);
+      const w = Math.max(0.10, p.sizeX * 1.25) * MathUtils.lerp(1, 1.08, visCurve);
       scl.set(len, h, w);
       matrix.compose(pos, orientationQuats[i] ?? identityQuatRef.current, scl);
       mesh.setMatrixAt(i, matrix);
     }
     mesh.instanceMatrix.needsUpdate = true;
-    const mat = mesh.material as { opacity?: number } | undefined;
-    if (mat) mat.opacity = opacity;
   });
 
   return (
@@ -1657,17 +1655,20 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
       {/* Render band 5: traffic cues, still depth-tested so they do not draw through towers */}
       <instancedMesh ref={meshRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.2} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
-        <meshBasicMaterial
+        <meshStandardMaterial
           color={DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : '#f5f5f5'}
-          transparent
-          opacity={0.92}
+          emissive={DEBUG_FORCE_TRAFFIC_VIS ? '#7a004a' : '#3a2a14'}
+          emissiveIntensity={DEBUG_FORCE_TRAFFIC_VIS ? 0.9 : 0.42}
+          roughness={0.35}
+          metalness={0.04}
+          transparent={false}
+          opacity={1}
           toneMapped={false}
-          depthWrite={false}
+          depthWrite
           depthTest
           polygonOffset
           polygonOffsetFactor={-2}
           polygonOffsetUnits={-2}
-          blending={AdditiveBlending}
         />
       </instancedMesh>
     </group>
