@@ -320,6 +320,10 @@ const USD_ANCHOR_HIGH = 1_000_000;
 const USD_DISTRIBUTION_BLEND = 0.45;
 const SCORE_WEIGHT_USD = 0.94;
 const SCORE_WEIGHT_INT = 0.06;
+const GEOMETRY_ANCHOR_PULL_LOW = 0.58;
+const GEOMETRY_ANCHOR_PULL_HIGH = 0.14;
+const GEOMETRY_ANCHOR_HEADROOM_MIN = 0.2;
+const GEOMETRY_ANCHOR_HEADROOM_MAX = 0.48;
 const RADIAL_GLOW_RADIUS_MULT = 1.6;
 const RADIAL_GLOW_DAMP = 1.6;
 const MIN_BASE = 0.95;
@@ -352,6 +356,8 @@ const TOP_TAIL_NORMAL_CAP_MAX = 72;
 const JUMBO_BASE_THRESHOLD = 4.6;
 const JUMBO_RESERVE_PUSH_MAX = 4.2;
 const JUMBO_CLEARANCE_PAD_MAX = 1.35;
+const PLACEMENT_COLLISION_ENVELOPE_BASE = 1.12;
+const PLACEMENT_COLLISION_ENVELOPE_JUMBO_EXTRA = 0.14;
 const SMALL_HEIGHT_FULL_EFFECT_USD = 400;
 const SMALL_HEIGHT_FADE_OUT_USD = 8_000;
 const SMALL_HEIGHT_MULT_MIN = 0.34;
@@ -1587,9 +1593,27 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   const scoreUsd = MathUtils.clamp(MathUtils.lerp(anchorU, scoreUsdDist, distBlend), 0, 1);
   const scoreI = smoothstep01(remapClamped(zI, ZI_MIN, ZI_MAX));
 
-  let score = SCORE_WEIGHT_USD * scoreUsd + SCORE_WEIGHT_INT * scoreI;
-  if (scoreUsd > 0.86) {
-    score += 0.08 * ((scoreUsd - 0.86) / 0.14);
+  // Geometry (height/footprint) must remain primarily USD-monotonic.
+  // Pull low/mid events toward the anchored USD score so local EMA rarity cannot let $22k beat $41k.
+  const geomAnchorPull = MathUtils.lerp(
+    GEOMETRY_ANCHOR_PULL_LOW,
+    GEOMETRY_ANCHOR_PULL_HIGH,
+    smoothstep01(anchorU)
+  );
+  const geomAnchorHeadroom = MathUtils.lerp(
+    GEOMETRY_ANCHOR_HEADROOM_MIN,
+    GEOMETRY_ANCHOR_HEADROOM_MAX,
+    Math.pow(anchorU, 0.75)
+  );
+  const scoreUsdGeom = MathUtils.clamp(
+    Math.min(MathUtils.lerp(scoreUsd, anchorU, geomAnchorPull), anchorU + geomAnchorHeadroom),
+    0,
+    1
+  );
+
+  let score = scoreUsdGeom;
+  if (scoreUsdGeom > 0.86) {
+    score += 0.08 * ((scoreUsdGeom - 0.86) / 0.14);
   }
   score = MathUtils.clamp(score, 0, 1);
 
@@ -1684,11 +1708,13 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
 
   // Cheap deterministic local push-out to reduce overlap as footprints get wider.
   if (state.towers.length > 0) {
-    const thisMaxBase = Math.max(shape.baseW, shape.baseD, shape.footprintX, shape.footprintZ);
-    const baseJumboT = MathUtils.clamp((thisMaxBase - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1);
+    const thisMaxBaseRaw = Math.max(shape.baseW, shape.baseD, shape.footprintX, shape.footprintZ);
+    const baseJumboT = MathUtils.clamp((thisMaxBaseRaw - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1);
     const tallJumboT = remapClamped(height, 30, 72);
     const jumboT = Math.max(baseJumboT, tallJumboT, isHero ? 1 : 0);
-    const thisRBase = thisMaxBase * MathUtils.lerp(0.72, 0.92, jumboT) + height * MathUtils.lerp(0, 0.016, jumboT);
+    const thisCollisionBase =
+      thisMaxBaseRaw * (PLACEMENT_COLLISION_ENVELOPE_BASE + jumboT * PLACEMENT_COLLISION_ENVELOPE_JUMBO_EXTRA);
+    const thisRBase = thisCollisionBase * MathUtils.lerp(0.72, 0.92, jumboT) + height * MathUtils.lerp(0, 0.016, jumboT);
     const reserveRadialPush =
       jumboT > 0
         ? (MathUtils.lerp(0.6, JUMBO_RESERVE_PUSH_MAX, jumboT) + height * 0.022 * jumboT) *
@@ -1721,13 +1747,21 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
         const nX = invDist > 0 ? dx * invDist : dirX;
         const nZ = invDist > 0 ? dz * invDist : dirZ;
 
-        const otherMaxBase = Math.max(other.baseW, other.baseD, other.footprintX, other.footprintZ);
+        const otherMaxBaseRaw = Math.max(other.baseW, other.baseD, other.footprintX, other.footprintZ);
         const otherTallT = remapClamped(other.height, 30, 72);
+        const otherJumboT = Math.max(
+          MathUtils.clamp((otherMaxBaseRaw - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1),
+          otherTallT,
+          other.isHero ? 1 : 0
+        );
+        const otherCollisionBase =
+          otherMaxBaseRaw * (PLACEMENT_COLLISION_ENVELOPE_BASE + otherJumboT * PLACEMENT_COLLISION_ENVELOPE_JUMBO_EXTRA);
         const otherR =
-          otherMaxBase * (other.isHero ? 0.78 : 0.68) + other.height * MathUtils.lerp(0, 0.014, Math.max(otherTallT, other.isHero ? 1 : 0));
+          otherCollisionBase * (other.isHero ? 0.78 : 0.68) +
+          other.height * MathUtils.lerp(0, 0.014, Math.max(otherTallT, other.isHero ? 1 : 0));
         const pairJumboT = Math.max(
           jumboT,
-          MathUtils.clamp((otherMaxBase - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1),
+          MathUtils.clamp((otherMaxBaseRaw - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1),
           otherTallT,
           other.isHero ? 1 : 0
         );
@@ -1790,12 +1824,19 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
           const invDist = dist > 0.0001 ? 1 / dist : 0;
           const nX = invDist > 0 ? dx * invDist : dirX;
           const nZ = invDist > 0 ? dz * invDist : dirZ;
-          const otherMaxBase = Math.max(other.baseW, other.baseD, other.footprintX, other.footprintZ);
+          const otherMaxBaseRaw = Math.max(other.baseW, other.baseD, other.footprintX, other.footprintZ);
           const otherTallT = remapClamped(other.height, 30, 72);
-          const pairJumboT = Math.max(jumboT, otherTallT, other.isHero ? 1 : 0, MathUtils.clamp((otherMaxBase - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1));
+          const otherJumboT = Math.max(
+            MathUtils.clamp((otherMaxBaseRaw - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1),
+            otherTallT,
+            other.isHero ? 1 : 0
+          );
+          const pairJumboT = Math.max(jumboT, otherTallT, other.isHero ? 1 : 0, otherJumboT);
           if (pairJumboT < 0.18) continue;
+          const otherCollisionBase =
+            otherMaxBaseRaw * (PLACEMENT_COLLISION_ENVELOPE_BASE + otherJumboT * PLACEMENT_COLLISION_ENVELOPE_JUMBO_EXTRA);
           const otherR =
-            otherMaxBase * (other.isHero ? 0.78 : 0.68) +
+            otherCollisionBase * (other.isHero ? 0.78 : 0.68) +
             other.height * MathUtils.lerp(0, 0.014, Math.max(otherTallT, other.isHero ? 1 : 0));
           const pairTallT = Math.max(tallJumboT, otherTallT);
           const bothTallT = Math.min(tallJumboT, otherTallT);
