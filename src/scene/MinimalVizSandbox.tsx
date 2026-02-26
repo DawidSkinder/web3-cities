@@ -1579,6 +1579,8 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
   const { camera } = useThree();
   const bodyRef = useRef<ThreeInstancedMesh>(null);
   const cabinRef = useRef<ThreeInstancedMesh>(null);
+  const bodyWireRef = useRef<ThreeInstancedMesh>(null);
+  const cabinWireRef = useRef<ThreeInstancedMesh>(null);
   const lightRef = useRef<ThreeInstancedMesh>(null);
   const glowRef = useRef<ThreeInstancedMesh>(null);
   const orientationQuats = useMemo(() => {
@@ -1613,13 +1615,17 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
   useEffect(() => {
     const body = bodyRef.current;
     const cabin = cabinRef.current;
+    const bodyWire = bodyWireRef.current;
+    const cabinWire = cabinWireRef.current;
     const light = lightRef.current;
     const glow = glowRef.current;
-    if (!body || !cabin || !light || !glow) return;
+    if (!body || !cabin || !bodyWire || !cabinWire || !light || !glow) return;
     const capacity = Math.max(1, body.instanceMatrix.count);
     const count = Math.min(particles.length, capacity);
     body.count = count;
     cabin.count = count;
+    bodyWire.count = count;
+    cabinWire.count = count;
     light.count = count;
     glow.count = count;
     for (let i = 0; i < count; i++) {
@@ -1630,6 +1636,8 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
     }
     body.instanceMatrix.needsUpdate = true;
     cabin.instanceMatrix.needsUpdate = true;
+    bodyWire.instanceMatrix.needsUpdate = true;
+    cabinWire.instanceMatrix.needsUpdate = true;
     light.instanceMatrix.needsUpdate = true;
     glow.instanceMatrix.needsUpdate = true;
     if (light.instanceColor) light.instanceColor.needsUpdate = true;
@@ -1639,16 +1647,20 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
-    const sizeScale = MathUtils.lerp(1.0, 1.14, visCurve);
+    const sizeScale = MathUtils.lerp(1.05, 1.55, visCurve);
     const body = bodyRef.current;
     const cabin = cabinRef.current;
+    const bodyWire = bodyWireRef.current;
+    const cabinWire = cabinWireRef.current;
     const light = lightRef.current;
     const glow = glowRef.current;
-    if (!body || !cabin || !light || !glow) return;
+    if (!body || !cabin || !bodyWire || !cabinWire || !light || !glow) return;
     const capacity = Math.max(1, body.instanceMatrix.count);
     const instanceCount = Math.min(particles.length, capacity);
     body.count = instanceCount;
     cabin.count = instanceCount;
+    bodyWire.count = instanceCount;
+    cabinWire.count = instanceCount;
     light.count = instanceCount;
     glow.count = instanceCount;
     const matrix = tempMatrixRef.current;
@@ -1675,30 +1687,39 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
       const cx = MathUtils.lerp(ax, bx, u);
       const cz = MathUtils.lerp(az, bz, u);
       // Sit just above the orange trace core so cars appear attached to streets, not floating.
-      const bodyH = Math.max(0.028, p.sizeY * 1.18) * MathUtils.lerp(1, 1.02, visCurve);
-      const bodyLen = Math.max(0.17, p.sizeZ * 0.82) * sizeScale;
-      const bodyW = Math.max(0.058, p.sizeX * 0.62) * MathUtils.lerp(1, 1.04, visCurve);
-      const carBaseY = Math.max(TRACE_BASE_Y + 0.0106, p.y + 0.002);
+      const bodyH = Math.max(0.03, p.sizeY * 1.22) * MathUtils.lerp(1, 1.06, visCurve);
+      const bodyLen = Math.max(0.19, p.sizeZ * 0.9) * sizeScale;
+      const bodyW = Math.max(0.064, p.sizeX * 0.68) * MathUtils.lerp(1, 1.1, visCurve);
+      const carBaseY = Math.max(TRACE_BASE_Y + 0.0118, p.y + 0.003);
       pos.set(cx, carBaseY + bodyH * 0.5, cz);
       // Car forward axis is +Z to match trace strips, so scale [width, height, length].
       scl.set(bodyW, bodyH, bodyLen);
       matrix.compose(pos, orientationQuats[i] ?? identityQuatRef.current, scl);
       body.setMatrixAt(i, matrix);
 
+      // Building-style warm-white wireframe shell (slight inflation) for readability / style consistency.
+      scl.set(bodyW * 1.035, bodyH * 1.05, bodyLen * 1.035);
+      matrix.compose(pos, orientationQuats[i] ?? identityQuatRef.current, scl);
+      bodyWire.setMatrixAt(i, matrix);
+
       // Low-poly cabin: narrower, taller, slightly rear-shifted to read as a car silhouette.
-      const cabLen = bodyLen * 0.52;
-      const cabH = bodyH * 0.86;
-      const cabW = bodyW * 0.82;
-      const cabOffset = -bodyLen * 0.10;
+      const cabLen = bodyLen * 0.46;
+      const cabH = bodyH * 0.92;
+      const cabW = bodyW * 0.78;
+      // Push cabin toward the rear so heading is visually obvious.
+      const cabOffset = -bodyLen * 0.2;
       pos2.set(cx + dirX * cabOffset, carBaseY + bodyH + cabH * 0.48, cz + dirZ * cabOffset);
       scl.set(cabW, cabH, cabLen);
       matrix.compose(pos2, orientationQuats[i] ?? identityQuatRef.current, scl);
       cabin.setMatrixAt(i, matrix);
+      scl.set(cabW * 1.04, cabH * 1.05, cabLen * 1.04);
+      matrix.compose(pos2, orientationQuats[i] ?? identityQuatRef.current, scl);
+      cabinWire.setMatrixAt(i, matrix);
 
       // Front light bar / nose accent makes direction of travel obvious.
-      const barLen = Math.max(0.022, bodyLen * 0.09);
-      const barH = Math.max(0.008, bodyH * 0.22);
-      const barW = bodyW * 0.74;
+      const barLen = Math.max(0.028, bodyLen * 0.12);
+      const barH = Math.max(0.010, bodyH * 0.28);
+      const barW = bodyW * 0.82;
       const frontOffset = bodyLen * 0.5 - barLen * 0.5;
       pos3.set(cx + dirX * frontOffset, carBaseY + bodyH * 0.42, cz + dirZ * frontOffset);
       scl.set(barW, barH, barLen);
@@ -1708,9 +1729,9 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
 
       // Soft glow shell around the body for visibility (like the old bright cards), but subtle.
       pos4.copy(pos);
-      const glowH = bodyH * 1.35;
-      const glowW = bodyW * 1.45;
-      const glowLen = bodyLen * 1.35;
+      const glowH = bodyH * MathUtils.lerp(1.8, 2.5, visCurve);
+      const glowW = bodyW * MathUtils.lerp(1.9, 2.8, visCurve);
+      const glowLen = bodyLen * MathUtils.lerp(1.85, 2.6, visCurve);
       scl.set(glowW, glowH, glowLen);
       matrix.compose(pos4, orientationQuats[i] ?? identityQuatRef.current, scl);
       glow.setMatrixAt(i, matrix);
@@ -1718,10 +1739,22 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
     }
     body.instanceMatrix.needsUpdate = true;
     cabin.instanceMatrix.needsUpdate = true;
+    bodyWire.instanceMatrix.needsUpdate = true;
+    cabinWire.instanceMatrix.needsUpdate = true;
     light.instanceMatrix.needsUpdate = true;
     glow.instanceMatrix.needsUpdate = true;
     if (light.instanceColor) light.instanceColor.needsUpdate = true;
     if (glow.instanceColor) glow.instanceColor.needsUpdate = true;
+
+    // Keep traffic readable at wide zoom: brighter bodies + stronger glow shell than towers.
+    const bodyMat = body.material as { emissiveIntensity?: number } | undefined;
+    if (bodyMat) bodyMat.emissiveIntensity = DEBUG_FORCE_TRAFFIC_VIS ? 0.9 : MathUtils.lerp(0.55, 0.9, visCurve);
+    const cabinMat = cabin.material as { emissiveIntensity?: number } | undefined;
+    if (cabinMat) cabinMat.emissiveIntensity = DEBUG_FORCE_TRAFFIC_VIS ? 0.9 : MathUtils.lerp(0.28, 0.5, visCurve);
+    const glowMat = glow.material as { opacity?: number } | undefined;
+    if (glowMat) glowMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.55, 0.85, visCurve);
+    const lightMat = light.material as { opacity?: number } | undefined;
+    if (lightMat) lightMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.95, 1, visCurve);
   });
 
   return (
@@ -1732,7 +1765,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
         <meshBasicMaterial
           vertexColors
           transparent
-          opacity={0.42}
+          opacity={0.7}
           toneMapped={false}
           depthWrite={false}
           depthTest
@@ -1745,11 +1778,11 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
       <instancedMesh ref={bodyRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.2} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial
-          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : '#f4f8ff'}
-          emissive={DEBUG_FORCE_TRAFFIC_VIS ? '#7a004a' : '#54687a'}
-          emissiveIntensity={DEBUG_FORCE_TRAFFIC_VIS ? 0.9 : 0.48}
-          roughness={0.36}
-          metalness={0.06}
+          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : '#48525c'}
+          emissive={DEBUG_FORCE_TRAFFIC_VIS ? '#7a004a' : '#2a313a'}
+          emissiveIntensity={DEBUG_FORCE_TRAFFIC_VIS ? 0.9 : 0.72}
+          roughness={0.42}
+          metalness={0.04}
           transparent={false}
           opacity={1}
           toneMapped={false}
@@ -1760,14 +1793,29 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
           polygonOffsetUnits={-2}
         />
       </instancedMesh>
+      <instancedMesh ref={bodyWireRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.23} frustumCulled={false}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial
+          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ffd9f5' : '#f1efe5'}
+          wireframe
+          transparent
+          opacity={0.88}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+          polygonOffset
+          polygonOffsetFactor={-3}
+          polygonOffsetUnits={-3}
+        />
+      </instancedMesh>
       <instancedMesh ref={cabinRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.25} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial
-          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ffd9f5' : '#d7e1ea'}
-          emissive={DEBUG_FORCE_TRAFFIC_VIS ? '#7a004a' : '#24303d'}
-          emissiveIntensity={DEBUG_FORCE_TRAFFIC_VIS ? 0.9 : 0.22}
-          roughness={0.28}
-          metalness={0.07}
+          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ffd9f5' : '#5f6a75'}
+          emissive={DEBUG_FORCE_TRAFFIC_VIS ? '#7a004a' : '#161b22'}
+          emissiveIntensity={DEBUG_FORCE_TRAFFIC_VIS ? 0.9 : 0.38}
+          roughness={0.34}
+          metalness={0.05}
           transparent={false}
           toneMapped={false}
           depthWrite
@@ -1775,6 +1823,21 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
           polygonOffset
           polygonOffsetFactor={-2}
           polygonOffsetUnits={-2}
+        />
+      </instancedMesh>
+      <instancedMesh ref={cabinWireRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.27} frustumCulled={false}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial
+          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ffd9f5' : '#f1efe5'}
+          wireframe
+          transparent
+          opacity={0.82}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+          polygonOffset
+          polygonOffsetFactor={-3}
+          polygonOffsetUnits={-3}
         />
       </instancedMesh>
       <instancedMesh ref={lightRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.3} frustumCulled={false}>
