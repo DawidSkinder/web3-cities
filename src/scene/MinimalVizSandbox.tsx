@@ -3360,43 +3360,58 @@ function SandboxScene({
     hoverLastSeenAtRef.current = performance.now();
   };
 
-  useFrame(() => {
-    const active = hoverStableRef.current;
-    const intent = hoverIntentRef.current;
-    let nextActive = active;
-    const now = performance.now();
+  useEffect(() => {
+    let raf = 0;
+    let mounted = true;
 
-    if (intent != null) {
-      hoverLastSeenAtRef.current = now;
-      if (intent === active) {
-        hoverCandidateRef.current = null;
-        hoverCandidateFramesRef.current = 0;
-      } else {
-        if (hoverCandidateRef.current !== intent) {
-          hoverCandidateRef.current = intent;
-          hoverCandidateFramesRef.current = 1;
-        } else {
-          hoverCandidateFramesRef.current += 1;
-        }
-        if (hoverCandidateFramesRef.current >= HOVER_SWITCH_CONFIRM_FRAMES) {
-          nextActive = intent;
+    const tick = () => {
+      if (!mounted) return;
+
+      const active = hoverStableRef.current;
+      const intent = hoverIntentRef.current;
+      let nextActive = active;
+      const now = performance.now();
+
+      if (intent != null) {
+        hoverLastSeenAtRef.current = now;
+        if (intent === active) {
           hoverCandidateRef.current = null;
           hoverCandidateFramesRef.current = 0;
+        } else {
+          if (hoverCandidateRef.current !== intent) {
+            hoverCandidateRef.current = intent;
+            hoverCandidateFramesRef.current = 1;
+          } else {
+            hoverCandidateFramesRef.current += 1;
+          }
+          if (hoverCandidateFramesRef.current >= HOVER_SWITCH_CONFIRM_FRAMES) {
+            nextActive = intent;
+            hoverCandidateRef.current = null;
+            hoverCandidateFramesRef.current = 0;
+          }
+        }
+      } else {
+        hoverCandidateRef.current = null;
+        hoverCandidateFramesRef.current = 0;
+        if (active != null && now - hoverLastSeenAtRef.current > HOVER_CLEAR_GRACE_MS) {
+          nextActive = null;
         }
       }
-    } else {
-      hoverCandidateRef.current = null;
-      hoverCandidateFramesRef.current = 0;
-      if (active != null && now - hoverLastSeenAtRef.current > HOVER_CLEAR_GRACE_MS) {
-        nextActive = null;
-      }
-    }
 
-    if (nextActive !== active) {
-      hoverStableRef.current = nextActive;
-      onHoverTowerChange?.(nextActive);
-    }
-  });
+      if (nextActive !== active) {
+        hoverStableRef.current = nextActive;
+        onHoverTowerChange?.(nextActive);
+      }
+
+      raf = window.requestAnimationFrame(tick);
+    };
+
+    raf = window.requestAnimationFrame(tick);
+    return () => {
+      mounted = false;
+      window.cancelAnimationFrame(raf);
+    };
+  }, [onHoverTowerChange]);
 
   return (
     <Canvas
