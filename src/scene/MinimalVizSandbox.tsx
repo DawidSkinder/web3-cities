@@ -281,6 +281,7 @@ type OrbitState = {
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const SPIRAL_STEP = 3.55;
 const MIN_HEIGHT = 4.5;
+const TOWER_VISUAL_MIN_HEIGHT = 2.8;
 const MAX_HEIGHT = 46;
 const HERO_MAX_HEIGHT = 92;
 const HEIGHT_GAMMA = 0.84;
@@ -342,6 +343,10 @@ const HERO_MIN_USD = 250_000;
 const JUMBO_BASE_THRESHOLD = 4.6;
 const JUMBO_RESERVE_PUSH_MAX = 4.2;
 const JUMBO_CLEARANCE_PAD_MAX = 1.35;
+const SMALL_HEIGHT_FULL_EFFECT_USD = 400;
+const SMALL_HEIGHT_FADE_OUT_USD = 8_000;
+const SMALL_HEIGHT_MULT_MIN = 0.34;
+const SMALL_HEIGHT_CURVE = 1.15;
 const VIS_NEAR_DIST = 34;
 const VIS_FAR_DIST = 170;
 const FOCUS_NON_HOVER_DIM = 0.22;
@@ -1618,6 +1623,18 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   const heroBaseMult = isHero ? MathUtils.lerp(HERO_BASE_MULT_MIN, HERO_BASE_MULT_MAX, hash01(event.sequence, 1913)) : 1;
   height = MathUtils.clamp(height * heroMult, MIN_HEIGHT, HERO_MAX_HEIGHT);
 
+  // Height-only compression for very small USD events. Keep width/footprint intact,
+  // but make tiny notionals read as clearly minor buildings while staying above tree scale.
+  if (!isHero && usdNotional < SMALL_HEIGHT_FADE_OUT_USD) {
+    const smallUsdT = remapClamped(
+      Math.log10(Math.max(1, usdNotional)),
+      Math.log10(SMALL_HEIGHT_FULL_EFFECT_USD),
+      Math.log10(SMALL_HEIGHT_FADE_OUT_USD)
+    );
+    const heightMult = MathUtils.lerp(SMALL_HEIGHT_MULT_MIN, 1, Math.pow(smallUsdT, SMALL_HEIGHT_CURVE));
+    height = Math.max(TOWER_VISUAL_MIN_HEIGHT, height * heightMult);
+  }
+
   const shape = buildTowerShapeParams(event.sequence, score);
   if (isHero) {
     shape.baseW = MathUtils.clamp(shape.baseW * heroBaseMult, MIN_BASE * 0.95, MAX_BASE * 2.35);
@@ -2136,7 +2153,7 @@ function MinimalOrbitRig({
 }
 
 function buildTowerSegments(tower: TowerDatum): TowerSegmentSpec[] {
-  const h = Math.max(MIN_HEIGHT, tower.height);
+  const h = Math.max(TOWER_VISUAL_MIN_HEIGHT, tower.height);
   const fx = tower.footprintX;
   const fz = tower.footprintZ;
   const taperAmt = MathUtils.clamp(tower.taper, 0, 0.22);
