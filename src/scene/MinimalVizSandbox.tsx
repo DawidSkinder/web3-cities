@@ -459,7 +459,8 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
       Math.round((1 + seg.length / 8) * densityScale)
     );
     // Traffic must follow the rendered (shortened) street strip, not the raw tower-center segment.
-    const trafficTravelLen = Math.max(0.18, visibleTraceLen - 0.18);
+    // Keep cars on the visibly open center of the street so they do not hide under tower bases.
+    const trafficTravelLen = Math.max(0.22, visibleTraceLen * 0.42);
     const halfVisibleLen = Math.max(0.08, trafficTravelLen * 0.5);
     const dirX = Math.cos(seg.yaw);
     const dirZ = Math.sin(seg.yaw);
@@ -1599,20 +1600,12 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
   const tempPosRef = useRef(new Vector3());
   const tempScaleRef = useRef(new Vector3(1, 1, 1));
   const identityQuatRef = useRef(new Quaternion());
-  const tempColorRef = useRef(new Color());
-
   useEffect(() => {
     const mesh = meshRef.current;
     if (!mesh) return;
     const capacity = Math.max(1, mesh.instanceMatrix.count);
     const count = Math.min(particles.length, capacity);
     mesh.count = count;
-    for (let i = 0; i < count; i++) {
-      const p = particles[i];
-      if (!p) continue;
-      mesh.setColorAt(i, tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : p.color));
-    }
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     mesh.instanceMatrix.needsUpdate = true;
   }, [particles, orientationQuats]);
 
@@ -1620,7 +1613,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
     const sizeScale = Math.max(0.9, MathUtils.lerp(1.0, 1.55, visCurve));
-    const opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : Math.max(0.82, MathUtils.lerp(0.86, 0.95, visCurve));
+    const opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : Math.max(0.9, MathUtils.lerp(0.92, 0.98, visCurve));
     const mesh = meshRef.current;
     if (!mesh) return;
     const capacity = Math.max(1, mesh.instanceMatrix.count);
@@ -1635,7 +1628,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
       const dx = p.bx - p.ax;
       const dz = p.bz - p.az;
       const segLen = Math.hypot(dx, dz);
-      const trim = Math.min(0.12, Math.max(0, segLen * 0.08));
+      const trim = Math.min(0.05, Math.max(0, segLen * 0.03));
       const invLen = segLen > 1e-6 ? 1 / segLen : 0;
       const dirX = dx * invLen;
       const dirZ = dz * invLen;
@@ -1644,22 +1637,17 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
       const bx = p.bx - dirX * trim;
       const bz = p.bz - dirZ * trim;
       const u = (p.phase + t * p.speed) % 1;
-      const h = Math.max(0.06, p.sizeY * 1.9) * MathUtils.lerp(1, 1.1, visCurve);
+      const h = Math.max(0.045, p.sizeY * 1.8) * MathUtils.lerp(1, 1.08, visCurve);
       const carBaseY = Math.max(TRAFFIC_SOLID_BASE_Y, p.y + 0.01);
       pos.set(MathUtils.lerp(ax, bx, u), carBaseY + h * 0.5, MathUtils.lerp(az, bz, u));
       // Box geometry forward axis is +X, so quaternion(+X -> segment dir) aligns car length with the trace.
-      const len = Math.max(0.34, p.sizeZ * 1.35) * sizeScale;
-      const w = Math.max(0.11, p.sizeX * 1.5) * MathUtils.lerp(1, 1.2, visCurve);
+      const len = Math.max(0.52, p.sizeZ * 2.0) * sizeScale;
+      const w = Math.max(0.16, p.sizeX * 2.0) * MathUtils.lerp(1, 1.15, visCurve);
       scl.set(len, h, w);
       matrix.compose(pos, orientationQuats[i] ?? identityQuatRef.current, scl);
       mesh.setMatrixAt(i, matrix);
-      mesh.setColorAt(
-        i,
-        tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : hash01(i, p.phase * 1000, 991) > 0.9 ? '#F7931A' : '#F5F5F5')
-      );
     }
     mesh.instanceMatrix.needsUpdate = true;
-    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     const mat = mesh.material as { opacity?: number } | undefined;
     if (mat) mat.opacity = opacity;
   });
@@ -1670,7 +1658,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
       <instancedMesh ref={meshRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.2} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshBasicMaterial
-          vertexColors
+          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : '#f5f5f5'}
           transparent
           opacity={0.92}
           toneMapped={false}
