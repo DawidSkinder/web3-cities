@@ -209,6 +209,7 @@ const TRAFFIC_SOLID_BASE_Y = TRACE_BASE_Y + 0.02;
 const TOWER_GROUND_LIFT_Y = 0.002;
 const DEBUG_FORCE_TRAFFIC_VIS = false;
 const MAX_TRAFFIC_INSTANCES = 4096;
+const TRAFFIC_PATH_TRIM = 0.9;
 
 const RADIAL_GLOW_VERTEX = `
 varying vec2 vUv;
@@ -456,6 +457,13 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
       RUNTIME_QUALITY_CONFIG.reducedMotion ? 1 : 2,
       Math.round((1 + seg.length / 8) * densityScale)
     );
+    const halfVisibleLen = Math.max(0.08, seg.length * 0.5);
+    const dirX = Math.cos(seg.yaw);
+    const dirZ = Math.sin(seg.yaw);
+    const visAx = seg.midX - dirX * halfVisibleLen;
+    const visAz = seg.midZ - dirZ * halfVisibleLen;
+    const visBx = seg.midX + dirX * halfVisibleLen;
+    const visBz = seg.midZ + dirZ * halfVisibleLen;
 
     for (let p = 0; p < particleCount; p++) {
       const phase = hash01(aSeq, bSeq, p, 11);
@@ -472,10 +480,11 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
       state.trafficParticles.push({
         id: `${traceId}-P-${p}`,
         traceId,
-        ax: tower.x,
-        az: tower.z,
-        bx: neighbor.x,
-        bz: neighbor.z,
+        // Follow the visible shortened trace strip, not tower-center to tower-center.
+        ax: visAx,
+        az: visAz,
+        bx: visBx,
+        bz: visBz,
         yaw: seg.yaw,
         y: y + TRAFFIC_BASE_OFFSET_Y,
         speed,
@@ -1607,7 +1616,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
     const sizeScale = Math.max(0.8, MathUtils.lerp(1.15, 2.35, visCurve));
-    const opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : Math.max(0.62, MathUtils.lerp(0.86, 0.97, visCurve));
+    const opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : Math.max(0.78, MathUtils.lerp(0.9, 0.98, visCurve));
     const mesh = instancedRef.current;
     if (!mesh) return;
     const capacity = Math.max(1, mesh.instanceMatrix.count);
@@ -1619,12 +1628,24 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
     for (let i = 0; i < instanceCount; i++) {
       const p = particles[i];
       if (!mesh || !p) continue;
+      const dx = p.bx - p.ax;
+      const dz = p.bz - p.az;
+      const segLen = Math.hypot(dx, dz);
+      const trim = Math.min(TRAFFIC_PATH_TRIM, Math.max(0, segLen * 0.32));
+      const invLen = segLen > 1e-6 ? 1 / segLen : 0;
+      const dirX = dx * invLen;
+      const dirZ = dz * invLen;
+      const ax = p.ax + dirX * trim;
+      const az = p.az + dirZ * trim;
+      const bx = p.bx - dirX * trim;
+      const bz = p.bz - dirZ * trim;
       const u = (p.phase + t * p.speed) % 1;
-      const h = Math.max(0.1, p.sizeY * 2.2) * MathUtils.lerp(1, 1.18, visCurve);
-      pos.set(MathUtils.lerp(p.ax, p.bx, u), TRAFFIC_SOLID_BASE_Y + h * 0.5, MathUtils.lerp(p.az, p.bz, u));
+      const h = Math.max(0.14, p.sizeY * 2.9) * MathUtils.lerp(1, 1.25, visCurve);
+      const carBaseY = Math.max(TRAFFIC_SOLID_BASE_Y, p.y + 0.02);
+      pos.set(MathUtils.lerp(ax, bx, u), carBaseY + h * 0.5, MathUtils.lerp(az, bz, u));
       // Box geometry forward axis is +X, so quaternion(+X -> segment dir) aligns car length with the trace.
-      const len = Math.max(0.75, p.sizeZ * 2.5) * sizeScale;
-      const w = Math.max(0.18, p.sizeX * 1.9) * MathUtils.lerp(1, 1.42, visCurve);
+      const len = Math.max(1.35, p.sizeZ * 3.6) * sizeScale;
+      const w = Math.max(0.28, p.sizeX * 2.7) * MathUtils.lerp(1, 1.55, visCurve);
       scl.set(len, h, w);
       matrix.compose(pos, orientationQuats[i] ?? identityQuatRef.current, scl);
       mesh.setMatrixAt(i, matrix);
@@ -1644,7 +1665,7 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
         <meshBasicMaterial
           vertexColors
           transparent
-          opacity={0.9}
+          opacity={0.95}
           toneMapped={false}
           depthWrite={false}
           depthTest
