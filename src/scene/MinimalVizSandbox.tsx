@@ -460,10 +460,12 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
     );
     // Traffic must follow the rendered (shortened) street strip, not the raw tower-center segment.
     // Cars should run on the same visible orange street strip, with only a tiny inset from the ends.
-    const trafficTravelLen = Math.max(0.35, visibleTraceLen - 0.36);
-    const halfVisibleLen = Math.max(0.08, trafficTravelLen * 0.5);
-    const dirX = Math.cos(seg.yaw);
-    const dirZ = Math.sin(seg.yaw);
+    // IMPORTANT: trace yaw is defined as atan2(dx, dz), so the world forward dir for the trace centerline is:
+    // dir = (sin(yaw), cos(yaw)) in XZ. Using (cos,sin) was the bug that sent cars off-road / sideways.
+    const trafficTravelLen = Math.max(0.45, visibleTraceLen - 0.14);
+    const halfVisibleLen = Math.max(0.12, trafficTravelLen * 0.5);
+    const dirX = Math.sin(seg.yaw);
+    const dirZ = Math.cos(seg.yaw);
     const visAx = seg.midX - dirX * halfVisibleLen;
     const visAz = seg.midZ - dirZ * halfVisibleLen;
     const visBx = seg.midX + dirX * halfVisibleLen;
@@ -490,7 +492,7 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
         bx: visBx,
         bz: visBz,
         yaw: seg.yaw,
-        y: y + TRAFFIC_BASE_OFFSET_Y,
+        y: y + 0.0095,
         speed,
         phase,
         color: `#${particleColor.getHexString()}`,
@@ -1575,7 +1577,9 @@ function TraceStrips({ traces }: { traces: TraceDatum[] }) {
 
 function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) {
   const { camera } = useThree();
-  const meshRef = useRef<ThreeInstancedMesh>(null);
+  const bodyRef = useRef<ThreeInstancedMesh>(null);
+  const cabinRef = useRef<ThreeInstancedMesh>(null);
+  const lightRef = useRef<ThreeInstancedMesh>(null);
   const orientationQuats = useMemo(() => {
     const forward = new Vector3(1, 0, 0);
     const dir = new Vector3();
@@ -1598,28 +1602,49 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
   }, [particles]);
   const tempMatrixRef = useRef(new Matrix4());
   const tempPosRef = useRef(new Vector3());
+  const tempPos2Ref = useRef(new Vector3());
+  const tempPos3Ref = useRef(new Vector3());
   const tempScaleRef = useRef(new Vector3(1, 1, 1));
   const identityQuatRef = useRef(new Quaternion());
+  const tempColorRef = useRef(new Color());
   useEffect(() => {
-    const mesh = meshRef.current;
-    if (!mesh) return;
-    const capacity = Math.max(1, mesh.instanceMatrix.count);
+    const body = bodyRef.current;
+    const cabin = cabinRef.current;
+    const light = lightRef.current;
+    if (!body || !cabin || !light) return;
+    const capacity = Math.max(1, body.instanceMatrix.count);
     const count = Math.min(particles.length, capacity);
-    mesh.count = count;
-    mesh.instanceMatrix.needsUpdate = true;
+    body.count = count;
+    cabin.count = count;
+    light.count = count;
+    for (let i = 0; i < count; i++) {
+      const p = particles[i];
+      if (!p) continue;
+      light.setColorAt(i, tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : p.color));
+    }
+    body.instanceMatrix.needsUpdate = true;
+    cabin.instanceMatrix.needsUpdate = true;
+    light.instanceMatrix.needsUpdate = true;
+    if (light.instanceColor) light.instanceColor.needsUpdate = true;
   }, [particles, orientationQuats]);
 
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
-    const sizeScale = Math.max(0.9, MathUtils.lerp(1.0, 1.55, visCurve));
-    const mesh = meshRef.current;
-    if (!mesh) return;
-    const capacity = Math.max(1, mesh.instanceMatrix.count);
+    const sizeScale = MathUtils.lerp(1.0, 1.24, visCurve);
+    const body = bodyRef.current;
+    const cabin = cabinRef.current;
+    const light = lightRef.current;
+    if (!body || !cabin || !light) return;
+    const capacity = Math.max(1, body.instanceMatrix.count);
     const instanceCount = Math.min(particles.length, capacity);
-    mesh.count = instanceCount;
+    body.count = instanceCount;
+    cabin.count = instanceCount;
+    light.count = instanceCount;
     const matrix = tempMatrixRef.current;
     const pos = tempPosRef.current;
+    const pos2 = tempPos2Ref.current;
+    const pos3 = tempPos3Ref.current;
     const scl = tempScaleRef.current;
     for (let i = 0; i < instanceCount; i++) {
       const p = particles[i];
@@ -1636,31 +1661,57 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
       const bx = p.bx - dirX * trim;
       const bz = p.bz - dirZ * trim;
       const u = (p.phase + t * p.speed) % 1;
-      const h = Math.max(0.055, p.sizeY * 2.1) * MathUtils.lerp(1, 1.05, visCurve);
+      const cx = MathUtils.lerp(ax, bx, u);
+      const cz = MathUtils.lerp(az, bz, u);
       // Sit just above the orange trace core so cars appear attached to streets, not floating.
-      const carBaseY = Math.max(TRACE_BASE_Y + 0.0105, p.y + 0.0045);
-      pos.set(MathUtils.lerp(ax, bx, u), carBaseY + h * 0.5, MathUtils.lerp(az, bz, u));
+      const bodyH = Math.max(0.032, p.sizeY * 1.4) * MathUtils.lerp(1, 1.02, visCurve);
+      const bodyLen = Math.max(0.21, p.sizeZ * 0.95) * sizeScale;
+      const bodyW = Math.max(0.07, p.sizeX * 0.78) * MathUtils.lerp(1, 1.05, visCurve);
+      const carBaseY = Math.max(TRACE_BASE_Y + 0.0102, p.y + 0.0015);
+      pos.set(cx, carBaseY + bodyH * 0.5, cz);
       // Box geometry forward axis is +X, so quaternion(+X -> segment dir) aligns car length with the trace.
-      const len = Math.max(0.34, p.sizeZ * 1.55) * MathUtils.lerp(1, 1.2, visCurve);
-      const w = Math.max(0.10, p.sizeX * 1.25) * MathUtils.lerp(1, 1.08, visCurve);
-      scl.set(len, h, w);
+      scl.set(bodyLen, bodyH, bodyW);
       matrix.compose(pos, orientationQuats[i] ?? identityQuatRef.current, scl);
-      mesh.setMatrixAt(i, matrix);
+      body.setMatrixAt(i, matrix);
+
+      // Low-poly cabin: narrower, taller, slightly rear-shifted to read as a car silhouette.
+      const cabLen = bodyLen * 0.48;
+      const cabH = bodyH * 0.72;
+      const cabW = bodyW * 0.82;
+      const cabOffset = -bodyLen * 0.06;
+      pos2.set(cx + dirX * cabOffset, carBaseY + bodyH + cabH * 0.48, cz + dirZ * cabOffset);
+      scl.set(cabLen, cabH, cabW);
+      matrix.compose(pos2, orientationQuats[i] ?? identityQuatRef.current, scl);
+      cabin.setMatrixAt(i, matrix);
+
+      // Front light bar / nose accent makes direction of travel obvious.
+      const barLen = Math.max(0.03, bodyLen * 0.11);
+      const barH = Math.max(0.009, bodyH * 0.25);
+      const barW = bodyW * 0.70;
+      const frontOffset = bodyLen * 0.5 - barLen * 0.5;
+      pos3.set(cx + dirX * frontOffset, carBaseY + bodyH * 0.42, cz + dirZ * frontOffset);
+      scl.set(barLen, barH, barW);
+      matrix.compose(pos3, orientationQuats[i] ?? identityQuatRef.current, scl);
+      light.setMatrixAt(i, matrix);
+      light.setColorAt(i, tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : p.color));
     }
-    mesh.instanceMatrix.needsUpdate = true;
+    body.instanceMatrix.needsUpdate = true;
+    cabin.instanceMatrix.needsUpdate = true;
+    light.instanceMatrix.needsUpdate = true;
+    if (light.instanceColor) light.instanceColor.needsUpdate = true;
   });
 
   return (
     <group>
       {/* Render band 5: traffic cues, still depth-tested so they do not draw through towers */}
-      <instancedMesh ref={meshRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.2} frustumCulled={false}>
+      <instancedMesh ref={bodyRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.2} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial
-          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : '#f5f5f5'}
-          emissive={DEBUG_FORCE_TRAFFIC_VIS ? '#7a004a' : '#3a2a14'}
-          emissiveIntensity={DEBUG_FORCE_TRAFFIC_VIS ? 0.9 : 0.42}
-          roughness={0.35}
-          metalness={0.04}
+          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : '#dfe7ef'}
+          emissive={DEBUG_FORCE_TRAFFIC_VIS ? '#7a004a' : '#0f1116'}
+          emissiveIntensity={DEBUG_FORCE_TRAFFIC_VIS ? 0.9 : 0.14}
+          roughness={0.44}
+          metalness={0.05}
           transparent={false}
           opacity={1}
           toneMapped={false}
@@ -1669,6 +1720,38 @@ function TrafficParticles({ particles }: { particles: TrafficParticleDatum[] }) 
           polygonOffset
           polygonOffsetFactor={-2}
           polygonOffsetUnits={-2}
+        />
+      </instancedMesh>
+      <instancedMesh ref={cabinRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.25} frustumCulled={false}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshStandardMaterial
+          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ffd9f5' : '#b6c0c8'}
+          emissive={DEBUG_FORCE_TRAFFIC_VIS ? '#7a004a' : '#0b0e13'}
+          emissiveIntensity={DEBUG_FORCE_TRAFFIC_VIS ? 0.9 : 0.08}
+          roughness={0.30}
+          metalness={0.06}
+          transparent={false}
+          toneMapped={false}
+          depthWrite
+          depthTest
+          polygonOffset
+          polygonOffsetFactor={-2}
+          polygonOffsetUnits={-2}
+        />
+      </instancedMesh>
+      <instancedMesh ref={lightRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.3} frustumCulled={false}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial
+          vertexColors
+          transparent
+          opacity={0.95}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+          polygonOffset
+          polygonOffsetFactor={-2}
+          polygonOffsetUnits={-3}
+          blending={AdditiveBlending}
         />
       </instancedMesh>
     </group>
