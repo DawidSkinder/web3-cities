@@ -2368,22 +2368,22 @@ function TallestBtcDecals({
     ctx.save();
     ctx.translate(canvas.width / 2, canvas.height / 2);
     drawRoundedRect(ctx, -86, -96, 172, 192, 20);
-    ctx.fillStyle = 'rgba(10,13,18,0.78)';
+    ctx.fillStyle = 'rgba(9,12,17,0.72)';
     ctx.fill();
     ctx.lineWidth = 8;
-    ctx.strokeStyle = 'rgba(247,147,26,0.72)';
+    ctx.strokeStyle = 'rgba(247,147,26,0.82)';
     ctx.stroke();
 
     ctx.font = '700 142px serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.shadowBlur = 16;
-    ctx.shadowColor = 'rgba(247,147,26,0.55)';
-    ctx.strokeStyle = 'rgba(247,147,26,0.95)';
-    ctx.lineWidth = 7;
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = 'rgba(247,147,26,0.42)';
+    ctx.strokeStyle = 'rgba(22,28,35,0.88)';
+    ctx.lineWidth = 6;
     ctx.strokeText('₿', 0, 8);
     ctx.shadowBlur = 0;
-    ctx.fillStyle = 'rgba(18,22,28,0.95)';
+    ctx.fillStyle = 'rgba(255,255,255,0.98)';
     ctx.fillText('₿', 0, 8);
     ctx.restore();
 
@@ -2428,7 +2428,7 @@ function TallestBtcDecals({
               alphaMap={texture}
               transparent
               opacity={faceOpacity}
-              color="#171d25"
+              color="#ffffff"
               toneMapped={false}
               depthTest
               depthWrite={false}
