@@ -57,6 +57,10 @@ type TowerDatum = {
   districtAccentColor: string;
   btcVolume: number;
   usdNotional: number;
+  usdSource: string;
+  logUsd: number;
+  usdAnchorU: number;
+  usdScoreDist: number;
   averagePrice: number;
   tradeCount: number;
   windowStart: number;
@@ -145,8 +149,8 @@ type TowerSegmentSpec = {
 
 type EmaStats = {
   initialized: boolean;
-  meanLogV: number;
-  varLogV: number;
+  meanLogUsd: number;
+  varLogUsd: number;
   meanI: number;
   varI: number;
   meanAbsImb: number;
@@ -191,9 +195,14 @@ type RecordCeremonyDatum = {
 type HeightDebugSnapshot = {
   sequence: number;
   totalVolume: number;
-  logV: number;
+  usdNotional: number;
+  usdSource: string;
+  logUsd: number;
   intensity: number;
-  scoreV: number;
+  zUsd: number;
+  anchorU: number;
+  scoreUsdDist: number;
+  scoreUsd: number;
   scoreI: number;
   score: number;
   height: number;
@@ -202,8 +211,8 @@ type HeightDebugSnapshot = {
   heroMode: 'none' | 'roll' | 'guarantee';
   baseW: number;
   baseD: number;
-  meanLogV: number;
-  stdLogV: number;
+  meanLogUsd: number;
+  stdLogUsd: number;
   meanI: number;
   stdI: number;
 };
@@ -249,6 +258,8 @@ type AccumState = {
   nextParkAtCount: number;
   towersSinceHero: number;
   heroEligibleSinceLast: number;
+  maxUsdSeen: number;
+  maxHeightSeen: number;
   tallestTowerSequence: number | null;
   tallestTowerHeight: number;
   lastTallestCeremonySequence: number | null;
@@ -269,10 +280,10 @@ type OrbitState = {
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const SPIRAL_STEP = 3.35;
-const MIN_HEIGHT = 2.5;
-const MAX_HEIGHT = 36;
-const HERO_MAX_HEIGHT = 72;
-const HEIGHT_GAMMA = 1.15;
+const MIN_HEIGHT = 6;
+const MAX_HEIGHT = 60;
+const HERO_MAX_HEIGHT = 120;
+const HEIGHT_GAMMA = 0.76;
 const TOWER_FOOTPRINT = 1.1;
 const IDLE_DELAY_MS = 6000;
 const BIRTH_RISE_MS = 900;
@@ -293,31 +304,38 @@ const CORE_GRAPHITE_HI = new Color('#171e27');
 const TRACE_ORANGE = new Color('#F7931A');
 const TRACE_WARM = new Color('#F5F5F5');
 const TRACE_PALE = new Color('#FFD7A0');
-const EMA_ALPHA_VOL = 0.08;
+const EMA_ALPHA_LOGUSD = 0.085;
 const EMA_ALPHA_INT = 0.08;
 const EMA_STD_EPS = 0.045;
-const ZV_MIN = -2.5;
-const ZV_MAX = 3.5;
+const Z_USD_MIN = -3.25;
+const Z_USD_MAX = 4.75;
 const ZI_MIN = -2.5;
 const ZI_MAX = 3.5;
-const SCORE_WEIGHT_VOL = 0.78;
-const SCORE_WEIGHT_INT = 0.22;
+const USD_SIGMOID_K = 0.95;
+const USD_DIST_SCORE_GAMMA = 0.84;
+const USD_ANCHOR_LOW = 10_000;
+const USD_ANCHOR_HIGH = 1_000_000;
+const USD_DISTRIBUTION_BLEND = 0.72;
+const SCORE_WEIGHT_USD = 0.94;
+const SCORE_WEIGHT_INT = 0.06;
 const RADIAL_GLOW_RADIUS_MULT = 1.6;
 const RADIAL_GLOW_DAMP = 1.6;
-const MIN_BASE = 0.62;
-const MAX_BASE = 1.9;
-const BASE_GAMMA = 0.72;
+const MIN_BASE = 0.68;
+const MAX_BASE = 2.35;
+const BASE_AREA_GAMMA = 0.7;
 const ASPECT_MIN = 0.75;
 const ASPECT_MAX = 1.35;
 const TAPER_MAX = 0.18;
-const HERO_SCORE_MIN = 0.88;
-const HERO_PROB_BASE = 0.032;
-const HERO_HEIGHT_MULT_MIN = 1.8;
-const HERO_HEIGHT_MULT_MAX = 2.45;
-const HERO_BASE_MULT_MIN = 1.35;
-const HERO_BASE_MULT_MAX = 1.9;
+const HERO_SCORE_MIN = 0.92;
+const HERO_PROB_BASE = 0.2;
+const HERO_HEIGHT_MULT_MIN = 1.6;
+const HERO_HEIGHT_MULT_MAX = 2.2;
+const HERO_BASE_MULT_MIN = 1.25;
+const HERO_BASE_MULT_MAX = 1.6;
 const HERO_GUARANTEE_GAP = 56;
 const HERO_GUARANTEE_MIN_ELIGIBLE = 2;
+const LANDMARK_Z_THRESHOLD = 2.35;
+const LANDMARK_ANCHOR_THRESHOLD = 0.88;
 const VIS_NEAR_DIST = 34;
 const VIS_FAR_DIST = 170;
 const FOCUS_NON_HOVER_DIM = 0.22;
@@ -326,7 +344,7 @@ const FOCUS_TRACE_DIM = 0.22;
 const FOCUS_TRAFFIC_DIM = 0.24;
 const HOVER_ORANGE_BOOST = 1.22;
 const HOVER_LABEL_WIDTH_PX = 220;
-const HOVER_LABEL_HEIGHT_PX = 78;
+const HOVER_LABEL_HEIGHT_PX = 122;
 const HOVER_LABEL_OFFSET_Y_PX = 28;
 const HOVER_LABEL_EDGE_PAD_PX = 14;
 const HOVER_LABEL_LERP = 0.22;
@@ -496,6 +514,58 @@ function clampFinite(value: number, fallback: number, min?: number, max?: number
   return MathUtils.clamp(safe, min ?? safe, max ?? safe);
 }
 
+function looseNumber(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function deriveUsdNotional(
+  event: BlockEvent,
+  totalVolumeBtc: number,
+  averagePrice: number
+): { usdNotional: number; source: string } {
+  const eventAny = event as unknown as Record<string, unknown>;
+  const metricsAny = event.metrics as unknown as Record<string, unknown>;
+  const explicitUsdEvent = looseNumber(eventAny.usdNotional);
+  const explicitUsdMetrics = looseNumber(metricsAny.usdNotional);
+  const explicitNotionalUsdEvent = looseNumber(eventAny.notionalUsd);
+  const explicitNotionalUsdMetrics = looseNumber(metricsAny.notionalUsd);
+  const explicitUsd = explicitUsdEvent ?? explicitUsdMetrics ?? explicitNotionalUsdEvent ?? explicitNotionalUsdMetrics;
+  if (explicitUsd != null && explicitUsd > 0) {
+    return {
+      usdNotional: explicitUsd,
+      source: explicitUsdEvent != null || explicitUsdMetrics != null ? 'usdNotional' : 'notionalUsd'
+    };
+  }
+
+  if (totalVolumeBtc > 0) {
+    const eventVwap = looseNumber(eventAny.vwapPrice);
+    const metricsVwap = looseNumber(metricsAny.vwapPrice);
+    const metricsAvg = looseNumber(metricsAny.averagePrice);
+    const vwapLike = eventVwap ?? metricsVwap ?? metricsAvg;
+    if (vwapLike != null && vwapLike > 0) {
+      return {
+        usdNotional: vwapLike * totalVolumeBtc,
+        source: eventVwap != null || metricsVwap != null ? 'vwap*btc' : 'avgP*btc'
+      };
+    }
+
+    const eventLast = looseNumber(eventAny.lastPrice);
+    const metricsLast = looseNumber(metricsAny.lastPrice);
+    const metricsClose = looseNumber(metricsAny.closePrice);
+    const lastLike = eventLast ?? metricsLast ?? metricsClose;
+    if (lastLike != null && lastLike > 0) {
+      return { usdNotional: lastLike * totalVolumeBtc, source: 'lastP*btc' };
+    }
+  }
+
+  return { usdNotional: Math.max(0, totalVolumeBtc * Math.max(0, averagePrice)), source: 'legacy' };
+}
+
 const compactNumber = new Intl.NumberFormat('en-US', {
   notation: 'compact',
   maximumFractionDigits: 2
@@ -577,6 +647,13 @@ function smoothstep01(v: number) {
   return x * x * (3 - 2 * x);
 }
 
+function sigmoid01(v: number) {
+  if (!Number.isFinite(v)) return 0.5;
+  if (v <= -20) return 0;
+  if (v >= 20) return 1;
+  return 1 / (1 + Math.exp(-v));
+}
+
 function distanceVisibilityCurve(cameraDistance: number) {
   const t = MathUtils.clamp((cameraDistance - VIS_NEAR_DIST) / Math.max(1, VIS_FAR_DIST - VIS_NEAR_DIST), 0, 1);
   const s = smoothstep01(t);
@@ -649,15 +726,13 @@ function buildTowerShapeParams(sequence: number, heightScore: number): {
               : 5;
 
   const scoreLike = MathUtils.clamp(heightScore, 0, 1);
-  const baseRaw = MathUtils.lerp(MIN_BASE, MAX_BASE, Math.pow(scoreLike, BASE_GAMMA));
-  const superTallBoost =
-    scoreLike > 0.8 ? MathUtils.lerp(0, 0.34, MathUtils.clamp((scoreLike - 0.8) / 0.2, 0, 1)) : 0;
-  const jitter = MathUtils.lerp(0.9, 1.1, hash01(sequence, 109));
-  const base = MathUtils.clamp((baseRaw + superTallBoost) * jitter, MIN_BASE, MAX_BASE * 1.08);
-  const tallAspectBias = MathUtils.clamp((scoreLike - 0.65) / 0.35, 0, 1);
-  const aspectMin = MathUtils.lerp(ASPECT_MIN, 0.82, tallAspectBias);
-  const aspectMax = MathUtils.lerp(ASPECT_MAX, 1.48, tallAspectBias);
-  const aspect = MathUtils.lerp(aspectMin, aspectMax, hash01(sequence, 111));
+  const baseAreaScore = Math.pow(scoreLike, BASE_AREA_GAMMA);
+  const base = MathUtils.clamp(
+    MathUtils.lerp(MIN_BASE, MAX_BASE, baseAreaScore) * MathUtils.lerp(0.96, 1.04, hash01(sequence, 109)),
+    MIN_BASE,
+    MAX_BASE * 1.06
+  );
+  const aspect = MathUtils.lerp(ASPECT_MIN, ASPECT_MAX, hash01(sequence, 111));
   const sqrtAspect = Math.sqrt(aspect);
   const baseW = MathUtils.clamp(base * sqrtAspect, MIN_BASE * 0.95, MAX_BASE * 1.25);
   const baseD = MathUtils.clamp(base / sqrtAspect, MIN_BASE * 0.95, MAX_BASE * 1.25);
@@ -731,8 +806,8 @@ function createEmptyAccum(): AccumState {
     },
     ema: {
       initialized: false,
-      meanLogV: 0,
-      varLogV: 1,
+      meanLogUsd: 0,
+      varLogUsd: 1,
       meanI: 0.4,
       varI: 0.08,
       meanAbsImb: 0.22,
@@ -744,6 +819,8 @@ function createEmptyAccum(): AccumState {
     nextParkAtCount: PARK_CADENCE_BASE + Math.round((hash01(1, 7009) * 2 - 1) * PARK_CADENCE_JITTER),
     towersSinceHero: 0,
     heroEligibleSinceLast: 0,
+    maxUsdSeen: 0,
+    maxHeightSeen: 0,
     tallestTowerSequence: null,
     tallestTowerHeight: 0,
     lastTallestCeremonySequence: null,
@@ -1433,39 +1510,56 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   const totalVolume = Math.max(0, clampFinite(event.metrics.totalVolume, 0, 0, 10_000_000));
   const averagePrice = Math.max(0, clampFinite(event.metrics.averagePrice, event.metrics.closePrice ?? 0, 0, 10_000_000));
   const tradeCount = Math.max(0, Math.round(clampFinite(event.metrics.tradeCount, 0, 0, 10_000_000)));
-  const usdNotional = totalVolume * averagePrice;
-  const logV = Math.log1p(totalVolume);
+  const usdDerived = deriveUsdNotional(event, totalVolume, averagePrice);
+  const usdNotional = Math.max(1, clampFinite(usdDerived.usdNotional, 1, 1, 10_000_000_000_000));
+  const logUsd = Math.log10(usdNotional);
 
   const ema = state.ema;
   if (!ema.initialized) {
     ema.initialized = true;
-    ema.meanLogV = logV;
-    ema.varLogV = Math.max(0.08, EMA_STD_EPS * EMA_STD_EPS);
+    ema.meanLogUsd = logUsd;
+    ema.varLogUsd = Math.max(0.12, EMA_STD_EPS * EMA_STD_EPS);
     ema.meanI = intensity;
     ema.varI = Math.max(0.02, EMA_STD_EPS * EMA_STD_EPS);
     ema.meanAbsImb = Math.abs(clampFinite(event.metrics.imbalance, 0));
     ema.varAbsImb = Math.max(0.03, EMA_STD_EPS * EMA_STD_EPS);
   }
 
-  const preMeanLogV = ema.meanLogV;
-  const preStdLogV = emaStd(ema.varLogV);
+  const preMeanLogUsd = ema.meanLogUsd;
+  const preStdLogUsd = emaStd(ema.varLogUsd);
   const preMeanI = ema.meanI;
   const preStdI = emaStd(ema.varI);
   const preMeanAbsImb = ema.meanAbsImb;
   const preStdAbsImb = emaStd(ema.varAbsImb);
 
-  const zV = MathUtils.clamp((logV - preMeanLogV) / preStdLogV, ZV_MIN, ZV_MAX);
+  const zUsdRaw = (logUsd - preMeanLogUsd) / preStdLogUsd;
+  const zUsd = MathUtils.clamp(zUsdRaw, Z_USD_MIN, Z_USD_MAX);
   const zI = MathUtils.clamp((intensity - preMeanI) / preStdI, ZI_MIN, ZI_MAX);
-  const scoreV = smoothstep01(remapClamped(zV, ZV_MIN, ZV_MAX));
+  const distSigmoid = sigmoid01(zUsd * USD_SIGMOID_K);
+  const scoreUsdDist = Math.pow(smoothstep01(distSigmoid), USD_DIST_SCORE_GAMMA);
+  const anchorU = remapClamped(logUsd, Math.log10(USD_ANCHOR_LOW), Math.log10(USD_ANCHOR_HIGH));
+  const scoreUsd = MathUtils.clamp(MathUtils.lerp(anchorU, scoreUsdDist, USD_DISTRIBUTION_BLEND), 0, 1);
   const scoreI = smoothstep01(remapClamped(zI, ZI_MIN, ZI_MAX));
 
-  let score = SCORE_WEIGHT_VOL * scoreV + SCORE_WEIGHT_INT * scoreI;
-  if (scoreV > 0.85) {
-    score += 0.1 * ((scoreV - 0.85) / 0.15);
+  let score = SCORE_WEIGHT_USD * scoreUsd + SCORE_WEIGHT_INT * scoreI;
+  if (scoreUsd > 0.86) {
+    score += 0.08 * ((scoreUsd - 0.86) / 0.14);
   }
   score = MathUtils.clamp(score, 0, 1);
 
   let height = MathUtils.clamp(MIN_HEIGHT + (MAX_HEIGHT - MIN_HEIGHT) * Math.pow(score, HEIGHT_GAMMA), MIN_HEIGHT, MAX_HEIGHT);
+  const prevMaxUsdSeen = state.maxUsdSeen;
+  const prevMaxHeightSeen = state.maxHeightSeen;
+  const nearUsdRecord = prevMaxUsdSeen > 1 && usdNotional >= prevMaxUsdSeen * 0.92;
+  const landmarkEligible = zUsdRaw >= LANDMARK_Z_THRESHOLD || anchorU >= LANDMARK_ANCHOR_THRESHOLD || nearUsdRecord;
+  if (landmarkEligible) {
+    const landmarkT = Math.max(anchorU, MathUtils.clamp((zUsdRaw - 1.8) / 2.4, 0, 1), nearUsdRecord ? 0.7 : 0);
+    const landmarkFloor = MathUtils.lerp(MAX_HEIGHT * 0.64, MAX_HEIGHT * 0.94, landmarkT);
+    height = Math.max(height, landmarkFloor);
+    if (nearUsdRecord && prevMaxHeightSeen > 0) {
+      height = Math.max(height, Math.min(MAX_HEIGHT, Math.max(MAX_HEIGHT * 0.72, prevMaxHeightSeen * 0.82)));
+    }
+  }
 
   const dominance = MathUtils.clamp(clampFinite(event.metrics.imbalance, 0), -1, 1);
   const imbalance = Math.abs(dominance);
@@ -1476,9 +1570,8 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   let bandCount = (2 + Math.min(2, Math.floor(imbalance * 3))) as 2 | 3 | 4;
   let capGlowBoost = MathUtils.lerp(0.9, 1.35, Math.pow(score, 1.05));
   const heroRoll = hash01(event.sequence, 1901);
-  const heroProbBoost = MathUtils.clamp((score - HERO_SCORE_MIN) / Math.max(0.0001, 1 - HERO_SCORE_MIN), 0, 1);
-  const heroProb = HERO_PROB_BASE * MathUtils.lerp(0.75, 1.85, heroProbBoost);
-  const heroCandidate = score > HERO_SCORE_MIN;
+  const heroCandidate = scoreUsd > HERO_SCORE_MIN;
+  const heroProb = HERO_PROB_BASE;
   const heroRollHit = heroCandidate && heroRoll < heroProb;
   const heroGuarantee =
     heroCandidate &&
@@ -1547,9 +1640,9 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     }
   }
 
-  const nextLog = updateEma(ema.meanLogV, ema.varLogV, logV, EMA_ALPHA_VOL);
-  ema.meanLogV = nextLog.mean;
-  ema.varLogV = nextLog.variance;
+  const nextLogUsd = updateEma(ema.meanLogUsd, ema.varLogUsd, logUsd, EMA_ALPHA_LOGUSD);
+  ema.meanLogUsd = nextLogUsd.mean;
+  ema.varLogUsd = nextLogUsd.variance;
   const nextI = updateEma(ema.meanI, ema.varI, intensity, EMA_ALPHA_INT);
   ema.meanI = nextI.mean;
   ema.varI = nextI.variance;
@@ -1559,7 +1652,7 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
 
   const zImb = MathUtils.clamp((imbalance - preMeanAbsImb) / preStdAbsImb, ZI_MIN, ZI_MAX);
   const scoreImb = smoothstep01(remapClamped(zImb, ZI_MIN, ZI_MAX));
-  const moodRaw = MathUtils.clamp(scoreV * 0.44 + scoreI * 0.34 + scoreImb * 0.22, 0, 1);
+  const moodRaw = MathUtils.clamp(scoreUsd * 0.48 + scoreI * 0.3 + scoreImb * 0.22, 0, 1);
   const moodShaped = smoothstep01(Math.pow(moodRaw, 0.92));
   state.marketMoodRaw = moodRaw;
   state.marketMoodTarget = MathUtils.clamp(MathUtils.lerp(state.marketMoodTarget, moodShaped, 0.42), 0, 1);
@@ -1567,9 +1660,14 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   state.latestHeightDebug = {
     sequence: event.sequence,
     totalVolume,
-    logV,
+    usdNotional,
+    usdSource: usdDerived.source,
+    logUsd,
     intensity,
-    scoreV,
+    zUsd: zUsdRaw,
+    anchorU,
+    scoreUsdDist,
+    scoreUsd,
     scoreI,
     score,
     height,
@@ -1578,8 +1676,8 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     heroMode,
     baseW: shape.baseW,
     baseD: shape.baseD,
-    meanLogV: ema.meanLogV,
-    stdLogV: emaStd(ema.varLogV),
+    meanLogUsd: preMeanLogUsd,
+    stdLogUsd: preStdLogUsd,
     meanI: ema.meanI,
     stdI: emaStd(ema.varI)
   };
@@ -1590,6 +1688,8 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     state.towersSinceHero = 0;
     state.heroEligibleSinceLast = 0;
   }
+  state.maxUsdSeen = Math.max(state.maxUsdSeen, usdNotional);
+  state.maxHeightSeen = Math.max(state.maxHeightSeen, height);
 
   return {
     sequence: event.sequence,
@@ -1619,6 +1719,10 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     districtAccentColor: '#f4ead6',
     btcVolume: totalVolume,
     usdNotional,
+    usdSource: usdDerived.source,
+    logUsd,
+    usdAnchorU: anchorU,
+    usdScoreDist: scoreUsdDist,
     averagePrice,
     tradeCount,
     windowStart: event.windowStart,
@@ -2529,6 +2633,28 @@ function HoverHudOverlay({
           }}
         >
           {fmtBtc(tower.btcVolume)} BTC
+        </div>
+        <div
+          style={{
+            marginTop: 4,
+            fontSize: 11,
+            fontWeight: 600,
+            color: 'rgba(240,222,196,0.82)',
+            letterSpacing: '0.03em'
+          }}
+        >
+          logU {fmtFixed(tower.logUsd, 2)} · S {fmtFixed(tower.heightScore, 2)} · H {fmtFixed(tower.height, 1)}
+        </div>
+        <div
+          style={{
+            marginTop: 2,
+            fontSize: 10,
+            fontWeight: 600,
+            color: 'rgba(240,222,196,0.68)',
+            letterSpacing: '0.04em'
+          }}
+        >
+          base {fmtFixed(tower.baseW, 2)}×{fmtFixed(tower.baseD, 2)}
         </div>
         {ENABLE_DISTRICTS ? (
           <div
@@ -3566,7 +3692,7 @@ function ParksLayer({
       scl.set(Math.max(0.05, tree.crownR * 0.28), tree.trunkH, Math.max(0.05, tree.crownR * 0.28));
       matrix.compose(pos, quat, scl);
       trunk.setMatrixAt(i, matrix);
-      trunk.setColorAt(i, trunkColor.set('#161c24').lerp(new Color('#2a3038'), tree.tintMix * 0.4));
+      trunk.setColorAt(i, trunkColor.set('#ece6dc').lerp(new Color('#fff8ee'), tree.tintMix * 0.35));
       scl.set(Math.max(0.05, tree.crownR * 0.29) * 1.04, tree.trunkH * 1.02, Math.max(0.05, tree.crownR * 0.29) * 1.04);
       matrix.compose(pos, quat, scl);
       trunkWire.setMatrixAt(i, matrix);
@@ -3575,7 +3701,7 @@ function ParksLayer({
       scl.set(tree.crownR, tree.crownH, tree.crownR);
       matrix.compose(pos, quat, scl);
       crown.setMatrixAt(i, matrix);
-      crown.setColorAt(i, crownColor.set('#f5d7a5').lerp(new Color('#f7931a'), 0.35 + tree.tintMix * 0.45));
+      crown.setColorAt(i, crownColor.set('#f5efe4').lerp(new Color('#ffe0b4'), 0.22 + tree.tintMix * 0.24));
       scl.set(tree.crownR * 1.06, tree.crownH * 1.03, tree.crownR * 1.06);
       matrix.compose(pos, quat, scl);
       crownWire.setMatrixAt(i, matrix);
@@ -3628,12 +3754,12 @@ function ParksLayer({
     const trunkMat = trunkRef.current?.material as { opacity?: number; color?: Color } | undefined;
     if (trunkMat) {
       trunkMat.opacity = MathUtils.damp(trunkMat.opacity ?? 0.96, 0.96 * dimScale, 8.5, delta);
-      if (trunkMat.color) trunkMat.color.copy(tempColorA.set('#2e261c').lerp(tempColorB.set('#211d18'), focusMixRef.current * 0.7));
+      if (trunkMat.color) trunkMat.color.copy(tempColorA.set('#eee7dc').lerp(tempColorB.set('#b8aea2'), focusMixRef.current * 0.45));
     }
     const crownMat = crownRef.current?.material as { opacity?: number; color?: Color } | undefined;
     if (crownMat) {
       crownMat.opacity = MathUtils.damp(crownMat.opacity ?? 0.96, 0.96 * dimScale, 8.5, delta);
-      if (crownMat.color) crownMat.color.copy(tempColorA.set('#f3dcb7').lerp(tempColorB.set('#d08a31'), focusMixRef.current * 0.4));
+      if (crownMat.color) crownMat.color.copy(tempColorA.set('#f7f0e5').lerp(tempColorB.set('#d9c7ae'), focusMixRef.current * 0.35));
     }
     const trunkWireMat = trunkWireRef.current?.material as { opacity?: number } | undefined;
     if (trunkWireMat) trunkWireMat.opacity = MathUtils.damp(trunkWireMat.opacity ?? 0.72, 0.72 * dimScale, 8.5, delta);
@@ -3699,15 +3825,15 @@ function ParksLayer({
                 }}
                 renderOrder={2.55}
               >
-                <planeGeometry args={[park.w, park.d]} />
+                <circleGeometry args={[Math.max(0.6, park.radius), 20]} />
                 <meshStandardMaterial
                   color={park.patchColor}
-                  roughness={0.5}
-                  metalness={0.12}
-                  emissive="#171f28"
-                  emissiveIntensity={0.065}
+                  roughness={0.84}
+                  metalness={0.06}
+                  emissive="#10151b"
+                  emissiveIntensity={0.025}
                   transparent
-                  opacity={0.92}
+                  opacity={0.16}
                   depthTest
                   depthWrite
                   polygonOffset
@@ -3716,11 +3842,11 @@ function ParksLayer({
                 />
               </mesh>
               <mesh position={[0, 0.004, 0]} renderOrder={2.57}>
-                <planeGeometry args={[park.w * 1.03, park.d * 1.03]} />
+                <ringGeometry args={[Math.max(0.4, park.radius * 0.9), Math.max(0.45, park.radius * 1.08), 32]} />
                 <meshBasicMaterial
                   color="#f7931a"
                   transparent
-                  opacity={0.08}
+                  opacity={0.07}
                   toneMapped={false}
                   depthTest
                   depthWrite={false}
@@ -3736,7 +3862,7 @@ function ParksLayer({
                 <meshBasicMaterial
                   color={park.edgeColor}
                   transparent
-                  opacity={0.14}
+                  opacity={0.015}
                   toneMapped={false}
                   depthTest
                   depthWrite={false}
@@ -3748,7 +3874,7 @@ function ParksLayer({
                 <meshBasicMaterial
                   color={park.edgeColor}
                   transparent
-                  opacity={0.14}
+                  opacity={0.015}
                   toneMapped={false}
                   depthTest
                   depthWrite={false}
@@ -3760,7 +3886,7 @@ function ParksLayer({
                 <meshBasicMaterial
                   color={park.edgeColor}
                   transparent
-                  opacity={0.14}
+                  opacity={0.015}
                   toneMapped={false}
                   depthTest
                   depthWrite={false}
@@ -3772,7 +3898,7 @@ function ParksLayer({
                 <meshBasicMaterial
                   color={park.edgeColor}
                   transparent
-                  opacity={0.14}
+                  opacity={0.015}
                   toneMapped={false}
                   depthTest
                   depthWrite={false}
@@ -3791,7 +3917,7 @@ function ParksLayer({
                 <meshBasicMaterial
                   color="#fff2dc"
                   transparent
-                  opacity={0.22}
+                  opacity={0.03}
                   toneMapped={false}
                   depthTest
                   depthWrite={false}
@@ -3812,7 +3938,7 @@ function ParksLayer({
                 <meshBasicMaterial
                   color="#f7931a"
                   transparent
-                  opacity={0.18}
+                  opacity={0.025}
                   toneMapped={false}
                   depthTest
                   depthWrite={false}
@@ -5151,12 +5277,32 @@ export function MinimalVizSandbox() {
           {latestHeightDebug ? (
             <>
               <div className="minimal-viz__row">
-                <span>Vol</span>
-                <span>{fmtCompact(latestHeightDebug.totalVolume)}</span>
+                <span>USD</span>
+                <span>{fmtUsdCompact(latestHeightDebug.usdNotional)}</span>
               </div>
               <div className="minimal-viz__row">
-                <span>logV</span>
-                <span>{fmtFixed(latestHeightDebug.logV, 2)}</span>
+                <span>USD Src</span>
+                <span>{latestHeightDebug.usdSource}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>logUSD</span>
+                <span>{fmtFixed(latestHeightDebug.logUsd, 2)}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>AnchorU</span>
+                <span>{fmtFixed(latestHeightDebug.anchorU, 2)}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>UsdZ</span>
+                <span>{fmtFixed(latestHeightDebug.zUsd, 2)}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>UsdDist</span>
+                <span>{fmtFixed(latestHeightDebug.scoreUsdDist, 2)}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>ScoreUSD</span>
+                <span>{fmtFixed(latestHeightDebug.scoreUsd, 2)}</span>
               </div>
               <div className="minimal-viz__row">
                 <span>Score</span>
@@ -5183,9 +5329,9 @@ export function MinimalVizSandbox() {
                 <span>{fmtFixed(latestHeightDebug.baseD, 2)}</span>
               </div>
               <div className="minimal-viz__row">
-                <span>EMA V</span>
+                <span>EMA logU</span>
                 <span>
-                  {fmtFixed(latestHeightDebug.meanLogV, 2)}/{fmtFixed(latestHeightDebug.stdLogV, 2)}
+                  {fmtFixed(latestHeightDebug.meanLogUsd, 2)}/{fmtFixed(latestHeightDebug.stdLogUsd, 2)}
                 </span>
               </div>
               <div className="minimal-viz__row">
