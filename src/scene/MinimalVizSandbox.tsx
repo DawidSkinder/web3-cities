@@ -339,6 +339,9 @@ const LANDMARK_ANCHOR_THRESHOLD = 0.9;
 const LANDMARK_MIN_USD = 120_000;
 const LANDMARK_RECORD_MIN_USD = 180_000;
 const HERO_MIN_USD = 250_000;
+const JUMBO_BASE_THRESHOLD = 4.6;
+const JUMBO_RESERVE_PUSH_MAX = 4.2;
+const JUMBO_CLEARANCE_PAD_MAX = 1.35;
 const VIS_NEAR_DIST = 34;
 const VIS_FAR_DIST = 170;
 const FOCUS_NON_HOVER_DIM = 0.22;
@@ -379,6 +382,7 @@ const ENABLE_TOWER_MICRO_BANDS = false;
 const ENABLE_TOWER_TERRACES = false;
 const ENABLE_PARK_HARDSCAPE_DETAILS = false;
 const ENABLE_PARK_FOOTPATH_LINK = false;
+const ENABLE_PARK_PAD = false;
 
 const SHOCKWAVE_POOL_CAP = RUNTIME_QUALITY_CONFIG.reducedMotion ? 16 : 28;
 const RECORD_CEREMONY_POOL_CAP = 8;
@@ -1630,42 +1634,80 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
 
   // Cheap deterministic local push-out to reduce overlap as footprints get wider.
   if (state.towers.length > 0) {
-    const radialLen = Math.max(0.0001, Math.hypot(x, z));
-    const dirX = x / radialLen;
-    const dirZ = z / radialLen;
-    const sampleCount = Math.min(18, state.towers.length);
-    for (let i = 0; i < sampleCount; i++) {
-      const other = state.towers[state.towers.length - 1 - i];
-      if (!other) continue;
-      const dx = x - other.x;
-      const dz = z - other.z;
-      const dist = Math.hypot(dx, dz);
-      const otherR = Math.max(other.baseW, other.baseD) * 0.68;
-      const thisR = Math.max(shape.baseW, shape.baseD) * 0.72;
-      const minDist = otherR + thisR + 0.38;
-      if (dist < minDist) {
-        const push = minDist - dist + 0.07;
-        x += dirX * push;
-        z += dirZ * push;
-      }
+    const thisMaxBase = Math.max(shape.baseW, shape.baseD);
+    const jumboT = MathUtils.clamp((thisMaxBase - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1);
+    const thisRBase = thisMaxBase * MathUtils.lerp(0.72, 0.88, jumboT);
+    const reserveRadialPush =
+      jumboT > 0 ? MathUtils.lerp(0.6, JUMBO_RESERVE_PUSH_MAX, jumboT) * MathUtils.lerp(0.8, 1.1, hash01(event.sequence, 1949)) : 0;
+
+    // Large landmarks effectively "take two spots": pre-push them outward before the collision solve.
+    if (reserveRadialPush > 0) {
+      const radialLen0 = Math.max(0.0001, Math.hypot(x, z));
+      x += (x / radialLen0) * reserveRadialPush;
+      z += (z / radialLen0) * reserveRadialPush;
     }
-    if (state.parks.length > 0) {
-      const parkSample = Math.min(10, state.parks.length);
-      const thisR = Math.max(shape.baseW, shape.baseD) * 0.72;
-      for (let i = 0; i < parkSample; i++) {
-        const park = state.parks[state.parks.length - 1 - i];
-        if (!park) continue;
-        const dx = x - park.x;
-        const dz = z - park.z;
+
+    const sampleCount = jumboT > 0.08 ? state.towers.length : Math.min(24, state.towers.length);
+    const solvePasses = jumboT > 0.08 ? 4 : 2;
+    for (let pass = 0; pass < solvePasses; pass++) {
+      const radialLen = Math.max(0.0001, Math.hypot(x, z));
+      const dirX = x / radialLen;
+      const dirZ = z / radialLen;
+      let pushX = 0;
+      let pushZ = 0;
+
+      for (let i = 0; i < sampleCount; i++) {
+        const other = state.towers[state.towers.length - 1 - i];
+        if (!other) continue;
+        const dx = x - other.x;
+        const dz = z - other.z;
         const dist = Math.hypot(dx, dz);
-        const parkR = Math.max(park.w, park.d) * 0.6;
-        const minDist = parkR + thisR + 0.54;
+        const invDist = dist > 0.0001 ? 1 / dist : 0;
+        const nX = invDist > 0 ? dx * invDist : dirX;
+        const nZ = invDist > 0 ? dz * invDist : dirZ;
+
+        const otherMaxBase = Math.max(other.baseW, other.baseD);
+        const otherR = otherMaxBase * (other.isHero ? 0.76 : 0.68);
+        const pairJumboT = Math.max(jumboT, MathUtils.clamp((otherMaxBase - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1));
+        const dynamicPad = 0.38 + pairJumboT * JUMBO_CLEARANCE_PAD_MAX;
+        const minDist = otherR + thisRBase + dynamicPad;
         if (dist < minDist) {
-          const push = minDist - dist + 0.09;
-          x += dirX * push;
-          z += dirZ * push;
+          const overlap = minDist - dist + 0.07;
+          // Hybrid push keeps spiral character (radial bias) while opening a real local pocket.
+          const awayBias = 0.68 + pairJumboT * 0.18;
+          const radialBias = 0.32 - pairJumboT * 0.12;
+          pushX += (nX * awayBias + dirX * radialBias) * overlap;
+          pushZ += (nZ * awayBias + dirZ * radialBias) * overlap;
         }
       }
+
+      if (state.parks.length > 0) {
+        const parkSample = jumboT > 0.08 ? state.parks.length : Math.min(12, state.parks.length);
+        for (let i = 0; i < parkSample; i++) {
+          const park = state.parks[state.parks.length - 1 - i];
+          if (!park) continue;
+          const dx = x - park.x;
+          const dz = z - park.z;
+          const dist = Math.hypot(dx, dz);
+          const invDist = dist > 0.0001 ? 1 / dist : 0;
+          const nX = invDist > 0 ? dx * invDist : dirX;
+          const nZ = invDist > 0 ? dz * invDist : dirZ;
+          const parkR = Math.max(park.w, park.d) * 0.6;
+          const minDist = parkR + thisRBase + 0.54 + jumboT * 0.7;
+          if (dist < minDist) {
+            const overlap = minDist - dist + 0.09;
+            pushX += (nX * 0.72 + dirX * 0.18) * overlap;
+            pushZ += (nZ * 0.72 + dirZ * 0.18) * overlap;
+          }
+        }
+      }
+
+      const pushLen = Math.hypot(pushX, pushZ);
+      if (pushLen < 0.0001) break;
+      const maxStep = MathUtils.lerp(0.45, 3.6, jumboT);
+      const stepScale = Math.min(1, maxStep / pushLen);
+      x += pushX * stepScale;
+      z += pushZ * stepScale;
     }
   }
 
@@ -3848,43 +3890,47 @@ function ParksLayer({
               rotation={[-Math.PI / 2, park.yaw, 0]}
               renderOrder={2.55}
             >
-              <mesh
-                ref={(el) => {
-                  patchRefs.current[parkIndex] = el;
-                }}
-                renderOrder={2.55}
-              >
-                <circleGeometry args={[Math.max(0.6, park.radius), 20]} />
-                <meshStandardMaterial
-                  color={park.patchColor}
-                  roughness={0.84}
-                  metalness={0.06}
-                  emissive="#10151b"
-                  emissiveIntensity={0.025}
-                  transparent
-                  opacity={0.16}
-                  depthTest
-                  depthWrite
-                  polygonOffset
-                  polygonOffsetFactor={-1}
-                  polygonOffsetUnits={-1}
-                />
-              </mesh>
-              <mesh position={[0, 0.004, 0]} renderOrder={2.57}>
-                <ringGeometry args={[Math.max(0.4, park.radius * 0.9), Math.max(0.45, park.radius * 1.08), 32]} />
-                <meshBasicMaterial
-                  color="#f7931a"
-                  transparent
-                  opacity={0.07}
-                  toneMapped={false}
-                  depthTest
-                  depthWrite={false}
-                  blending={AdditiveBlending}
-                  polygonOffset
-                  polygonOffsetFactor={-1}
-                  polygonOffsetUnits={-1}
-                />
-              </mesh>
+              {ENABLE_PARK_PAD ? (
+                <>
+                  <mesh
+                    ref={(el) => {
+                      patchRefs.current[parkIndex] = el;
+                    }}
+                    renderOrder={2.55}
+                  >
+                    <circleGeometry args={[Math.max(0.6, park.radius), 20]} />
+                    <meshStandardMaterial
+                      color={park.patchColor}
+                      roughness={0.84}
+                      metalness={0.06}
+                      emissive="#10151b"
+                      emissiveIntensity={0.025}
+                      transparent
+                      opacity={0.16}
+                      depthTest
+                      depthWrite
+                      polygonOffset
+                      polygonOffsetFactor={-1}
+                      polygonOffsetUnits={-1}
+                    />
+                  </mesh>
+                  <mesh position={[0, 0.004, 0]} renderOrder={2.57}>
+                    <ringGeometry args={[Math.max(0.4, park.radius * 0.9), Math.max(0.45, park.radius * 1.08), 32]} />
+                    <meshBasicMaterial
+                      color="#f7931a"
+                      transparent
+                      opacity={0.07}
+                      toneMapped={false}
+                      depthTest
+                      depthWrite={false}
+                      blending={AdditiveBlending}
+                      polygonOffset
+                      polygonOffsetFactor={-1}
+                      polygonOffsetUnits={-1}
+                    />
+                  </mesh>
+                </>
+              ) : null}
 
               {ENABLE_PARK_HARDSCAPE_DETAILS ? (
                 <>
