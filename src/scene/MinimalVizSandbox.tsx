@@ -280,10 +280,10 @@ type OrbitState = {
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const SPIRAL_STEP = 3.35;
-const MIN_HEIGHT = 6;
-const MAX_HEIGHT = 60;
-const HERO_MAX_HEIGHT = 120;
-const HEIGHT_GAMMA = 0.76;
+const MIN_HEIGHT = 4.5;
+const MAX_HEIGHT = 46;
+const HERO_MAX_HEIGHT = 92;
+const HEIGHT_GAMMA = 0.84;
 const TOWER_FOOTPRINT = 1.1;
 const IDLE_DELAY_MS = 6000;
 const BIRTH_RISE_MS = 900;
@@ -315,16 +315,16 @@ const USD_SIGMOID_K = 0.95;
 const USD_DIST_SCORE_GAMMA = 0.84;
 const USD_ANCHOR_LOW = 10_000;
 const USD_ANCHOR_HIGH = 1_000_000;
-const USD_DISTRIBUTION_BLEND = 0.72;
+const USD_DISTRIBUTION_BLEND = 0.45;
 const SCORE_WEIGHT_USD = 0.94;
 const SCORE_WEIGHT_INT = 0.06;
 const RADIAL_GLOW_RADIUS_MULT = 1.6;
 const RADIAL_GLOW_DAMP = 1.6;
-const MIN_BASE = 0.68;
-const MAX_BASE = 2.35;
-const BASE_AREA_GAMMA = 0.7;
-const ASPECT_MIN = 0.75;
-const ASPECT_MAX = 1.35;
+const MIN_BASE = 0.95;
+const MAX_BASE = 4.25;
+const BASE_AREA_GAMMA = 0.6;
+const ASPECT_MIN = 0.84;
+const ASPECT_MAX = 1.2;
 const TAPER_MAX = 0.18;
 const HERO_SCORE_MIN = 0.92;
 const HERO_PROB_BASE = 0.2;
@@ -334,8 +334,11 @@ const HERO_BASE_MULT_MIN = 1.25;
 const HERO_BASE_MULT_MAX = 1.6;
 const HERO_GUARANTEE_GAP = 56;
 const HERO_GUARANTEE_MIN_ELIGIBLE = 2;
-const LANDMARK_Z_THRESHOLD = 2.35;
-const LANDMARK_ANCHOR_THRESHOLD = 0.88;
+const LANDMARK_Z_THRESHOLD = 2.6;
+const LANDMARK_ANCHOR_THRESHOLD = 0.9;
+const LANDMARK_MIN_USD = 120_000;
+const LANDMARK_RECORD_MIN_USD = 180_000;
+const HERO_MIN_USD = 250_000;
 const VIS_NEAR_DIST = 34;
 const VIS_FAR_DIST = 170;
 const FOCUS_NON_HOVER_DIM = 0.22;
@@ -1527,18 +1530,23 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
 
   const preMeanLogUsd = ema.meanLogUsd;
   const preStdLogUsd = emaStd(ema.varLogUsd);
+  const seenCount = state.towers.length;
+  const warmupT = MathUtils.clamp((seenCount - 12) / 48, 0, 1);
+  const scoreStdFloor = MathUtils.lerp(0.95, 0.38, warmupT);
+  const stdForUsdScore = Math.max(preStdLogUsd, scoreStdFloor);
   const preMeanI = ema.meanI;
   const preStdI = emaStd(ema.varI);
   const preMeanAbsImb = ema.meanAbsImb;
   const preStdAbsImb = emaStd(ema.varAbsImb);
 
-  const zUsdRaw = (logUsd - preMeanLogUsd) / preStdLogUsd;
+  const zUsdRaw = (logUsd - preMeanLogUsd) / stdForUsdScore;
   const zUsd = MathUtils.clamp(zUsdRaw, Z_USD_MIN, Z_USD_MAX);
   const zI = MathUtils.clamp((intensity - preMeanI) / preStdI, ZI_MIN, ZI_MAX);
   const distSigmoid = sigmoid01(zUsd * USD_SIGMOID_K);
   const scoreUsdDist = Math.pow(smoothstep01(distSigmoid), USD_DIST_SCORE_GAMMA);
   const anchorU = remapClamped(logUsd, Math.log10(USD_ANCHOR_LOW), Math.log10(USD_ANCHOR_HIGH));
-  const scoreUsd = MathUtils.clamp(MathUtils.lerp(anchorU, scoreUsdDist, USD_DISTRIBUTION_BLEND), 0, 1);
+  const distBlend = MathUtils.lerp(0.12, USD_DISTRIBUTION_BLEND, warmupT);
+  const scoreUsd = MathUtils.clamp(MathUtils.lerp(anchorU, scoreUsdDist, distBlend), 0, 1);
   const scoreI = smoothstep01(remapClamped(zI, ZI_MIN, ZI_MAX));
 
   let score = SCORE_WEIGHT_USD * scoreUsd + SCORE_WEIGHT_INT * scoreI;
@@ -1551,7 +1559,10 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   const prevMaxUsdSeen = state.maxUsdSeen;
   const prevMaxHeightSeen = state.maxHeightSeen;
   const nearUsdRecord = prevMaxUsdSeen > 1 && usdNotional >= prevMaxUsdSeen * 0.92;
-  const landmarkEligible = zUsdRaw >= LANDMARK_Z_THRESHOLD || anchorU >= LANDMARK_ANCHOR_THRESHOLD || nearUsdRecord;
+  const landmarkAbsEligible = usdNotional >= LANDMARK_MIN_USD;
+  const landmarkRecordEligible = seenCount >= 18 && usdNotional >= LANDMARK_RECORD_MIN_USD && nearUsdRecord;
+  const landmarkEligible =
+    (landmarkAbsEligible && (zUsdRaw >= LANDMARK_Z_THRESHOLD || anchorU >= LANDMARK_ANCHOR_THRESHOLD)) || landmarkRecordEligible;
   if (landmarkEligible) {
     const landmarkT = Math.max(anchorU, MathUtils.clamp((zUsdRaw - 1.8) / 2.4, 0, 1), nearUsdRecord ? 0.7 : 0);
     const landmarkFloor = MathUtils.lerp(MAX_HEIGHT * 0.64, MAX_HEIGHT * 0.94, landmarkT);
@@ -1570,7 +1581,7 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   let bandCount = (2 + Math.min(2, Math.floor(imbalance * 3))) as 2 | 3 | 4;
   let capGlowBoost = MathUtils.lerp(0.9, 1.35, Math.pow(score, 1.05));
   const heroRoll = hash01(event.sequence, 1901);
-  const heroCandidate = scoreUsd > HERO_SCORE_MIN;
+  const heroCandidate = scoreUsd > HERO_SCORE_MIN && usdNotional >= HERO_MIN_USD && anchorU > 0.6;
   const heroProb = HERO_PROB_BASE;
   const heroRollHit = heroCandidate && heroRoll < heroProb;
   const heroGuarantee =
@@ -4241,12 +4252,10 @@ function TraceStrips({
 
 function TrafficParticles({
   particles,
-  focusMode = false,
-  marketPulse = 0
+  focusMode = false
 }: {
   particles: TrafficParticleDatum[];
   focusMode?: boolean;
-  marketPulse?: number;
 }) {
   const { camera } = useThree();
   const bodyRef = useRef<ThreeInstancedMesh>(null);
@@ -4267,7 +4276,6 @@ function TrafficParticles({
   const trafficUpRef = useRef(new Vector3(0, 1, 0));
   const trafficQuatRef = useRef(new Quaternion());
   const focusMixRef = useRef(0);
-  const pulseRef = useRef(marketPulse);
   useEffect(() => {
     const body = bodyRef.current;
     const cabin = cabinRef.current;
@@ -4287,7 +4295,7 @@ function TrafficParticles({
     for (let i = 0; i < count; i++) {
       const p = particles[i];
       if (!p) continue;
-      light.setColorAt(i, tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : p.isArtery ? '#fff2d8' : '#ffffff'));
+      light.setColorAt(i, tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : '#ffffff'));
       glow.setColorAt(i, tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : p.color));
     }
     body.instanceMatrix.needsUpdate = true;
@@ -4300,18 +4308,11 @@ function TrafficParticles({
     if (glow.instanceColor) glow.instanceColor.needsUpdate = true;
   }, [particles.length]);
 
-  useEffect(() => {
-    pulseRef.current = marketPulse;
-  }, [marketPulse]);
-
   useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
     focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 7.5, delta);
-    pulseRef.current = MathUtils.damp(pulseRef.current, marketPulse, MARKET_PULSE_DAMP, delta);
-    const trafficSpeedMul = ENABLE_MARKET_PULSE
-      ? MathUtils.lerp(1 - MARKET_PULSE_TRAFFIC_SPEED_GAIN, 1 + MARKET_PULSE_TRAFFIC_SPEED_GAIN, pulseRef.current)
-      : 1;
+    const sizeScale = MathUtils.lerp(1.15, 1.95, visCurve);
     const body = bodyRef.current;
     const cabin = cabinRef.current;
     const bodyWire = bodyWireRef.current;
@@ -4356,15 +4357,14 @@ function TrafficParticles({
       const az = p.az + dirZ * trim;
       const bx = p.bx - dirX * trim;
       const bz = p.bz - dirZ * trim;
-      const u = (p.phase + t * p.speed * trafficSpeedMul) % 1;
+      const u = (p.phase + t * p.speed) % 1;
       const cx = MathUtils.lerp(ax, bx, u);
       const cz = MathUtils.lerp(az, bz, u);
       // Sit just above the orange trace core so cars appear attached to streets, not floating.
-      const bodyH = Math.max(0.04, p.sizeY * 1.42) * MathUtils.lerp(1.08, 1.22, visCurve);
-      const arteryWeight = p.isArtery ? 1.14 : 1;
-      const bodyLen = Math.max(0.28, p.sizeZ * 1.14) * MathUtils.lerp(1.08, 1.5, visCurve) * arteryWeight;
-      const bodyW = Math.max(0.07, p.sizeX * 0.52) * MathUtils.lerp(1.05, 1.16, visCurve) * (p.isArtery ? 1.1 : 1);
-      const carBaseY = Math.max(TRACE_BASE_Y + 0.0145, p.y + 0.0065);
+      const bodyH = Math.max(0.034, p.sizeY * 1.34) * MathUtils.lerp(1, 1.07, visCurve);
+      const bodyLen = Math.max(0.26, p.sizeZ * 1.05) * MathUtils.lerp(1.0, 1.35, visCurve);
+      const bodyW = Math.max(0.060, p.sizeX * 0.44) * MathUtils.lerp(1.0, 1.05, visCurve);
+      const carBaseY = Math.max(TRACE_BASE_Y + 0.0118, p.y + 0.003);
       pos.set(cx, carBaseY + bodyH * 0.5, cz);
       // Car forward axis is +Z to match trace strips, so scale [width, height, length].
       scl.set(bodyW, bodyH, bodyLen);
@@ -4436,9 +4436,9 @@ function TrafficParticles({
     const cabinWireMat = cabinWire.material as { opacity?: number } | undefined;
     if (cabinWireMat) cabinWireMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 0.96 : 0.96 * dimScale;
     const glowMat = glow.material as { opacity?: number } | undefined;
-      if (glowMat) glowMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.98, 1.08, visCurve) * Math.max(0.55, dimScale);
-      const lightMat = light.material as { opacity?: number } | undefined;
-    if (lightMat) lightMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.98, 1, visCurve) * Math.max(0.55, dimScale);
+    if (glowMat) glowMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.92, 1.0, visCurve) * dimScale;
+    const lightMat = light.material as { opacity?: number } | undefined;
+    if (lightMat) lightMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.95, 1, visCurve) * Math.max(0.35, dimScale);
   });
 
   return (
@@ -4449,7 +4449,7 @@ function TrafficParticles({
         <meshBasicMaterial
           vertexColors
           transparent
-          opacity={1}
+          opacity={0.95}
           toneMapped={false}
           depthWrite={false}
           depthTest
@@ -4462,7 +4462,7 @@ function TrafficParticles({
       <instancedMesh ref={bodyRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.2} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshBasicMaterial
-          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : '#fffaf1'}
+          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : '#f4fbff'}
           transparent={false}
           opacity={1}
           toneMapped={false}
@@ -4476,7 +4476,7 @@ function TrafficParticles({
       <instancedMesh ref={bodyWireRef} args={[undefined, undefined, MAX_TRAFFIC_INSTANCES]} renderOrder={5.23} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshBasicMaterial
-          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ffd9f5' : '#fff7eb'}
+          color={DEBUG_FORCE_TRAFFIC_VIS ? '#ffd9f5' : '#fff7e3'}
           wireframe
           transparent
           opacity={0.98}
@@ -4937,10 +4937,6 @@ function SandboxScene({
     [tallestTowerSequence, towers]
   );
   const focusMode = hoveredTowerSequence != null;
-  const mergedTrafficParticles = useMemo(
-    () => [...trafficParticles, ...arterialTrafficParticles],
-    [arterialTrafficParticles, trafficParticles]
-  );
   const hoverStableRef = useRef<number | null>(hoveredTowerSequence);
   const hoverIntentRef = useRef<number | null>(hoveredTowerSequence);
   const hoverCandidateRef = useRef<number | null>(null);
@@ -5049,7 +5045,7 @@ function SandboxScene({
       <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} />
       <TraceStrips traces={traces} focusMode={focusMode} marketPulse={marketMoodTarget} />
       <TraceStrips traces={arterialTraces} focusMode={focusMode} marketPulse={marketMoodTarget} arterial />
-      <TrafficParticles particles={mergedTrafficParticles} focusMode={focusMode} marketPulse={marketMoodTarget} />
+      <TrafficParticles particles={trafficParticles} focusMode={focusMode} />
       <HoverProjectionTracker tower={hoveredTower} onHudUpdate={onHoverHudUpdate} />
 
       {/* Render band 6: tower bodies and holo layers remain the top visual anchors */}
