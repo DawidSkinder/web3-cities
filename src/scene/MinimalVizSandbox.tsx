@@ -343,6 +343,11 @@ const HERO_MIN_USD = 250_000;
 const MID_HEIGHT_ANCHOR_START = 0.14;
 const MID_HEIGHT_ANCHOR_END = 0.8;
 const MID_HEIGHT_SUPPRESS_MIN_MULT = 0.7;
+const TOP_TAIL_BOOST_START_USD = 600_000;
+const TOP_TAIL_BOOST_FULL_USD = 2_500_000;
+const TOP_TAIL_HEIGHT_MULT_MAX = 1.42;
+const TOP_TAIL_BASE_MULT_MAX = 1.18;
+const TOP_TAIL_NORMAL_CAP_MAX = 72;
 const JUMBO_BASE_THRESHOLD = 4.6;
 const JUMBO_RESERVE_PUSH_MAX = 4.2;
 const JUMBO_CLEARANCE_PAD_MAX = 1.35;
@@ -1590,6 +1595,17 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   // Width stays mapped to score; only vertical prominence is reduced for lower anchored USD ranges.
   const midHeightAnchorT = smoothstep01(remapClamped(anchorU, MID_HEIGHT_ANCHOR_START, MID_HEIGHT_ANCHOR_END));
   height *= MathUtils.lerp(MID_HEIGHT_SUPPRESS_MIN_MULT, 1, midHeightAnchorT);
+  const topTailT = smoothstep01(
+    remapClamped(
+      Math.log10(Math.max(1, usdNotional)),
+      Math.log10(TOP_TAIL_BOOST_START_USD),
+      Math.log10(TOP_TAIL_BOOST_FULL_USD)
+    )
+  );
+  if (topTailT > 0) {
+    const tailCap = MathUtils.lerp(MAX_HEIGHT, TOP_TAIL_NORMAL_CAP_MAX, topTailT);
+    height = Math.min(tailCap, height * MathUtils.lerp(1, TOP_TAIL_HEIGHT_MULT_MAX, topTailT));
+  }
   const prevMaxUsdSeen = state.maxUsdSeen;
   const prevMaxHeightSeen = state.maxHeightSeen;
   const nearUsdRecord = prevMaxUsdSeen > 1 && usdNotional >= prevMaxUsdSeen * 0.92;
@@ -1643,6 +1659,13 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   }
 
   const shape = buildTowerShapeParams(event.sequence, score);
+  if (topTailT > 0) {
+    const tailBaseMult = MathUtils.lerp(1, TOP_TAIL_BASE_MULT_MAX, topTailT);
+    shape.baseW = MathUtils.clamp(shape.baseW * tailBaseMult, MIN_BASE * 0.95, MAX_BASE * 2.35);
+    shape.baseD = MathUtils.clamp(shape.baseD * tailBaseMult, MIN_BASE * 0.95, MAX_BASE * 2.35);
+    shape.footprintX = MathUtils.clamp(shape.footprintX * tailBaseMult, MIN_BASE * 0.95, MAX_BASE * 2.2);
+    shape.footprintZ = MathUtils.clamp(shape.footprintZ * tailBaseMult, MIN_BASE * 0.95, MAX_BASE * 2.2);
+  }
   if (isHero) {
     shape.baseW = MathUtils.clamp(shape.baseW * heroBaseMult, MIN_BASE * 0.95, MAX_BASE * 2.35);
     shape.baseD = MathUtils.clamp(shape.baseD * heroBaseMult, MIN_BASE * 0.95, MAX_BASE * 2.35);
@@ -1658,7 +1681,7 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
 
   // Cheap deterministic local push-out to reduce overlap as footprints get wider.
   if (state.towers.length > 0) {
-    const thisMaxBase = Math.max(shape.baseW, shape.baseD);
+    const thisMaxBase = Math.max(shape.baseW, shape.baseD, shape.footprintX, shape.footprintZ);
     const baseJumboT = MathUtils.clamp((thisMaxBase - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1);
     const tallJumboT = remapClamped(height, 30, 72);
     const jumboT = Math.max(baseJumboT, tallJumboT, isHero ? 1 : 0);
@@ -1695,7 +1718,7 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
         const nX = invDist > 0 ? dx * invDist : dirX;
         const nZ = invDist > 0 ? dz * invDist : dirZ;
 
-        const otherMaxBase = Math.max(other.baseW, other.baseD);
+        const otherMaxBase = Math.max(other.baseW, other.baseD, other.footprintX, other.footprintZ);
         const otherTallT = remapClamped(other.height, 30, 72);
         const otherR =
           otherMaxBase * (other.isHero ? 0.78 : 0.68) + other.height * MathUtils.lerp(0, 0.014, Math.max(otherTallT, other.isHero ? 1 : 0));
@@ -1748,9 +1771,9 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
       z += pushZ * stepScale;
     }
 
-    // Final exact-ish separation pass for jumbo/tall towers so giant neighbors cannot end up nearly touching.
-    if (jumboT > 0.12) {
-      for (let pass = 0; pass < 2; pass++) {
+    // Final exact-ish separation pass also runs for normal towers if they end up too close to a jumbo neighbor.
+    const hardSeparationPasses = jumboT > 0.12 ? 2 : 1;
+    for (let pass = 0; pass < hardSeparationPasses; pass++) {
         let moved = false;
         const radialLen = Math.max(0.0001, Math.hypot(x, z));
         const dirX = x / radialLen;
@@ -1764,7 +1787,7 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
           const invDist = dist > 0.0001 ? 1 / dist : 0;
           const nX = invDist > 0 ? dx * invDist : dirX;
           const nZ = invDist > 0 ? dz * invDist : dirZ;
-          const otherMaxBase = Math.max(other.baseW, other.baseD);
+          const otherMaxBase = Math.max(other.baseW, other.baseD, other.footprintX, other.footprintZ);
           const otherTallT = remapClamped(other.height, 30, 72);
           const pairJumboT = Math.max(jumboT, otherTallT, other.isHero ? 1 : 0, MathUtils.clamp((otherMaxBase - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1));
           if (pairJumboT < 0.18) continue;
@@ -1783,7 +1806,6 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
           }
         }
         if (!moved) break;
-      }
     }
   }
 
