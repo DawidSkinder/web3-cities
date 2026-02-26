@@ -279,7 +279,7 @@ type OrbitState = {
 };
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-const SPIRAL_STEP = 3.35;
+const SPIRAL_STEP = 3.55;
 const MIN_HEIGHT = 4.5;
 const MAX_HEIGHT = 46;
 const HERO_MAX_HEIGHT = 92;
@@ -377,6 +377,8 @@ const ENABLE_FAKE_VIGNETTE = true;
 const ENABLE_DATA_FORM_EXTRAS = true;
 const ENABLE_TOWER_MICRO_BANDS = false;
 const ENABLE_TOWER_TERRACES = false;
+const ENABLE_PARK_HARDSCAPE_DETAILS = false;
+const ENABLE_PARK_FOOTPATH_LINK = false;
 
 const SHOCKWAVE_POOL_CAP = RUNTIME_QUALITY_CONFIG.reducedMotion ? 16 : 28;
 const RECORD_CEREMONY_POOL_CAP = 8;
@@ -1131,9 +1133,17 @@ function appendParkAtTowerSlot(state: AccumState, sourceTower: TowerDatum, seed:
       x: worldX,
       z: worldZ,
       yaw: hash01(seed, i, 7349) * Math.PI * 2,
-      trunkH: MathUtils.lerp(0.24, 0.46, hash01(seed, i, 7351)),
-      crownH: MathUtils.lerp(0.38, 0.72, hash01(seed, i, 7357)),
-      crownR: MathUtils.lerp(0.14, 0.28, hash01(seed, i, 7361)),
+      trunkH: (() => {
+        const tallRoll = hash01(seed, i, 7343);
+        const tallMul = tallRoll > 0.88 ? MathUtils.lerp(1.22, 1.58, hash01(seed, i, 7345)) : tallRoll > 0.68 ? 1.12 : 1;
+        return MathUtils.lerp(0.22, 0.5, hash01(seed, i, 7351)) * tallMul;
+      })(),
+      crownH: (() => {
+        const tallRoll = hash01(seed, i, 7343);
+        const tallMul = tallRoll > 0.88 ? MathUtils.lerp(1.16, 1.4, hash01(seed, i, 7355)) : tallRoll > 0.68 ? 1.06 : 1;
+        return MathUtils.lerp(0.32, 0.74, hash01(seed, i, 7357)) * tallMul;
+      })(),
+      crownR: MathUtils.lerp(0.12, 0.32, hash01(seed, i, 7361)) * MathUtils.lerp(0.9, 1.15, hash01(seed, i, 7363)),
       tintMix: hash01(seed, i, 7367)
     });
   }
@@ -1325,9 +1335,17 @@ function appendPark(state: AccumState, seed: number) {
       x: worldX,
       z: worldZ,
       yaw: hash01(seed, i, 7253) * Math.PI * 2,
-      trunkH: MathUtils.lerp(0.26, 0.52, hash01(seed, i, 7261)),
-      crownH: MathUtils.lerp(0.52, 0.96, hash01(seed, i, 7267)),
-      crownR: MathUtils.lerp(0.22, 0.42, hash01(seed, i, 7273)),
+      trunkH: (() => {
+        const tallRoll = hash01(seed, i, 7259);
+        const tallMul = tallRoll > 0.9 ? MathUtils.lerp(1.25, 1.6, hash01(seed, i, 7260)) : tallRoll > 0.72 ? 1.12 : 1;
+        return MathUtils.lerp(0.24, 0.56, hash01(seed, i, 7261)) * tallMul;
+      })(),
+      crownH: (() => {
+        const tallRoll = hash01(seed, i, 7259);
+        const tallMul = tallRoll > 0.9 ? MathUtils.lerp(1.18, 1.45, hash01(seed, i, 7262)) : tallRoll > 0.72 ? 1.08 : 1;
+        return MathUtils.lerp(0.46, 0.98, hash01(seed, i, 7267)) * tallMul;
+      })(),
+      crownR: MathUtils.lerp(0.18, 0.42, hash01(seed, i, 7273)) * MathUtils.lerp(0.9, 1.12, hash01(seed, i, 7277)),
       tintMix: hash01(seed, i, 7281)
     });
   }
@@ -1622,28 +1640,28 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
       const dx = x - other.x;
       const dz = z - other.z;
       const dist = Math.hypot(dx, dz);
-      const otherR = Math.max(other.baseW, other.baseD) * 0.65;
-      const thisR = Math.max(shape.baseW, shape.baseD) * 0.68;
-      const minDist = otherR + thisR + 0.28;
+      const otherR = Math.max(other.baseW, other.baseD) * 0.68;
+      const thisR = Math.max(shape.baseW, shape.baseD) * 0.72;
+      const minDist = otherR + thisR + 0.38;
       if (dist < minDist) {
-        const push = minDist - dist + 0.04;
+        const push = minDist - dist + 0.07;
         x += dirX * push;
         z += dirZ * push;
       }
     }
     if (state.parks.length > 0) {
       const parkSample = Math.min(10, state.parks.length);
-      const thisR = Math.max(shape.baseW, shape.baseD) * 0.68;
+      const thisR = Math.max(shape.baseW, shape.baseD) * 0.72;
       for (let i = 0; i < parkSample; i++) {
         const park = state.parks[state.parks.length - 1 - i];
         if (!park) continue;
         const dx = x - park.x;
         const dz = z - park.z;
         const dist = Math.hypot(dx, dz);
-        const parkR = Math.max(park.w, park.d) * 0.58;
-        const minDist = parkR + thisR + 0.42;
+        const parkR = Math.max(park.w, park.d) * 0.6;
+        const minDist = parkR + thisR + 0.54;
         if (dist < minDist) {
-          const push = minDist - dist + 0.06;
+          const push = minDist - dist + 0.09;
           x += dirX * push;
           z += dirZ * push;
         }
@@ -3868,98 +3886,102 @@ function ParksLayer({
                 />
               </mesh>
 
-              <mesh position={[0, 0.003, 0]} renderOrder={2.58}>
-                <boxGeometry args={[park.w * 0.98, 0.01, 0.04]} />
-                <meshBasicMaterial
-                  color={park.edgeColor}
-                  transparent
-                  opacity={0.015}
-                  toneMapped={false}
-                  depthTest
-                  depthWrite={false}
-                  blending={AdditiveBlending}
-                />
-              </mesh>
-              <mesh position={[0, -0.003, 0]} renderOrder={2.58}>
-                <boxGeometry args={[park.w * 0.98, 0.01, 0.04]} />
-                <meshBasicMaterial
-                  color={park.edgeColor}
-                  transparent
-                  opacity={0.015}
-                  toneMapped={false}
-                  depthTest
-                  depthWrite={false}
-                  blending={AdditiveBlending}
-                />
-              </mesh>
-              <mesh position={[park.w * 0.5 - 0.02, 0, 0]} renderOrder={2.58}>
-                <boxGeometry args={[0.04, 0.01, park.d * 0.98]} />
-                <meshBasicMaterial
-                  color={park.edgeColor}
-                  transparent
-                  opacity={0.015}
-                  toneMapped={false}
-                  depthTest
-                  depthWrite={false}
-                  blending={AdditiveBlending}
-                />
-              </mesh>
-              <mesh position={[-park.w * 0.5 + 0.02, 0, 0]} renderOrder={2.58}>
-                <boxGeometry args={[0.04, 0.01, park.d * 0.98]} />
-                <meshBasicMaterial
-                  color={park.edgeColor}
-                  transparent
-                  opacity={0.015}
-                  toneMapped={false}
-                  depthTest
-                  depthWrite={false}
-                  blending={AdditiveBlending}
-                />
-              </mesh>
+              {ENABLE_PARK_HARDSCAPE_DETAILS ? (
+                <>
+                  <mesh position={[0, 0.003, 0]} renderOrder={2.58}>
+                    <boxGeometry args={[park.w * 0.98, 0.01, 0.04]} />
+                    <meshBasicMaterial
+                      color={park.edgeColor}
+                      transparent
+                      opacity={0.015}
+                      toneMapped={false}
+                      depthTest
+                      depthWrite={false}
+                      blending={AdditiveBlending}
+                    />
+                  </mesh>
+                  <mesh position={[0, -0.003, 0]} renderOrder={2.58}>
+                    <boxGeometry args={[park.w * 0.98, 0.01, 0.04]} />
+                    <meshBasicMaterial
+                      color={park.edgeColor}
+                      transparent
+                      opacity={0.015}
+                      toneMapped={false}
+                      depthTest
+                      depthWrite={false}
+                      blending={AdditiveBlending}
+                    />
+                  </mesh>
+                  <mesh position={[park.w * 0.5 - 0.02, 0, 0]} renderOrder={2.58}>
+                    <boxGeometry args={[0.04, 0.01, park.d * 0.98]} />
+                    <meshBasicMaterial
+                      color={park.edgeColor}
+                      transparent
+                      opacity={0.015}
+                      toneMapped={false}
+                      depthTest
+                      depthWrite={false}
+                      blending={AdditiveBlending}
+                    />
+                  </mesh>
+                  <mesh position={[-park.w * 0.5 + 0.02, 0, 0]} renderOrder={2.58}>
+                    <boxGeometry args={[0.04, 0.01, park.d * 0.98]} />
+                    <meshBasicMaterial
+                      color={park.edgeColor}
+                      transparent
+                      opacity={0.015}
+                      toneMapped={false}
+                      depthTest
+                      depthWrite={false}
+                      blending={AdditiveBlending}
+                    />
+                  </mesh>
 
-              <mesh
-                ref={(el) => {
-                  pathRefs.current[parkIndex * 2] = el;
-                }}
-                position={[0, 0.006, 0]}
-                renderOrder={2.6}
-              >
-                <boxGeometry args={[Math.max(0.12, park.w * 0.12), 0.012, lineLen]} />
-                <meshBasicMaterial
-                  color="#fff2dc"
-                  transparent
-                  opacity={0.03}
-                  toneMapped={false}
-                  depthTest
-                  depthWrite={false}
-                  polygonOffset
-                  polygonOffsetFactor={-1}
-                  polygonOffsetUnits={-2}
-                />
-              </mesh>
-              <mesh
-                ref={(el) => {
-                  pathRefs.current[parkIndex * 2 + 1] = el;
-                }}
-                position={[0, 0.0065, 0]}
-                rotation={[0, 0, Math.PI / 2]}
-                renderOrder={2.6}
-              >
-                <boxGeometry args={[Math.max(0.12, park.w * 0.08), 0.012, lineLen * 0.58]} />
-                <meshBasicMaterial
-                  color="#f7931a"
-                  transparent
-                  opacity={0.025}
-                  toneMapped={false}
-                  depthTest
-                  depthWrite={false}
-                  polygonOffset
-                  polygonOffsetFactor={-1}
-                  polygonOffsetUnits={-2}
-                />
-              </mesh>
+                  <mesh
+                    ref={(el) => {
+                      pathRefs.current[parkIndex * 2] = el;
+                    }}
+                    position={[0, 0.006, 0]}
+                    renderOrder={2.6}
+                  >
+                    <boxGeometry args={[Math.max(0.12, park.w * 0.12), 0.012, lineLen]} />
+                    <meshBasicMaterial
+                      color="#fff2dc"
+                      transparent
+                      opacity={0.03}
+                      toneMapped={false}
+                      depthTest
+                      depthWrite={false}
+                      polygonOffset
+                      polygonOffsetFactor={-1}
+                      polygonOffsetUnits={-2}
+                    />
+                  </mesh>
+                  <mesh
+                    ref={(el) => {
+                      pathRefs.current[parkIndex * 2 + 1] = el;
+                    }}
+                    position={[0, 0.0065, 0]}
+                    rotation={[0, 0, Math.PI / 2]}
+                    renderOrder={2.6}
+                  >
+                    <boxGeometry args={[Math.max(0.12, park.w * 0.08), 0.012, lineLen * 0.58]} />
+                    <meshBasicMaterial
+                      color="#f7931a"
+                      transparent
+                      opacity={0.025}
+                      toneMapped={false}
+                      depthTest
+                      depthWrite={false}
+                      polygonOffset
+                      polygonOffsetFactor={-1}
+                      polygonOffsetUnits={-2}
+                    />
+                  </mesh>
+                </>
+              ) : null}
             </group>
-            {ENABLE_PARKS_V2 && footpathSeg && footpathSeg.length > 1.6 ? (
+            {ENABLE_PARKS_V2 && ENABLE_PARK_FOOTPATH_LINK && footpathSeg && footpathSeg.length > 1.6 ? (
               <group
                 position={[footpathSeg.midX, PARK_PATCH_Y + 0.0014, footpathSeg.midZ]}
                 rotation={[0, footpathSeg.yaw, 0]}
