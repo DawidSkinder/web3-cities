@@ -340,6 +340,9 @@ const LANDMARK_ANCHOR_THRESHOLD = 0.9;
 const LANDMARK_MIN_USD = 120_000;
 const LANDMARK_RECORD_MIN_USD = 180_000;
 const HERO_MIN_USD = 250_000;
+const MID_HEIGHT_ANCHOR_START = 0.14;
+const MID_HEIGHT_ANCHOR_END = 0.8;
+const MID_HEIGHT_SUPPRESS_MIN_MULT = 0.7;
 const JUMBO_BASE_THRESHOLD = 4.6;
 const JUMBO_RESERVE_PUSH_MAX = 4.2;
 const JUMBO_CLEARANCE_PAD_MAX = 1.35;
@@ -1583,6 +1586,10 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   score = MathUtils.clamp(score, 0, 1);
 
   let height = MathUtils.clamp(MIN_HEIGHT + (MAX_HEIGHT - MIN_HEIGHT) * Math.pow(score, HEIGHT_GAMMA), MIN_HEIGHT, MAX_HEIGHT);
+  // Height-only suppression for low/mid anchor towers so ~$40k does not read too close to ~$600k+.
+  // Width stays mapped to score; only vertical prominence is reduced for lower anchored USD ranges.
+  const midHeightAnchorT = smoothstep01(remapClamped(anchorU, MID_HEIGHT_ANCHOR_START, MID_HEIGHT_ANCHOR_END));
+  height *= MathUtils.lerp(MID_HEIGHT_SUPPRESS_MIN_MULT, 1, midHeightAnchorT);
   const prevMaxUsdSeen = state.maxUsdSeen;
   const prevMaxHeightSeen = state.maxHeightSeen;
   const nearUsdRecord = prevMaxUsdSeen > 1 && usdNotional >= prevMaxUsdSeen * 0.92;
@@ -1652,10 +1659,15 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   // Cheap deterministic local push-out to reduce overlap as footprints get wider.
   if (state.towers.length > 0) {
     const thisMaxBase = Math.max(shape.baseW, shape.baseD);
-    const jumboT = MathUtils.clamp((thisMaxBase - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1);
-    const thisRBase = thisMaxBase * MathUtils.lerp(0.72, 0.88, jumboT);
+    const baseJumboT = MathUtils.clamp((thisMaxBase - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1);
+    const tallJumboT = remapClamped(height, 30, 72);
+    const jumboT = Math.max(baseJumboT, tallJumboT, isHero ? 1 : 0);
+    const thisRBase = thisMaxBase * MathUtils.lerp(0.72, 0.92, jumboT) + height * MathUtils.lerp(0, 0.016, jumboT);
     const reserveRadialPush =
-      jumboT > 0 ? MathUtils.lerp(0.6, JUMBO_RESERVE_PUSH_MAX, jumboT) * MathUtils.lerp(0.8, 1.1, hash01(event.sequence, 1949)) : 0;
+      jumboT > 0
+        ? (MathUtils.lerp(0.6, JUMBO_RESERVE_PUSH_MAX, jumboT) + height * 0.022 * jumboT) *
+          MathUtils.lerp(0.8, 1.1, hash01(event.sequence, 1949))
+        : 0;
 
     // Large landmarks effectively "take two spots": pre-push them outward before the collision solve.
     if (reserveRadialPush > 0) {
@@ -1665,7 +1677,7 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     }
 
     const sampleCount = jumboT > 0.08 ? state.towers.length : Math.min(24, state.towers.length);
-    const solvePasses = jumboT > 0.08 ? 4 : 2;
+    const solvePasses = jumboT > 0.08 ? 5 : 2;
     for (let pass = 0; pass < solvePasses; pass++) {
       const radialLen = Math.max(0.0001, Math.hypot(x, z));
       const dirX = x / radialLen;
@@ -1684,9 +1696,18 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
         const nZ = invDist > 0 ? dz * invDist : dirZ;
 
         const otherMaxBase = Math.max(other.baseW, other.baseD);
-        const otherR = otherMaxBase * (other.isHero ? 0.76 : 0.68);
-        const pairJumboT = Math.max(jumboT, MathUtils.clamp((otherMaxBase - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1));
-        const dynamicPad = 0.38 + pairJumboT * JUMBO_CLEARANCE_PAD_MAX;
+        const otherTallT = remapClamped(other.height, 30, 72);
+        const otherR =
+          otherMaxBase * (other.isHero ? 0.78 : 0.68) + other.height * MathUtils.lerp(0, 0.014, Math.max(otherTallT, other.isHero ? 1 : 0));
+        const pairJumboT = Math.max(
+          jumboT,
+          MathUtils.clamp((otherMaxBase - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1),
+          otherTallT,
+          other.isHero ? 1 : 0
+        );
+        const pairTallT = Math.max(tallJumboT, otherTallT);
+        const bothTallT = Math.min(tallJumboT, otherTallT);
+        const dynamicPad = 0.38 + pairJumboT * JUMBO_CLEARANCE_PAD_MAX + pairTallT * 0.45 + bothTallT * 0.42;
         const minDist = otherR + thisRBase + dynamicPad;
         if (dist < minDist) {
           const overlap = minDist - dist + 0.07;
@@ -1725,6 +1746,44 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
       const stepScale = Math.min(1, maxStep / pushLen);
       x += pushX * stepScale;
       z += pushZ * stepScale;
+    }
+
+    // Final exact-ish separation pass for jumbo/tall towers so giant neighbors cannot end up nearly touching.
+    if (jumboT > 0.12) {
+      for (let pass = 0; pass < 2; pass++) {
+        let moved = false;
+        const radialLen = Math.max(0.0001, Math.hypot(x, z));
+        const dirX = x / radialLen;
+        const dirZ = z / radialLen;
+        for (let i = 0; i < state.towers.length; i++) {
+          const other = state.towers[i];
+          if (!other) continue;
+          const dx = x - other.x;
+          const dz = z - other.z;
+          const dist = Math.hypot(dx, dz);
+          const invDist = dist > 0.0001 ? 1 / dist : 0;
+          const nX = invDist > 0 ? dx * invDist : dirX;
+          const nZ = invDist > 0 ? dz * invDist : dirZ;
+          const otherMaxBase = Math.max(other.baseW, other.baseD);
+          const otherTallT = remapClamped(other.height, 30, 72);
+          const pairJumboT = Math.max(jumboT, otherTallT, other.isHero ? 1 : 0, MathUtils.clamp((otherMaxBase - JUMBO_BASE_THRESHOLD) / 2.2, 0, 1));
+          if (pairJumboT < 0.18) continue;
+          const otherR =
+            otherMaxBase * (other.isHero ? 0.78 : 0.68) +
+            other.height * MathUtils.lerp(0, 0.014, Math.max(otherTallT, other.isHero ? 1 : 0));
+          const pairTallT = Math.max(tallJumboT, otherTallT);
+          const bothTallT = Math.min(tallJumboT, otherTallT);
+          const hardMinDist =
+            otherR + thisRBase + (0.46 + pairJumboT * (JUMBO_CLEARANCE_PAD_MAX + 0.12) + pairTallT * 0.5 + bothTallT * 0.48);
+          if (dist < hardMinDist) {
+            const overlap = hardMinDist - dist + 0.03;
+            x += nX * overlap;
+            z += nZ * overlap;
+            moved = true;
+          }
+        }
+        if (!moved) break;
+      }
     }
   }
 

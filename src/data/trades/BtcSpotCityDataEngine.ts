@@ -1,8 +1,10 @@
 import { BinanceTradeFeed } from './BinanceTradeFeed';
 import { MockTradeFeed } from './MockTradeFeed';
+import { RecentTradeDeduper } from './RecentTradeDeduper';
 import { TradeWindowAggregator } from './TradeWindowAggregator';
 import type {
   BlockEvent,
+  BlockEventIntegrityMetrics,
   FeedStatusEvent,
   NormalizedTrade,
   TradeFeed,
@@ -13,6 +15,7 @@ import type {
 type DataEngineConfig = {
   feedMode?: TradeFeedMode;
   windowMs?: number;
+  graceMs?: number;
   logWindows?: boolean;
 };
 
@@ -48,9 +51,14 @@ export function resolveTradeFeedMode(): TradeFeedMode {
 export class BtcSpotCityDataEngine {
   private readonly feedMode: TradeFeedMode;
   private readonly windowMs: number;
+  private readonly graceMs: number;
   private readonly logWindows: boolean;
   private readonly listeners = new Set<BlockEventListener>();
   private readonly aggregator: TradeWindowAggregator;
+  private readonly deduper = new RecentTradeDeduper({
+    capacity: 50_000,
+    maxAgeMs: 120_000
+  });
 
   private activeFeed: TradeFeed | null = null;
   private activeSource: TradeSource = 'binance';
@@ -60,15 +68,28 @@ export class BtcSpotCityDataEngine {
   private firstLiveTradeDeadlineMs = 12000;
   private mockFallbackActivated = false;
 
+  private dedupDroppedTotal = 0;
+  private backfillTradesIngestedTotal = 0;
+  private lastBackfillActivityAt = 0;
+  private readonly backfillRecentWindowMs = 30_000;
+
+  private sessionMaxBuyNotional = 0;
+  private sessionMaxBuyNotionalWindowStart = 0;
+  private sessionMaxBuyNotionalSequence = 0;
+  private sessionMaxInitialized = false;
+
   constructor(config: DataEngineConfig = {}) {
     this.feedMode = config.feedMode ?? resolveTradeFeedMode();
     this.windowMs = config.windowMs ?? 3000;
+    this.graceMs = config.graceMs ?? 6000;
     this.logWindows = config.logWindows ?? true;
 
     this.aggregator = new TradeWindowAggregator({
       windowMs: this.windowMs,
+      graceMs: this.graceMs,
       feedMode: this.feedMode,
       getCurrentSource: () => this.activeSource,
+      getIntegritySnapshot: () => this.getIntegritySnapshot(),
       onBlockEvent: (event) => this.handleBlockEvent(event)
     });
   }
@@ -81,6 +102,7 @@ export class BtcSpotCityDataEngine {
     this.started = true;
     this.liveTradeSeen = false;
     this.mockFallbackActivated = false;
+    this.resetIntegrityAndSessionStats();
     this.aggregator.start();
 
     if (this.feedMode === 'mock') {
@@ -110,6 +132,17 @@ export class BtcSpotCityDataEngine {
     };
   }
 
+  private resetIntegrityAndSessionStats() {
+    this.deduper.reset();
+    this.dedupDroppedTotal = 0;
+    this.backfillTradesIngestedTotal = 0;
+    this.lastBackfillActivityAt = 0;
+    this.sessionMaxBuyNotional = 0;
+    this.sessionMaxBuyNotionalWindowStart = 0;
+    this.sessionMaxBuyNotionalSequence = 0;
+    this.sessionMaxInitialized = false;
+  }
+
   private startFeed(feed: TradeFeed) {
     this.activeFeed?.stop();
     this.activeFeed = feed;
@@ -122,14 +155,61 @@ export class BtcSpotCityDataEngine {
   }
 
   private handleTrade(trade: NormalizedTrade) {
-    if (trade.source === 'binance' && !this.liveTradeSeen) {
+    if (trade.source === 'binance' && trade.transport === 'ws' && !this.liveTradeSeen) {
       this.liveTradeSeen = true;
       this.clearFallbackTimer();
       console.info('[BTC Spot City] live trade stream active (Binance).');
     }
 
+    if (trade.transport === 'rest') {
+      this.lastBackfillActivityAt = Date.now();
+    }
+
+    if (this.shouldDropDuplicateTrade(trade)) {
+      this.dedupDroppedTotal += 1;
+      this.aggregator.recordDedupDrop(trade);
+      return;
+    }
+
+    if (trade.transport === 'rest') {
+      this.backfillTradesIngestedTotal += 1;
+    }
+
     this.activeSource = trade.source;
     this.aggregator.ingest(trade);
+  }
+
+  private shouldDropDuplicateTrade(trade: NormalizedTrade) {
+    if (trade.source !== 'binance') {
+      return false;
+    }
+
+    const nowMs = Date.now();
+    const idKey = `binance:${trade.idKind}:${trade.id}`;
+    if (this.deduper.hasOrRemember(idKey, nowMs)) {
+      return true;
+    }
+
+    if (
+      trade.idKind === 'aggTrade' &&
+      typeof trade.rawTradeIdStart === 'number' &&
+      typeof trade.rawTradeIdEnd === 'number' &&
+      trade.rawTradeIdEnd >= trade.rawTradeIdStart
+    ) {
+      let fullyCoveredByRecentRawTrades = true;
+      for (let rawId = trade.rawTradeIdStart; rawId <= trade.rawTradeIdEnd; rawId += 1) {
+        if (!this.deduper.has(`binance:trade:${rawId}`, nowMs)) {
+          fullyCoveredByRecentRawTrades = false;
+          break;
+        }
+      }
+
+      if (fullyCoveredByRecentRawTrades) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private handleFeedStatus(event: FeedStatusEvent) {
@@ -137,12 +217,20 @@ export class BtcSpotCityDataEngine {
       return;
     }
 
+    if (event.channel === 'rest' || event.backfillPhase) {
+      this.lastBackfillActivityAt = Date.now();
+    }
+
     const details = [
       `source=${event.source}`,
       `state=${event.state}`,
+      event.channel ? `channel=${event.channel}` : '',
       event.attempt !== undefined ? `attempt=${event.attempt}` : '',
       event.delayMs !== undefined ? `delay=${event.delayMs}ms` : '',
       event.code !== undefined ? `code=${event.code}` : '',
+      event.backfillPhase ? `backfill=${event.backfillPhase}` : '',
+      event.backfillTradesDelta !== undefined ? `bfDelta=${event.backfillTradesDelta}` : '',
+      event.backfillTradesTotal !== undefined ? `bfTotal=${event.backfillTradesTotal}` : '',
       event.reason ? `reason=${event.reason}` : '',
       event.message ? `msg=${event.message}` : ''
     ]
@@ -191,6 +279,8 @@ export class BtcSpotCityDataEngine {
   }
 
   private handleBlockEvent(event: BlockEvent) {
+    this.attachSessionMax(event);
+
     if (this.logWindows) {
       this.logBlockEvent(event);
     }
@@ -198,6 +288,44 @@ export class BtcSpotCityDataEngine {
     for (const listener of this.listeners) {
       listener(event);
     }
+  }
+
+  private attachSessionMax(event: BlockEvent) {
+    const currentBuyNotional = Math.max(0, event.metrics.buyNotionalQuote || 0);
+    if (!this.sessionMaxInitialized) {
+      this.sessionMaxInitialized = true;
+      this.sessionMaxBuyNotional = currentBuyNotional;
+      this.sessionMaxBuyNotionalWindowStart = event.windowStart;
+      this.sessionMaxBuyNotionalSequence = event.sequence;
+    } else if (currentBuyNotional > this.sessionMaxBuyNotional) {
+      this.sessionMaxBuyNotional = currentBuyNotional;
+      this.sessionMaxBuyNotionalWindowStart = event.windowStart;
+      this.sessionMaxBuyNotionalSequence = event.sequence;
+    }
+
+    event.metrics.sessionMaxBuyNotional = this.sessionMaxBuyNotional;
+    event.metrics.sessionMaxBuyNotionalWindowStart = this.sessionMaxBuyNotionalWindowStart;
+    event.metrics.sessionMaxBuyNotionalSequence = this.sessionMaxBuyNotionalSequence;
+  }
+
+  private getIntegritySnapshot(): Omit<
+    BlockEventIntegrityMetrics,
+    'dedupDroppedWindow' | 'lateTradesBufferedWindow'
+  > {
+    const backfillUsedRecently =
+      this.lastBackfillActivityAt > 0 && Date.now() - this.lastBackfillActivityAt <= this.backfillRecentWindowMs;
+
+    return {
+      dedupDroppedTotal: this.dedupDroppedTotal,
+      backfillUsedRecently,
+      backfillTradesIngested: this.backfillTradesIngestedTotal,
+      feed:
+        this.activeSource === 'mock'
+          ? 'mock'
+          : this.backfillTradesIngestedTotal > 0
+            ? 'live-ws+rest'
+            : 'live-ws'
+    };
   }
 
   private logBlockEvent(event: BlockEvent) {
@@ -209,9 +337,14 @@ export class BtcSpotCityDataEngine {
       `[BTC Spot City][${formatTimestamp(event.windowEnd)}] ` +
         `${event.source}/${event.feedMode} ` +
         `n=${m.tradeCount} ` +
+        `buyN=${m.buyTradeCount} ` +
         `v=${m.totalVolume.toFixed(4)} ` +
-        `b=${m.buyVolume.toFixed(4)} ` +
-        `s=${m.sellVolume.toFixed(4)} ` +
+        `buyV=${m.buyBaseQty.toFixed(4)} ` +
+        `buyQ=${m.buyNotionalQuote.toFixed(2)} ` +
+        `maxBuyQ=${m.sessionMaxBuyNotional.toFixed(2)} ` +
+        `dup=${m.integrity.dedupDroppedWindow}/${m.integrity.dedupDroppedTotal} ` +
+        `late=${m.integrity.lateTradesBufferedWindow} ` +
+        `bf=${m.integrity.backfillTradesIngested}${m.integrity.backfillUsedRecently ? '*' : ''} ` +
         `imb=${formatSigned(imbalancePct, 1)}% ` +
         `avg=${m.averageTradeSize.toFixed(5)} ` +
         `dp=${formatSigned(m.priceChange, 2)} ` +
@@ -220,4 +353,3 @@ export class BtcSpotCityDataEngine {
     );
   }
 }
-

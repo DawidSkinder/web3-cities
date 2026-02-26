@@ -56,12 +56,14 @@ export class MockTradeFeed implements TradeFeed {
   private driftBias = 0;
   private regime: MockRegime = 'balanced';
   private regimeUntil = 0;
+  private tradeId = 0;
 
   start(handlers: FeedHandlers) {
     this.stop();
     this.handlers = handlers;
     this.running = true;
     this.regimeUntil = 0;
+    this.tradeId = 0;
 
     this.handlers.onStatus?.({
       source: this.source,
@@ -136,21 +138,26 @@ export class MockTradeFeed implements TradeFeed {
     this.price = Math.max(1000, this.price * (1 + deltaBps / 10000));
 
     const sideScore = deltaBps + gaussianRandom() * cfg.volatilityBps * 0.35;
-    const side = sideScore >= 0 ? 'buy' : 'sell';
+    const aggressorSide = sideScore >= 0 ? 'buy' : 'sell';
+    const isBuyerMaker = aggressorSide === 'sell';
 
     const baseQty = 0.001 + Math.pow(Math.random(), 2.2) * 0.09 * cfg.quantityScale;
     const blockPrint = Math.random() > 0.992 ? randomBetween(0.15, 0.65) : 0;
     const quantity = Math.max(0.0001, baseQty + blockPrint);
 
     const trade: NormalizedTrade = {
+      id: ++this.tradeId,
+      idKind: 'mock',
       timestamp: Date.now(),
       price: Number(this.price.toFixed(2)),
       quantity: Number(quantity.toFixed(6)),
-      side,
-      source: 'mock'
+      isBuyerMaker,
+      aggressorSide,
+      side: aggressorSide,
+      source: 'mock',
+      transport: 'mock'
     };
 
     this.handlers?.onTrade(trade);
   }
 }
-

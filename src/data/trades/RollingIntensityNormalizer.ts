@@ -16,6 +16,12 @@ export class RollingIntensityNormalizer {
     this.capacity = capacity;
   }
 
+  reset() {
+    this.values.length = 0;
+    this.sum = 0;
+    this.sumSquares = 0;
+  }
+
   normalize(rawValue: number) {
     const stats = this.getStats();
     let normalized = 0.5;
@@ -62,4 +68,3 @@ export class RollingIntensityNormalizer {
     };
   }
 }
-
