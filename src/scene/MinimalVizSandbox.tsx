@@ -684,6 +684,15 @@ function fmtTopCoinsError(error: string | null) {
   return error;
 }
 
+function getTopCoinTicker(symbol: string | undefined, baseAsset?: string | undefined) {
+  const base = (baseAsset ?? '').trim().toUpperCase();
+  if (base) return base;
+  const raw = (symbol ?? '').trim().toUpperCase();
+  if (!raw) return 'N/A';
+  const stripped = raw.replace(/(USDT|USDC|BUSD|FDUSD|TUSD|USD)$/i, '');
+  return stripped || raw;
+}
+
 function drawRoundedRect(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -2234,11 +2243,11 @@ const TOP_COINS_DISTRICT_TINTS = [
 const TOP_HEIGHT_SEA_LEVEL = 14;
 const TOP_HEIGHT_POSITIVE_RANGE = 42;
 const TOP_HEIGHT_NEGATIVE_RANGE = 9.4;
-const TOP_LAYOUT_PADDING = 1.4;
+const TOP_LAYOUT_PADDING = 1.55;
 const TOP_LAYOUT_INITIAL_ITERS = 64;
 const TOP_LAYOUT_REFRESH_ITERS = 20;
 const TOP_LAYOUT_INNER_RADIUS = 8;
-const TOP_LAYOUT_RING_STEP = 3.95;
+const TOP_LAYOUT_RING_STEP = 4.25;
 const TOP_LAYOUT_EDGE_PAD = 5.2;
 
 type TopCoinsLayoutNode = {
@@ -2342,7 +2351,7 @@ function buildTopCoinsLayoutTargets({
   }
 
   const maxNominalRadius = nodes.reduce((acc, node) => Math.max(acc, Math.hypot(node.x, node.z) + node.radius), 0);
-  let cityRadius = Math.max(56, maxNominalRadius + 10 + Math.sqrt(Math.max(1, nodes.length)) * 0.42);
+  let cityRadius = Math.max(62, maxNominalRadius + 12 + Math.sqrt(Math.max(1, nodes.length)) * 0.46);
 
   const dispX = new Array(nodes.length).fill(0);
   const dispZ = new Array(nodes.length).fill(0);
@@ -2415,7 +2424,7 @@ function buildTopCoinsLayoutTargets({
       break;
     }
 
-    cityRadius *= 1.12;
+    cityRadius *= 1.14;
   }
 
   if (!Number.isFinite(minSeparation)) minSeparation = 0;
@@ -2440,10 +2449,14 @@ function buildTopCoinsLayoutTargets({
 
 function buildTopCoinsDecorativeParks({
   towers,
-  cityRadius
+  cityRadius,
+  traces,
+  arterialTraces
 }: {
   towers: TopCoinsParkTower[];
   cityRadius: number;
+  traces: TraceDatum[];
+  arterialTraces: TraceDatum[];
 }): TopCoinsParkResult {
   const parks: ParkDatum[] = [];
   const trees: ParkTreeDatum[] = [];
@@ -2454,11 +2467,29 @@ function buildTopCoinsDecorativeParks({
   const desiredParks = Math.min(MAX_PARKS_VISIBLE, Math.max(10, Math.round(towers.length / 16)));
   const attemptsMax = desiredParks * 180;
   const now = Date.now();
+  const tracePool = [...traces, ...arterialTraces];
+
+  const traceTouchesCandidate = (x: number, z: number, parkRadius: number) => {
+    for (let i = 0; i < tracePool.length; i++) {
+      const trace = tracePool[i];
+      if (!trace) continue;
+      const dirX = Math.sin(trace.yaw);
+      const dirZ = Math.cos(trace.yaw);
+      const halfLen = Math.max(0.4, trace.length * 0.5);
+      const ax = trace.midX - dirX * halfLen;
+      const az = trace.midZ - dirZ * halfLen;
+      const bx = trace.midX + dirX * halfLen;
+      const bz = trace.midZ + dirZ * halfLen;
+      const d = pointSegmentDistanceXZ(x, z, ax, az, bx, bz);
+      if (d < parkRadius + 0.38) return true;
+    }
+    return false;
+  };
 
   for (let attempt = 0; attempt < attemptsMax && parks.length < desiredParks; attempt++) {
     const seed = 81_001 + attempt * 137;
     const angle = hash01(seed, 1) * Math.PI * 2;
-    const radialN = MathUtils.lerp(0.18, 0.97, hash01(seed, 3));
+    const radialN = MathUtils.lerp(0.22, 0.8, hash01(seed, 3));
     const radialJitter = (hash01(seed, 5) - 0.5) * MathUtils.lerp(9, 22, radialN);
     const radial = Math.max(9, cityRadius * radialN + radialJitter);
     const x = Math.cos(angle) * radial;
@@ -2468,7 +2499,7 @@ function buildTopCoinsDecorativeParks({
     const yaw = hash01(seed, 11) * Math.PI;
     const radius = Math.max(w, d) * 0.58;
 
-    if (Math.hypot(x, z) > cityRadius * 1.06) continue;
+    if (Math.hypot(x, z) > cityRadius * 0.88) continue;
 
     let blocked = false;
     for (let i = 0; i < towers.length; i++) {
@@ -2478,6 +2509,7 @@ function buildTopCoinsDecorativeParks({
       }
     }
     if (blocked) continue;
+    if (traceTouchesCandidate(x, z, radius)) continue;
     for (let i = 0; i < parks.length; i++) {
       if (parkConflictsTopCoinPark(x, z, w, d, parks[i])) {
         blocked = true;
@@ -2576,7 +2608,7 @@ function buildTopCoinsDecorativeParks({
     for (let i = parks.length; i < desiredParks; i++) {
       const seed = 93_001 + i * 131;
       const angle = ((i + 1) / (desiredParks + 1)) * Math.PI * 2 + (hash01(seed, 1) - 0.5) * 0.18;
-      const radius = cityRadius * MathUtils.lerp(0.78, 0.96, hash01(seed, 3));
+      const radius = cityRadius * MathUtils.lerp(0.3, 0.7, hash01(seed, 3));
       const x = Math.cos(angle) * radius;
       const z = Math.sin(angle) * radius;
       const w = MathUtils.lerp(2.9, 4.2, hash01(seed, 5));
@@ -2591,6 +2623,7 @@ function buildTopCoinsDecorativeParks({
         }
       }
       if (blocked) continue;
+      if (traceTouchesCandidate(x, z, r)) continue;
       for (let p = 0; p < parks.length; p++) {
         if (parkConflictsTopCoinPark(x, z, w, d, parks[p])) {
           blocked = true;
@@ -2759,11 +2792,13 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       const item = snapshot.items[i];
       if (!item) continue;
       const volumeNorm = MathUtils.clamp(Math.log10(item.quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
-      let baseTarget = MathUtils.lerp(0.74, 2.7, Math.pow(volumeNorm, 0.58));
+      const moveNorm = MathUtils.clamp(Math.abs(item.priceChangePercent) / 24, 0, 1);
+      let baseTarget = MathUtils.lerp(0.86, 4.8, Math.pow(volumeNorm, 0.74)) + moveNorm * 0.55;
       if (item.symbol === topVolumeSymbol) {
-        baseTarget *= 1.08;
+        baseTarget *= 1.2;
       }
-      baseBySymbol.set(item.symbol, MathUtils.clamp(baseTarget, 0.74, 3.4));
+      if ((item.rank || i + 1) <= 5) baseTarget *= 1.08;
+      baseBySymbol.set(item.symbol, MathUtils.clamp(baseTarget, 0.86, 5.9));
     }
 
     const layout = buildTopCoinsLayoutTargets({
@@ -2792,7 +2827,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
 
       const volumeNorm = MathUtils.clamp(Math.log10(item.quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
       const nextHeight = mapPctToHeight(item.priceChangePercent, isTopGainer, isTopLoser);
-      const nextBase = baseBySymbol.get(item.symbol) ?? MathUtils.lerp(0.74, 2.7, Math.pow(volumeNorm, 0.58));
+      const nextBase = baseBySymbol.get(item.symbol) ?? MathUtils.lerp(0.86, 4.8, Math.pow(volumeNorm, 0.74));
       let nextGlowStrength = MathUtils.clamp(
         0.72 + volumeNorm * 0.78 + Math.min(0.42, Math.abs(item.priceChangePercent) * 0.012),
         0.72,
@@ -3064,9 +3099,9 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       if (!state) continue;
       const baseAspect = MathUtils.lerp(0.82, 1.24, hashUnitString(state.symbol, 13));
       const sqrtAspect = Math.sqrt(baseAspect);
-      const topVolumeBoost = state.isTopVolume ? 1.08 : 1;
-      const baseW = MathUtils.clamp(state.baseTarget * sqrtAspect * topVolumeBoost, 0.72, 4.35);
-      const baseD = MathUtils.clamp(state.baseTarget / sqrtAspect * topVolumeBoost, 0.72, 4.35);
+      const topVolumeBoost = state.isTopVolume ? 1.18 : 1;
+      const baseW = MathUtils.clamp(state.baseTarget * sqrtAspect * topVolumeBoost, 0.82, 6.1);
+      const baseD = MathUtils.clamp(state.baseTarget / sqrtAspect * topVolumeBoost, 0.82, 6.1);
       parkTowerTargets.push({
         sequence: state.sequence,
         x: state.xTarget,
@@ -3074,13 +3109,15 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         height: state.heightTarget,
         baseW,
         baseD,
-        footprintX: MathUtils.clamp(baseW * 0.98, 0.7, 3.95),
-        footprintZ: MathUtils.clamp(baseD * 0.98, 0.7, 3.95)
+        footprintX: MathUtils.clamp(baseW * 0.98, 0.8, 5.7),
+        footprintZ: MathUtils.clamp(baseD * 0.98, 0.8, 5.7)
       });
     }
     const decorativeParks = buildTopCoinsDecorativeParks({
       towers: parkTowerTargets,
-      cityRadius: boundsRef.current.radius
+      cityRadius: boundsRef.current.radius,
+      traces,
+      arterialTraces
     });
     parksRef.current = decorativeParks.parks;
     parkTreesRef.current = decorativeParks.trees;
@@ -3203,9 +3240,9 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       const districtTint = TOP_COINS_DISTRICT_TINTS[state.districtId % TOP_COINS_DISTRICT_TINTS.length] ?? '#ead8bb';
       const baseAspect = MathUtils.lerp(0.82, 1.24, hashUnitString(state.symbol, 13));
       const sqrtAspect = Math.sqrt(baseAspect);
-      const topVolumeBoost = state.isTopVolume ? 1.08 : 1;
-      const baseW = MathUtils.clamp(state.base * sqrtAspect * topVolumeBoost, 0.72, 4.35);
-      const baseD = MathUtils.clamp(state.base / sqrtAspect * topVolumeBoost, 0.72, 4.35);
+      const topVolumeBoost = state.isTopVolume ? 1.18 : 1;
+      const baseW = MathUtils.clamp(state.base * sqrtAspect * topVolumeBoost, 0.82, 6.1);
+      const baseD = MathUtils.clamp(state.base / sqrtAspect * topVolumeBoost, 0.82, 6.1);
       out.push({
         sequence: state.sequence,
         x: state.x,
@@ -3214,8 +3251,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         archetypeId: (state.sequence % 6) as TowerArchetypeId,
         baseW,
         baseD,
-        footprintX: MathUtils.clamp(baseW * 0.98, 0.7, 3.95),
-        footprintZ: MathUtils.clamp(baseD * 0.98, 0.7, 3.95),
+        footprintX: MathUtils.clamp(baseW * 0.98, 0.8, 5.7),
+        footprintZ: MathUtils.clamp(baseD * 0.98, 0.8, 5.7),
         taper: MathUtils.lerp(0.03, 0.16, hashUnitString(state.symbol, 29)),
         podiumRatio: MathUtils.lerp(0.12, 0.24, hashUnitString(state.symbol, 37)),
         crownRatio: MathUtils.lerp(0.08, 0.16, hashUnitString(state.symbol, 41)),
@@ -4023,14 +4060,14 @@ function resolveTopCoinLogoUrl(logoPath: string) {
   return `${normalizedBase}/${logoPath}`;
 }
 
-function getTopCoinTickerTexture(symbol: string) {
-  const key = symbol.trim().toUpperCase() || 'N/A';
+function getTopCoinTickerTexture(ticker: string) {
+  const key = ticker.trim().toUpperCase() || 'N/A';
   const existing = topCoinTickerTextureCache.get(key);
   if (existing) return existing;
 
   const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 256;
+  canvas.width = 384;
+  canvas.height = 384;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
     const fallback = finalizeCanvasTexture(new CanvasTexture(canvas));
@@ -4061,8 +4098,11 @@ function getTopCoinTickerTexture(symbol: string) {
   ctx.fillStyle = '#fff7ea';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const label = key.length > 7 ? `${key.slice(0, 6)}…` : key;
-  ctx.font = `700 ${Math.max(34, Math.floor(86 - Math.max(0, label.length - 3) * 6))}px ui-sans-serif, system-ui, sans-serif`;
+  const label = key.length > 8 ? `${key.slice(0, 7)}…` : key;
+  ctx.lineWidth = 10;
+  ctx.strokeStyle = 'rgba(7,9,12,0.86)';
+  ctx.font = `800 ${Math.max(46, Math.floor(118 - Math.max(0, label.length - 3) * 7))}px ui-sans-serif, system-ui, sans-serif`;
+  ctx.strokeText(label, center, center);
   ctx.fillText(label, center, center);
 
   const texture = finalizeCanvasTexture(new CanvasTexture(canvas));
@@ -4108,8 +4148,8 @@ function loadTopCoinLogoTexture(logoPath: string) {
   return promise;
 }
 
-function useTopCoinDiscTexture(logoPath: string | null | undefined, symbol: string | undefined) {
-  const fallback = useMemo(() => getTopCoinTickerTexture(symbol ?? 'N/A'), [symbol]);
+function useTopCoinDiscTexture(logoPath: string | null | undefined, ticker: string) {
+  const fallback = useMemo(() => getTopCoinTickerTexture(ticker), [ticker]);
   const [texture, setTexture] = useState<Texture>(fallback);
 
   useEffect(() => {
@@ -4157,7 +4197,8 @@ function TopCoinLogoDisc({
   const ringRef = useRef<Mesh>(null);
   const bodyRef = useRef<Mesh>(null);
   const worldPosRef = useRef(new Vector3());
-  const texture = useTopCoinDiscTexture(tower.logoPath, tower.symbol);
+  const ticker = useMemo(() => getTopCoinTicker(tower.symbol, tower.baseAsset), [tower.baseAsset, tower.symbol]);
+  const texture = useTopCoinDiscTexture(tower.logoPath, ticker);
 
   useFrame(({ clock }, delta) => {
     const g = groupRef.current;
@@ -4171,7 +4212,7 @@ function TopCoinLogoDisc({
     g.getWorldPosition(worldPosRef.current);
     const distance = camera.position.distanceTo(worldPosRef.current);
     const rankScale = tower.rank ? MathUtils.clamp(1.08 - tower.rank / 360, 0.78, 1.1) : 1;
-    const scale = MathUtils.clamp((0.95 + distance * 0.0084) * rankScale, 0.92, 4.2);
+    const scale = MathUtils.clamp((1.18 + distance * 0.0108) * rankScale, 1.2, 5.2);
     g.scale.set(scale, scale, scale);
 
     const dimFactor = focusMode && !isHovered ? FOCUS_NON_HOVER_DIM : 1;
@@ -4189,7 +4230,7 @@ function TopCoinLogoDisc({
   return (
     <group ref={groupRef} position={[0, tower.height + 1.24, 0]} renderOrder={6.95}>
       <mesh ref={bodyRef} position={[0, 0, -0.016]} renderOrder={6.951}>
-        <circleGeometry args={[0.62, 32]} />
+        <circleGeometry args={[0.72, 40]} />
         <meshBasicMaterial
           color={tower.isTopLoser ? '#6f8fb5' : tower.isTopGainer ? '#f3bf74' : '#d8b07c'}
           transparent
@@ -4201,7 +4242,7 @@ function TopCoinLogoDisc({
         />
       </mesh>
       <mesh ref={discRef} position={[0, 0, -0.008]} renderOrder={6.952}>
-        <circleGeometry args={[0.48, 32]} />
+        <circleGeometry args={[0.58, 40]} />
         <meshBasicMaterial
           map={texture}
           transparent
@@ -4212,7 +4253,7 @@ function TopCoinLogoDisc({
         />
       </mesh>
       <mesh ref={ringRef} position={[0, 0, -0.004]} renderOrder={6.953}>
-        <torusGeometry args={[0.56, 0.03, 8, 42]} />
+        <torusGeometry args={[0.68, 0.04, 10, 48]} />
         <meshBasicMaterial
           color={tower.isTopGainer ? '#f9c786' : tower.isTopLoser ? '#7ca5d8' : '#f1d2a4'}
           transparent
@@ -4336,6 +4377,7 @@ function HoverHudOverlay({
 }) {
   if (!tower || !hud.visible || hud.towerSequence !== tower.sequence) return null;
   const isTopCoins = tower.mode === 'top200';
+  const topTicker = getTopCoinTicker(tower.symbol, tower.baseAsset);
 
   const lineStartX = hud.labelX + HOVER_LABEL_WIDTH_PX * 0.5;
   const labelBelowAnchor = hud.labelY > hud.anchorY;
@@ -4390,7 +4432,7 @@ function HoverHudOverlay({
             letterSpacing: '0.01em'
           }}
         >
-          {isTopCoins ? tower.symbol ?? 'N/A' : fmtUsdCompact(tower.usdNotional)}
+          {isTopCoins ? topTicker : fmtUsdCompact(tower.usdNotional)}
         </div>
         <div
           style={{
