@@ -2908,43 +2908,11 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       slot.durationMs = 1400;
     }
 
-    const districtMap = new Map<number, TopCoinSymbolState[]>();
-    for (const item of snapshot.items) {
-      const state = states.get(item.symbol);
-      if (!state) continue;
-      const list = districtMap.get(state.districtId) ?? [];
-      list.push(state);
-      districtMap.set(state.districtId, list);
-    }
-
-    const districts: DistrictDatum[] = [];
-    for (let id = 0; id < TOP_COINS_DISTRICT_COUNT; id++) {
-      const list = districtMap.get(id) ?? [];
-      let cx = 0;
-      let cz = 0;
-      let radiusEstimate = 5.2;
-      for (const state of list) {
-        cx += state.xTarget;
-        cz += state.zTarget;
-      }
-      if (list.length > 0) {
-        cx /= list.length;
-        cz /= list.length;
-        for (const state of list) {
-          radiusEstimate = Math.max(radiusEstimate, Math.hypot(state.xTarget - cx, state.zTarget - cz) + state.baseTarget);
-        }
-      }
-      districts.push({
-        id,
-        memberCount: list.length,
-        centerX: cx,
-        centerZ: cz,
-        radiusEstimate,
-        themeSeed: hashUnitString(String(id), 77),
-        tintColor: TOP_COINS_DISTRICT_TINTS[id % TOP_COINS_DISTRICT_TINTS.length] ?? '#ead6b7'
-      });
-    }
-    districtsRef.current = districts;
+    const activeStates = snapshot.items
+      .map((item) => states.get(item.symbol))
+      .filter((state): state is TopCoinSymbolState => Boolean(state))
+      .sort((a, b) => a.rank - b.rank);
+    districtsRef.current = [];
 
     const traces: TraceDatum[] = [];
     const arterialTraces: TraceDatum[] = [];
@@ -2952,7 +2920,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     const arterialTrafficParticles: TrafficParticleDatum[] = [];
     const dedupe = new Set<string>();
 
-    const pushLink = (a: TopCoinSymbolState, b: TopCoinSymbolState, arterial: boolean, seed: number) => {
+    const pushLink = (a: TopCoinSymbolState, b: TopCoinSymbolState, arterial: boolean, seed: number, force = false) => {
       const aSeq = Math.min(a.sequence, b.sequence);
       const bSeq = Math.max(a.sequence, b.sequence);
       const key = `${aSeq}:${bSeq}:${arterial ? 'A' : 'T'}`;
@@ -2961,6 +2929,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
 
       const segment = segmentFromPoints(a.xTarget, a.zTarget, b.xTarget, b.zTarget);
       if (segment.length < 1.2) return;
+      if (!arterial && !force && segment.length > 34) return;
 
       const avgPct = (a.pctTarget + b.pctTarget) * 0.5;
       const avgVolNorm = MathUtils.clamp(
@@ -3037,31 +3006,31 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       }
     };
 
-    for (let districtId = 0; districtId < TOP_COINS_DISTRICT_COUNT; districtId++) {
-      const districtStates = (districtMap.get(districtId) ?? []).sort((a, b) => a.rank - b.rank);
-      if (districtStates.length < 2) continue;
-      const leader = districtStates[0];
-      const localLimit = Math.min(districtStates.length, 7);
-      for (let i = 1; i < localLimit; i++) {
-        const target = districtStates[i];
-        if (!target) continue;
-        pushLink(leader, target, false, i);
-      }
-      for (let i = 0; i < Math.min(localLimit - 1, 4); i++) {
-        const a = districtStates[i];
-        const b = districtStates[i + 1];
-        if (!a || !b) continue;
-        pushLink(a, b, false, i + 8);
+    for (let i = 0; i < activeStates.length; i++) {
+      const origin = activeStates[i];
+      const neighbors = activeStates
+        .filter((other) => other.sequence !== origin.sequence)
+        .map((other) => ({
+          other,
+          dist: Math.hypot(other.xTarget - origin.xTarget, other.zTarget - origin.zTarget)
+        }))
+        .sort((a, b) => a.dist - b.dist);
+      if (neighbors.length === 0) continue;
+
+      // Force the nearest connection so outer towers are never isolated.
+      pushLink(origin, neighbors[0].other, false, i + 1, true);
+
+      const extraLinks = origin.rank <= 20 ? 3 : origin.rank <= 80 ? 2 : 1;
+      for (let n = 1; n <= extraLinks && n < neighbors.length; n++) {
+        pushLink(origin, neighbors[n].other, false, i * 7 + n);
       }
     }
 
-    const globalLeader = snapshot.items[0] ? states.get(snapshot.items[0].symbol) : null;
+    const globalLeader = activeStates[0] ?? null;
     if (globalLeader) {
-      for (let districtId = 0; districtId < TOP_COINS_DISTRICT_COUNT; districtId++) {
-        const districtStates = (districtMap.get(districtId) ?? []).sort((a, b) => a.rank - b.rank);
-        const leader = districtStates[0];
-        if (!leader || leader.symbol === globalLeader.symbol) continue;
-        pushLink(globalLeader, leader, true, districtId);
+      const arterialTargets = activeStates.slice(1, 11);
+      for (let i = 0; i < arterialTargets.length; i++) {
+        pushLink(globalLeader, arterialTargets[i], true, i + 1, true);
       }
     }
 
@@ -4462,7 +4431,7 @@ function HoverHudOverlay({
             ? `rank ${tower.rank ?? '-'} · base ${fmtFixed(tower.baseW, 2)}×${fmtFixed(tower.baseD, 2)}`
             : `base ${fmtFixed(tower.baseW, 2)}×${fmtFixed(tower.baseD, 2)}`}
         </div>
-        {ENABLE_DISTRICTS ? (
+        {ENABLE_DISTRICTS && !isTopCoins ? (
           <div
             style={{
               marginTop: 4,
