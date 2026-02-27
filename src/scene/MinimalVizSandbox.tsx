@@ -359,6 +359,13 @@ const TOP_TAIL_BOOST_FULL_USD = 2_500_000;
 const TOP_TAIL_HEIGHT_MULT_MAX = 1.42;
 const TOP_TAIL_BASE_MULT_MAX = 1.18;
 const TOP_TAIL_NORMAL_CAP_MAX = 72;
+const TOP_MONO_FLOOR_START_USD = 900_000;
+const TOP_MONO_FLOOR_FULL_USD = 3_500_000;
+const TOP_MONO_FLOOR_MIN = 62;
+const TOP_MONO_FLOOR_MAX = 90;
+const TOP_MONO_CAP_START_USD = 700_000;
+const TOP_MONO_CAP_FULL_USD = 3_500_000;
+const TOP_MONO_CAP_MIN = 80;
 const JUMBO_BASE_THRESHOLD = 4.6;
 const JUMBO_RESERVE_PUSH_MAX = 4.2;
 const JUMBO_CLEARANCE_PAD_MAX = 1.35;
@@ -1690,6 +1697,31 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     : 1;
   const heroBaseMult = isHero ? MathUtils.lerp(HERO_BASE_MULT_MIN, HERO_BASE_MULT_MAX, hash01(event.sequence, 1913)) : 1;
   height = MathUtils.clamp(height * heroMult, MIN_HEIGHT, HERO_MAX_HEIGHT);
+
+  // Keep million+ towers USD-monotonic despite hero randomness:
+  // higher USD gets deterministic minimum prominence and lower USD cannot exceed its USD cap.
+  const topMonoFloorT = smoothstep01(
+    remapClamped(
+      Math.log10(Math.max(1, usdNotional)),
+      Math.log10(TOP_MONO_FLOOR_START_USD),
+      Math.log10(TOP_MONO_FLOOR_FULL_USD)
+    )
+  );
+  if (topMonoFloorT > 0) {
+    const monoFloor = MathUtils.lerp(TOP_MONO_FLOOR_MIN, TOP_MONO_FLOOR_MAX, topMonoFloorT);
+    height = Math.max(height, monoFloor);
+  }
+  const topMonoCapT = smoothstep01(
+    remapClamped(
+      Math.log10(Math.max(1, usdNotional)),
+      Math.log10(TOP_MONO_CAP_START_USD),
+      Math.log10(TOP_MONO_CAP_FULL_USD)
+    )
+  );
+  if (topMonoCapT > 0) {
+    const monoCap = MathUtils.lerp(TOP_MONO_CAP_MIN, HERO_MAX_HEIGHT, topMonoCapT);
+    height = Math.min(height, monoCap);
+  }
 
   // Height-only compression for very small USD events. Keep width/footprint intact,
   // but make tiny notionals read as clearly minor buildings while staying above tree scale.
