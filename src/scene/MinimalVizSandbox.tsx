@@ -682,6 +682,18 @@ function smoothstep01(v: number) {
   return x * x * (3 - 2 * x);
 }
 
+function wrapAngleRad(value: number) {
+  const twoPi = Math.PI * 2;
+  let a = (value + Math.PI) % twoPi;
+  if (a < 0) a += twoPi;
+  return a - Math.PI;
+}
+
+function dampAngleRad(current: number, target: number, lambda: number, delta: number) {
+  const diff = Math.atan2(Math.sin(target - current), Math.cos(target - current));
+  return current + diff * (1 - Math.exp(-lambda * delta));
+}
+
 function sigmoid01(v: number) {
   if (!Number.isFinite(v)) return 0.5;
   if (v <= -20) return 0;
@@ -2226,7 +2238,7 @@ function MinimalOrbitRig({
     const driftScale = RUNTIME_QUALITY_CONFIG.cameraDriftScale;
 
     const auto = autoRef.current;
-    auto.angle = t * 0.18 * orbitScale + Math.sin(t * 0.1 * orbitScale) * (0.06 * driftScale);
+    auto.angle = wrapAngleRad(t * 0.18 * orbitScale + Math.sin(t * 0.1 * orbitScale) * (0.06 * driftScale));
     auto.distance = MathUtils.clamp(18 + radius * 1.65 + maxY * 0.55, 24, 170);
     auto.elevation = MathUtils.clamp(8 + maxY * 0.9 + radius * 0.22, 10, 72);
     auto.lookY = MathUtils.clamp(1.5 + maxY * 0.45, 2, 30);
@@ -2294,6 +2306,8 @@ function MinimalOrbitRig({
       if (keys.KeyE) control.distance += delta * zoomSpeed;
     }
 
+    control.angle = wrapAngleRad(control.angle);
+
     if (modeRef.current === 'focus') {
       const focus = focusOrbitRef.current;
       control.distance = MathUtils.clamp(control.distance, 6, 72);
@@ -2309,10 +2323,11 @@ function MinimalOrbitRig({
     const radiusDamp = modeRef.current === 'auto' ? 1.5 : modeRef.current === 'focus' ? 2.3 : 2.1;
     const verticalDamp = modeRef.current === 'auto' ? 1.45 : modeRef.current === 'focus' ? 2.2 : 2.0;
     const lookDamp = modeRef.current === 'auto' ? 1.4 : modeRef.current === 'focus' ? 2.25 : 1.9;
-    actual.angle = MathUtils.damp(actual.angle, control.angle, orbitDamp, delta);
+    actual.angle = dampAngleRad(actual.angle, control.angle, orbitDamp, delta);
     actual.distance = MathUtils.damp(actual.distance, control.distance, radiusDamp, delta);
     actual.elevation = MathUtils.damp(actual.elevation, control.elevation, verticalDamp, delta);
     actual.lookY = MathUtils.damp(actual.lookY, control.lookY, lookDamp, delta);
+    actual.angle = wrapAngleRad(actual.angle);
 
     centerActualRef.current.x = MathUtils.damp(centerActualRef.current.x, centerTargetRef.current.x, 2.4, delta);
     centerActualRef.current.z = MathUtils.damp(centerActualRef.current.z, centerTargetRef.current.z, 2.4, delta);
