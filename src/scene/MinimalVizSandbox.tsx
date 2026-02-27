@@ -2237,9 +2237,8 @@ const TOP_HEIGHT_NEGATIVE_RANGE = 9.4;
 const TOP_LAYOUT_PADDING = 1.4;
 const TOP_LAYOUT_INITIAL_ITERS = 64;
 const TOP_LAYOUT_REFRESH_ITERS = 20;
-const TOP_LAYOUT_SLOT_RING = 3;
-const TOP_LAYOUT_INNER_RADIUS = 22;
-const TOP_LAYOUT_RING_STEP = 8.6;
+const TOP_LAYOUT_INNER_RADIUS = 8;
+const TOP_LAYOUT_RING_STEP = 3.95;
 const TOP_LAYOUT_EDGE_PAD = 5.2;
 
 type TopCoinsLayoutNode = {
@@ -2282,30 +2281,18 @@ function hashUnitString(value: string, salt: number) {
   return (h % 1_000_000) / 1_000_000;
 }
 
-function normalizeAnglePositive(angle: number) {
+function shortestAngleDelta(from: number, to: number) {
   const twoPi = Math.PI * 2;
-  let out = angle % twoPi;
-  if (out < 0) out += twoPi;
-  return out;
+  let diff = ((to - from + Math.PI) % twoPi + twoPi) % twoPi - Math.PI;
+  if (diff < -Math.PI) diff += twoPi;
+  return diff;
 }
 
-function districtAngles(districtId: number) {
-  const wedge = (Math.PI * 2) / TOP_COINS_DISTRICT_COUNT;
-  const start = districtId * wedge;
-  const end = start + wedge;
-  return { wedge, start, end, center: start + wedge * 0.5 };
-}
-
-function clampNodeToDistrict(node: TopCoinsLayoutNode, cityRadius: number) {
-  const { wedge, start, end } = districtAngles(node.districtId);
-  const inset = wedge * 0.08;
-  const minA = start + inset;
-  const maxA = end - inset;
-  let angle = normalizeAnglePositive(Math.atan2(node.z, node.x));
-  angle = MathUtils.clamp(angle, minA, maxA);
-  const minRadius = TOP_LAYOUT_INNER_RADIUS * 0.68;
+function clampNodeToCity(node: TopCoinsLayoutNode, cityRadius: number) {
+  const minRadius = Math.max(3.6, TOP_LAYOUT_INNER_RADIUS * 0.18);
   const maxRadius = Math.max(minRadius + 2, cityRadius - TOP_LAYOUT_EDGE_PAD);
   const radius = MathUtils.clamp(Math.hypot(node.x, node.z), minRadius, maxRadius);
+  const angle = Math.atan2(node.z, node.x);
   node.x = Math.cos(angle) * radius;
   node.z = Math.sin(angle) * radius;
 }
@@ -2327,49 +2314,35 @@ function buildTopCoinsLayoutTargets({
   states: Map<string, TopCoinSymbolState>;
   baseBySymbol: Map<string, number>;
 }): TopCoinsLayoutResult {
-  const groups = new Map<number, Array<{ symbol: string; rank: number }>>();
-  for (const item of items) {
-    const districtId = hashString32(item.symbol) % TOP_COINS_DISTRICT_COUNT;
-    const list = groups.get(districtId) ?? [];
-    list.push(item);
-    groups.set(districtId, list);
-  }
-
+  const ordered = [...items].sort((a, b) => a.rank - b.rank || a.symbol.localeCompare(b.symbol));
   const nodes: TopCoinsLayoutNode[] = [];
-  for (let districtId = 0; districtId < TOP_COINS_DISTRICT_COUNT; districtId++) {
-    const list = (groups.get(districtId) ?? []).sort((a, b) => a.rank - b.rank || a.symbol.localeCompare(b.symbol));
-    const { wedge, start } = districtAngles(districtId);
-    for (let idx = 0; idx < list.length; idx++) {
-      const item = list[idx];
-      const idx1 = idx + 1;
-      // Golden-angle based local sampling avoids rigid rows while staying deterministic per symbol/rank.
-      const angleU = ((idx1 * 0.61803398875 + hashUnitString(item.symbol, 43) * 0.27) % 1 + 1) % 1;
-      const angle =
-        start +
-        angleU * wedge * 0.92 +
-        (hashUnitString(item.symbol, 41) - 0.5) * wedge * 0.08;
-      const radialBand = Math.sqrt(idx1);
-      const radius =
-        TOP_LAYOUT_INNER_RADIUS +
-        radialBand * TOP_LAYOUT_RING_STEP +
-        (hashUnitString(item.symbol, 47) - 0.5) * 2.2;
-      const xNominal = Math.cos(angle) * radius;
-      const zNominal = Math.sin(angle) * radius;
-      const baseTarget = baseBySymbol.get(item.symbol) ?? 1.2;
-      const footprintRadius = estimateTopCoinFootprintRadius(item.symbol, baseTarget);
-      const prev = states.get(item.symbol);
-      nodes.push({
-        symbol: item.symbol,
-        districtId,
-        radius: footprintRadius,
-        x: prev?.xTarget ?? prev?.x ?? xNominal,
-        z: prev?.zTarget ?? prev?.z ?? zNominal
-      });
-    }
+  for (let idx = 0; idx < ordered.length; idx++) {
+    const item = ordered[idx];
+    const idx1 = idx + 1;
+    const districtId = hashString32(item.symbol) % TOP_COINS_DISTRICT_COUNT;
+    const districtCenter = ((districtId + 0.5) / TOP_COINS_DISTRICT_COUNT) * Math.PI * 2;
+    const baseAngle = idx * GOLDEN_ANGLE + (hashUnitString(item.symbol, 41) - 0.5) * 0.24;
+    // Keep district identity subtle while preserving organic city-like spiral.
+    const angle = baseAngle + shortestAngleDelta(baseAngle, districtCenter) * 0.14;
+    const radius =
+      Math.max(0, TOP_LAYOUT_INNER_RADIUS * 0.35 + Math.sqrt(idx1) * TOP_LAYOUT_RING_STEP) +
+      (hashUnitString(item.symbol, 47) - 0.5) * 1.8;
+    const xNominal = Math.cos(angle) * radius;
+    const zNominal = Math.sin(angle) * radius;
+    const baseTarget = baseBySymbol.get(item.symbol) ?? 1.2;
+    const footprintRadius = estimateTopCoinFootprintRadius(item.symbol, baseTarget);
+    const prev = states.get(item.symbol);
+    nodes.push({
+      symbol: item.symbol,
+      districtId,
+      radius: footprintRadius,
+      x: prev ? MathUtils.lerp(prev.xTarget ?? prev.x, xNominal, 0.44) : xNominal,
+      z: prev ? MathUtils.lerp(prev.zTarget ?? prev.z, zNominal, 0.44) : zNominal
+    });
   }
 
   const maxNominalRadius = nodes.reduce((acc, node) => Math.max(acc, Math.hypot(node.x, node.z) + node.radius), 0);
-  let cityRadius = Math.max(72, maxNominalRadius + 16 + Math.sqrt(Math.max(1, nodes.length)) * 0.55);
+  let cityRadius = Math.max(56, maxNominalRadius + 10 + Math.sqrt(Math.max(1, nodes.length)) * 0.42);
 
   const dispX = new Array(nodes.length).fill(0);
   const dispZ = new Array(nodes.length).fill(0);
@@ -2381,7 +2354,7 @@ function buildTopCoinsLayoutTargets({
 
   for (let attempt = 0; attempt < 6; attempt++) {
     for (const node of nodes) {
-      clampNodeToDistrict(node, cityRadius);
+      clampNodeToCity(node, cityRadius);
     }
 
     const iterations = baseIterations + attempt * 8;
@@ -2427,7 +2400,7 @@ function buildTopCoinsLayoutTargets({
         const node = nodes[i];
         node.x += dispX[i] * 0.85;
         node.z += dispZ[i] * 0.85;
-        clampNodeToDistrict(node, cityRadius);
+        clampNodeToCity(node, cityRadius);
       }
 
       layoutIters += 1;
@@ -2478,24 +2451,24 @@ function buildTopCoinsDecorativeParks({
     return { parks, trees };
   }
 
-  const desiredParks = Math.min(MAX_PARKS_VISIBLE, Math.max(8, Math.round(towers.length / 20)));
-  const attemptsMax = desiredParks * 72;
+  const desiredParks = Math.min(MAX_PARKS_VISIBLE, Math.max(10, Math.round(towers.length / 16)));
+  const attemptsMax = desiredParks * 180;
   const now = Date.now();
 
   for (let attempt = 0; attempt < attemptsMax && parks.length < desiredParks; attempt++) {
     const seed = 81_001 + attempt * 137;
     const angle = hash01(seed, 1) * Math.PI * 2;
-    const radialN = MathUtils.lerp(0.24, 0.96, hash01(seed, 3));
-    const radialJitter = (hash01(seed, 5) - 0.5) * MathUtils.lerp(8, 20, radialN);
+    const radialN = MathUtils.lerp(0.18, 0.97, hash01(seed, 3));
+    const radialJitter = (hash01(seed, 5) - 0.5) * MathUtils.lerp(9, 22, radialN);
     const radial = Math.max(9, cityRadius * radialN + radialJitter);
     const x = Math.cos(angle) * radial;
     const z = Math.sin(angle) * radial;
-    const w = MathUtils.lerp(4.2, 7.2, hash01(seed, 7));
-    const d = MathUtils.lerp(3.8, 6.8, hash01(seed, 9));
+    const w = MathUtils.lerp(3.2, 5.8, hash01(seed, 7));
+    const d = MathUtils.lerp(3.0, 5.4, hash01(seed, 9));
     const yaw = hash01(seed, 11) * Math.PI;
     const radius = Math.max(w, d) * 0.58;
 
-    if (Math.hypot(x, z) > cityRadius * 1.02) continue;
+    if (Math.hypot(x, z) > cityRadius * 1.06) continue;
 
     let blocked = false;
     for (let i = 0; i < towers.length; i++) {
@@ -2597,6 +2570,78 @@ function buildTopCoinsDecorativeParks({
       treeStart,
       treeCount
     });
+  }
+
+  if (parks.length < desiredParks) {
+    for (let i = parks.length; i < desiredParks; i++) {
+      const seed = 93_001 + i * 131;
+      const angle = ((i + 1) / (desiredParks + 1)) * Math.PI * 2 + (hash01(seed, 1) - 0.5) * 0.18;
+      const radius = cityRadius * MathUtils.lerp(0.78, 0.96, hash01(seed, 3));
+      const x = Math.cos(angle) * radius;
+      const z = Math.sin(angle) * radius;
+      const w = MathUtils.lerp(2.9, 4.2, hash01(seed, 5));
+      const d = MathUtils.lerp(2.8, 4.0, hash01(seed, 7));
+      const yaw = hash01(seed, 9) * Math.PI;
+      const r = Math.max(w, d) * 0.58;
+      let blocked = false;
+      for (let t = 0; t < towers.length; t++) {
+        if (parkConflictsTopCoinTower(x, z, w, d, towers[t])) {
+          blocked = true;
+          break;
+        }
+      }
+      if (blocked) continue;
+      for (let p = 0; p < parks.length; p++) {
+        if (parkConflictsTopCoinPark(x, z, w, d, parks[p])) {
+          blocked = true;
+          break;
+        }
+      }
+      if (blocked) continue;
+
+      const treeStart = trees.length;
+      const requestedTreeCount = Math.max(8, Math.round(MathUtils.lerp(10, 18, hash01(seed, 11))));
+      for (let ti = 0; ti < requestedTreeCount; ti++) {
+        const a = hash01(seed, ti, 13) * Math.PI * 2;
+        const rr = Math.sqrt(hash01(seed, ti, 17)) * (r * 0.82);
+        const lx = Math.cos(a) * rr;
+        const lz = Math.sin(a) * rr;
+        const cs = Math.cos(yaw);
+        const sn = Math.sin(yaw);
+        const worldX = x + lx * cs - lz * sn;
+        const worldZ = z + lx * sn + lz * cs;
+        trees.push({
+          x: worldX,
+          z: worldZ,
+          yaw: hash01(seed, ti, 19) * Math.PI * 2,
+          trunkH: MathUtils.lerp(0.2, 0.44, hash01(seed, ti, 23)),
+          crownH: MathUtils.lerp(0.36, 0.82, hash01(seed, ti, 29)),
+          crownR: MathUtils.lerp(0.14, 0.34, hash01(seed, ti, 31)),
+          tintMix: hash01(seed, ti, 37)
+        });
+      }
+      const treeCount = trees.length - treeStart;
+      if (treeCount <= 0) continue;
+      const fireflyCount = Math.max(4, Math.min(treeCount, Math.round(treeCount * 0.7)));
+      parks.push({
+        id: `top-park-fallback-${i}-${seed}`,
+        x,
+        z,
+        w,
+        d,
+        yaw,
+        patchColor: '#2a2c30',
+        edgeColor: '#f1cc97',
+        seed,
+        radius: r,
+        fireflyCount,
+        linkX: null,
+        linkZ: null,
+        emittedAt: now,
+        treeStart,
+        treeCount
+      });
+    }
   }
 
   return { parks, trees };
