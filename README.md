@@ -61,6 +61,7 @@ Two production options are included:
 
 3. Set repository variable for frontend build:
 - `VITE_TOP_COINS_API_URL=https://<your-worker-subdomain>.workers.dev/api/top-coins`
+  - Required for GitHub Pages workflow; deploy fails fast if missing.
 
 4. (Optional) Restrict CORS origins in worker env:
 - `ALLOWED_ORIGINS=https://dawidskinder.github.io`
