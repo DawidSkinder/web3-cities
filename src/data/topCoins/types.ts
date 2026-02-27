@@ -10,6 +10,7 @@ export type TopCoinItem = {
   tradeCount: number;
   highPrice: number;
   lowPrice: number;
+  logoPath: string | null;
 };
 
 export type TopCoinsStaticSnapshotFile = {
@@ -18,6 +19,9 @@ export type TopCoinsStaticSnapshotFile = {
   window: string;
   baseQuote: string;
   method: string;
+  logosAttempted?: number;
+  logosDownloaded?: number;
+  logosMissing?: number;
   items: TopCoinItem[];
 };
 
@@ -42,9 +46,16 @@ export type TopCoinsSnapshot = {
   debug: {
     symbols: number;
     fetchedAt: number;
+    lastFetchAt: number;
+    lastAsOf: number;
+    lastHash: string;
+    refreshAgeSec: number;
     pollMs: number;
     endpoint: string;
     lastError: string | null;
     lastFetchOk: boolean;
+    logosMissing: number;
+    logosAttempted: number;
+    logosDownloaded: number;
   };
 };

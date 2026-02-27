@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -6,11 +6,14 @@ const BINANCE_TICKER_24H_URL = 'https://api.binance.com/api/v3/ticker/24hr';
 const BINANCE_EXCHANGE_INFO_URL = 'https://api.binance.com/api/v3/exchangeInfo';
 const QUOTE_ASSET = 'USDT';
 const LIMIT = 200;
+const LOGO_CONCURRENCY = 8;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
-const outputPath = path.join(repoRoot, 'public', 'data', 'top-coins.json');
+const dataDir = path.join(repoRoot, 'public', 'data');
+const logosDir = path.join(dataDir, 'logos');
+const outputPath = path.join(dataDir, 'top-coins.json');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -75,6 +78,116 @@ async function fetchJsonWithRetry(url, label, maxAttempts = 2) {
   throw new Error(`${label} request failed after retries`);
 }
 
+async function fileExists(filePath) {
+  try {
+    await stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function fetchLogoBinary(url) {
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Accept: 'image/png,image/webp,image/*,*/*;q=0.8'
+    }
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const contentType = String(response.headers.get('content-type') ?? '').toLowerCase();
+  if (!contentType.startsWith('image/')) {
+    return null;
+  }
+
+  const data = await response.arrayBuffer();
+  if (!data || data.byteLength < 128) {
+    return null;
+  }
+
+  return Buffer.from(data);
+}
+
+function logoCandidates(baseAsset, symbol) {
+  const baseUpper = String(baseAsset || '').toUpperCase();
+  const baseLower = baseUpper.toLowerCase();
+  const symbolUpper = String(symbol || '').toUpperCase();
+
+  const urls = [
+    `https://bin.bnbstatic.com/static/images/common/cryptoicons/${baseUpper}.png`,
+    `https://bin.bnbstatic.com/static/images/common/cryptoicons/${symbolUpper}.png`,
+    `https://raw.githubusercontent.com/spothq/cryptocurrency-icons/master/128/color/${baseLower}.png`
+  ];
+
+  return urls;
+}
+
+async function resolveLogoForItem(item) {
+  const symbol = String(item.symbol ?? '').toUpperCase();
+  if (!symbol) return { logoPath: null, downloaded: false };
+
+  const fileName = `${symbol}.png`;
+  const filePath = path.join(logosDir, fileName);
+  const publicPath = `/data/logos/${fileName}`;
+
+  if (await fileExists(filePath)) {
+    return { logoPath: publicPath, downloaded: false };
+  }
+
+  const candidates = logoCandidates(item.baseAsset, item.symbol);
+  for (let i = 0; i < candidates.length; i++) {
+    const binary = await fetchLogoBinary(candidates[i]);
+    if (!binary) continue;
+    await writeFile(filePath, binary);
+    return { logoPath: publicPath, downloaded: true };
+  }
+
+  return { logoPath: null, downloaded: false };
+}
+
+async function runWithConcurrency(items, limit, worker) {
+  const out = new Array(items.length);
+  let cursor = 0;
+
+  async function runOne() {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      out[index] = await worker(items[index], index);
+    }
+  }
+
+  const workers = [];
+  const count = Math.max(1, Math.min(limit, items.length));
+  for (let i = 0; i < count; i++) {
+    workers.push(runOne());
+  }
+  await Promise.all(workers);
+  return out;
+}
+
+function snapshotStableComparable(snapshot) {
+  return {
+    source: snapshot.source,
+    window: snapshot.window,
+    baseQuote: snapshot.baseQuote,
+    method: snapshot.method,
+    logosAttempted: snapshot.logosAttempted,
+    logosDownloaded: snapshot.logosDownloaded,
+    logosMissing: snapshot.logosMissing,
+    items: snapshot.items
+  };
+}
+
+function deepEqual(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 async function generateSnapshot() {
   const [ticker24hr, exchangeInfo] = await Promise.all([
     fetchJsonWithRetry(BINANCE_TICKER_24H_URL, 'ticker/24hr'),
@@ -123,7 +236,7 @@ async function generateSnapshot() {
 
   normalized.sort((a, b) => b.quoteVolume - a.quoteVolume || a.symbol.localeCompare(b.symbol));
 
-  const items = normalized.slice(0, LIMIT).map((item, index) => ({
+  const top = normalized.slice(0, LIMIT).map((item, index) => ({
     rank: index + 1,
     symbol: item.symbol,
     baseAsset: item.baseAsset,
@@ -137,31 +250,76 @@ async function generateSnapshot() {
     lowPrice: item.lowPrice
   }));
 
+  await mkdir(logosDir, { recursive: true });
+
+  const logoResults = await runWithConcurrency(top, LOGO_CONCURRENCY, async (item) => resolveLogoForItem(item));
+
+  let downloadedNow = 0;
+  let logosAvailable = 0;
+  const items = top.map((item, index) => {
+    const logo = logoResults[index];
+    if (logo?.downloaded) downloadedNow += 1;
+    if (logo?.logoPath) logosAvailable += 1;
+    return {
+      rank: item.rank,
+      symbol: item.symbol,
+      baseAsset: item.baseAsset,
+      quoteAsset: item.quoteAsset,
+      lastPrice: item.lastPrice,
+      priceChangePercent: item.priceChangePercent,
+      quoteVolume: item.quoteVolume,
+      baseVolume: item.baseVolume,
+      tradeCount: item.tradeCount,
+      highPrice: item.highPrice,
+      lowPrice: item.lowPrice,
+      logoPath: logo?.logoPath ?? null
+    };
+  });
+
+  const logosAttempted = items.length;
+  const logosDownloaded = logosAvailable;
+  const logosMissing = Math.max(0, logosAttempted - logosDownloaded);
+
   return {
     asOf: Date.now(),
     source: 'binance-spot-rest',
     window: '24h',
     baseQuote: QUOTE_ASSET,
     method: 'top200-by-quoteVolume',
-    items
+    logosAttempted,
+    logosDownloaded,
+    logosMissing,
+    items,
+    _debug: {
+      downloadedNow
+    }
   };
 }
 
 async function writeSnapshotFile() {
-  const snapshot = await generateSnapshot();
-  const output = `${JSON.stringify(snapshot, null, 2)}\n`;
+  const snapshotRaw = await generateSnapshot();
+  const { _debug, ...snapshot } = snapshotRaw;
 
   await mkdir(path.dirname(outputPath), { recursive: true });
 
   let previous = null;
+  let previousParsed = null;
   try {
     previous = await readFile(outputPath, 'utf8');
+    previousParsed = JSON.parse(previous);
   } catch {
     previous = null;
+    previousParsed = null;
   }
 
+  if (previousParsed && deepEqual(snapshotStableComparable(previousParsed), snapshotStableComparable(snapshot))) {
+    console.log(`Top coins snapshot unchanged (logos downloaded now: ${_debug.downloadedNow}).`);
+    return false;
+  }
+
+  const output = `${JSON.stringify(snapshot, null, 2)}\n`;
   if (previous === output) {
-    console.log('Top coins snapshot unchanged.');
+    console.log(`Top coins snapshot unchanged (logos downloaded now: ${_debug.downloadedNow}).`);
     return false;
   }
 
@@ -169,7 +327,9 @@ async function writeSnapshotFile() {
   await writeFile(tempPath, output, 'utf8');
   await rename(tempPath, outputPath);
 
-  console.log(`Top coins snapshot updated: ${snapshot.items.length} items.`);
+  console.log(
+    `Top coins snapshot updated: ${snapshot.items.length} items, logos ${snapshot.logosDownloaded}/${snapshot.logosAttempted} (new ${_debug.downloadedNow}).`
+  );
   return true;
 }
 

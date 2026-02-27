@@ -1,6 +1,6 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Group, InstancedMesh as ThreeInstancedMesh, Mesh } from 'three';
+import type { Group, InstancedMesh as ThreeInstancedMesh, Mesh, Texture } from 'three';
 import {
   AdditiveBlending,
   ACESFilmicToneMapping,
@@ -18,6 +18,7 @@ import {
   Quaternion,
   ShaderMaterial,
   SRGBColorSpace,
+  TextureLoader,
   Vector3
 } from 'three';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
@@ -77,6 +78,10 @@ type TowerDatum = {
   quoteVolume24h?: number;
   lastPrice?: number;
   rank?: number;
+  logoPath?: string | null;
+  isTopGainer?: boolean;
+  isTopLoser?: boolean;
+  isTopVolume?: boolean;
 };
 
 type TraceDatum = {
@@ -2146,8 +2151,16 @@ type TopCoinsDebugOverlay = {
   asOfIso: string;
   symbols: number;
   fetchedAt: number;
+  lastHash: string;
+  refreshAgeSec: number;
   lastError: string | null;
   lastFetchOk: boolean;
+  logosMissing: number;
+  logosAttempted: number;
+  logosDownloaded: number;
+  layoutIters: number;
+  minSeparation: number;
+  overlapFix: 'ok' | 'iterating';
   topGainer: { symbol: string; pct: number };
   topLoser: { symbol: string; pct: number };
   topVolume: { symbol: string; quoteVolume: number };
@@ -2161,6 +2174,8 @@ type TopCoinSymbolState = {
   districtId: number;
   x: number;
   z: number;
+  xTarget: number;
+  zTarget: number;
   rank: number;
   emittedAt: number;
   active: boolean;
@@ -2178,8 +2193,11 @@ type TopCoinSymbolState = {
   glowStrengthTarget: number;
   opacity: number;
   opacityTarget: number;
+  smoothAlpha: number;
   isTopGainer: boolean;
   isTopLoser: boolean;
+  isTopVolume: boolean;
+  logoPath: string | null;
 };
 
 const TOP_COINS_DISTRICT_COUNT = 10;
@@ -2198,6 +2216,29 @@ const TOP_COINS_DISTRICT_TINTS = [
 const TOP_HEIGHT_SEA_LEVEL = 14;
 const TOP_HEIGHT_POSITIVE_RANGE = 42;
 const TOP_HEIGHT_NEGATIVE_RANGE = 9.4;
+const TOP_LAYOUT_PADDING = 0.52;
+const TOP_LAYOUT_INITIAL_ITERS = 36;
+const TOP_LAYOUT_REFRESH_ITERS = 9;
+const TOP_LAYOUT_SLOT_RING = 8;
+const TOP_LAYOUT_INNER_RADIUS = 12;
+const TOP_LAYOUT_RING_STEP = 5.7;
+const TOP_LAYOUT_EDGE_PAD = 3.8;
+
+type TopCoinsLayoutNode = {
+  symbol: string;
+  districtId: number;
+  radius: number;
+  x: number;
+  z: number;
+};
+
+type TopCoinsLayoutResult = {
+  targets: Map<string, { districtId: number; x: number; z: number }>;
+  layoutIters: number;
+  minSeparation: number;
+  overlapFix: 'ok' | 'iterating';
+  cityRadius: number;
+};
 
 function hashString32(value: string) {
   let h = 2166136261 >>> 0;
@@ -2213,21 +2254,180 @@ function hashUnitString(value: string, salt: number) {
   return (h % 1_000_000) / 1_000_000;
 }
 
-function mapSymbolToPlacement(symbol: string) {
-  const seed = hashString32(symbol);
-  const districtId = seed % TOP_COINS_DISTRICT_COUNT;
+function normalizeAnglePositive(angle: number) {
+  const twoPi = Math.PI * 2;
+  let out = angle % twoPi;
+  if (out < 0) out += twoPi;
+  return out;
+}
+
+function districtAngles(districtId: number) {
   const wedge = (Math.PI * 2) / TOP_COINS_DISTRICT_COUNT;
-  const centerAngle = districtId * wedge + wedge * 0.5;
-  const angleOffset = (hashUnitString(symbol, 1) - 0.5) * wedge * 0.76;
-  const localRing = 1 + Math.floor(hashUnitString(symbol, 2) * 8);
-  const laneJitter = (hashUnitString(symbol, 3) - 0.5) * 2.1;
-  const radius = 9 + localRing * 5.1 + laneJitter;
-  const x = Math.cos(centerAngle + angleOffset) * radius;
-  const z = Math.sin(centerAngle + angleOffset) * radius;
+  const start = districtId * wedge;
+  const end = start + wedge;
+  return { wedge, start, end, center: start + wedge * 0.5 };
+}
+
+function clampNodeToDistrict(node: TopCoinsLayoutNode, cityRadius: number) {
+  const { wedge, start, end } = districtAngles(node.districtId);
+  const inset = wedge * 0.08;
+  const minA = start + inset;
+  const maxA = end - inset;
+  let angle = normalizeAnglePositive(Math.atan2(node.z, node.x));
+  angle = MathUtils.clamp(angle, minA, maxA);
+  const minRadius = TOP_LAYOUT_INNER_RADIUS * 0.68;
+  const maxRadius = Math.max(minRadius + 2, cityRadius - TOP_LAYOUT_EDGE_PAD);
+  const radius = MathUtils.clamp(Math.hypot(node.x, node.z), minRadius, maxRadius);
+  node.x = Math.cos(angle) * radius;
+  node.z = Math.sin(angle) * radius;
+}
+
+function estimateTopCoinFootprintRadius(symbol: string, baseTarget: number) {
+  const baseAspect = MathUtils.lerp(0.82, 1.24, hashUnitString(symbol, 13));
+  const sqrtAspect = Math.sqrt(baseAspect);
+  const baseW = MathUtils.clamp(baseTarget * sqrtAspect, 0.82, 6.2);
+  const baseD = MathUtils.clamp(baseTarget / sqrtAspect, 0.82, 6.2);
+  return 0.5 * Math.hypot(baseW, baseD);
+}
+
+function buildTopCoinsLayoutTargets({
+  items,
+  states,
+  baseBySymbol
+}: {
+  items: Array<{ symbol: string; rank: number }>;
+  states: Map<string, TopCoinSymbolState>;
+  baseBySymbol: Map<string, number>;
+}): TopCoinsLayoutResult {
+  const groups = new Map<number, Array<{ symbol: string; rank: number }>>();
+  for (const item of items) {
+    const districtId = hashString32(item.symbol) % TOP_COINS_DISTRICT_COUNT;
+    const list = groups.get(districtId) ?? [];
+    list.push(item);
+    groups.set(districtId, list);
+  }
+
+  const nodes: TopCoinsLayoutNode[] = [];
+  for (let districtId = 0; districtId < TOP_COINS_DISTRICT_COUNT; districtId++) {
+    const list = (groups.get(districtId) ?? []).sort((a, b) => a.rank - b.rank || a.symbol.localeCompare(b.symbol));
+    const { wedge, center } = districtAngles(districtId);
+    for (let idx = 0; idx < list.length; idx++) {
+      const item = list[idx];
+      const ring = Math.floor(idx / TOP_LAYOUT_SLOT_RING);
+      const slot = idx % TOP_LAYOUT_SLOT_RING;
+      const laneSlots = Math.max(TOP_LAYOUT_SLOT_RING, TOP_LAYOUT_SLOT_RING + ring * 2);
+      const localU = ((slot + 0.5) / laneSlots - 0.5) * 2;
+      const angle = center + localU * (wedge * Math.max(0.36, 0.78 - ring * 0.03));
+      const radius = TOP_LAYOUT_INNER_RADIUS + ring * TOP_LAYOUT_RING_STEP + (hashUnitString(item.symbol, 41) - 0.5) * 1.4;
+      const xNominal = Math.cos(angle) * radius;
+      const zNominal = Math.sin(angle) * radius;
+      const baseTarget = baseBySymbol.get(item.symbol) ?? 1.2;
+      const footprintRadius = estimateTopCoinFootprintRadius(item.symbol, baseTarget);
+      const prev = states.get(item.symbol);
+      nodes.push({
+        symbol: item.symbol,
+        districtId,
+        radius: footprintRadius,
+        x: prev?.xTarget ?? prev?.x ?? xNominal,
+        z: prev?.zTarget ?? prev?.z ?? zNominal
+      });
+    }
+  }
+
+  const maxNominalRadius = nodes.reduce((acc, node) => Math.max(acc, Math.hypot(node.x, node.z) + node.radius), 0);
+  let cityRadius = Math.max(52, maxNominalRadius + 10 + Math.sqrt(Math.max(1, nodes.length)) * 0.42);
+
+  const dispX = new Array(nodes.length).fill(0);
+  const dispZ = new Array(nodes.length).fill(0);
+  const hasExisting = states.size > 0;
+  const baseIterations = hasExisting ? TOP_LAYOUT_REFRESH_ITERS : TOP_LAYOUT_INITIAL_ITERS;
+  let minSeparation = Number.POSITIVE_INFINITY;
+  let overlapFix: 'ok' | 'iterating' = 'iterating';
+  let layoutIters = 0;
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    for (const node of nodes) {
+      clampNodeToDistrict(node, cityRadius);
+    }
+
+    const iterations = baseIterations + attempt * 4;
+    for (let iter = 0; iter < iterations; iter++) {
+      dispX.fill(0);
+      dispZ.fill(0);
+      let overlapCount = 0;
+      let minSepIter = Number.POSITIVE_INFINITY;
+
+      for (let i = 0; i < nodes.length; i++) {
+        const a = nodes[i];
+        for (let j = i + 1; j < nodes.length; j++) {
+          const b = nodes[j];
+          const dx = b.x - a.x;
+          const dz = b.z - a.z;
+          const dist = Math.hypot(dx, dz);
+          const minDist = a.radius + b.radius + TOP_LAYOUT_PADDING;
+          minSepIter = Math.min(minSepIter, dist - minDist);
+          if (dist >= minDist) continue;
+
+          overlapCount += 1;
+          const push = (minDist - dist) * 0.5;
+          let nx = 0;
+          let nz = 0;
+          if (dist > 0.0001) {
+            nx = dx / dist;
+            nz = dz / dist;
+          } else {
+            const aSeed = hashUnitString(`${a.symbol}|${b.symbol}`, 9071) * Math.PI * 2;
+            nx = Math.cos(aSeed);
+            nz = Math.sin(aSeed);
+          }
+
+          dispX[i] -= nx * push;
+          dispZ[i] -= nz * push;
+          dispX[j] += nx * push;
+          dispZ[j] += nz * push;
+        }
+      }
+
+      minSeparation = minSepIter;
+      for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        node.x += dispX[i] * 0.85;
+        node.z += dispZ[i] * 0.85;
+        clampNodeToDistrict(node, cityRadius);
+      }
+
+      layoutIters += 1;
+      if (overlapCount === 0 && iter >= 2) {
+        overlapFix = 'ok';
+        break;
+      }
+    }
+
+    if (minSeparation >= -0.01) {
+      overlapFix = 'ok';
+      break;
+    }
+
+    cityRadius *= 1.08;
+  }
+
+  if (!Number.isFinite(minSeparation)) minSeparation = 0;
+
+  const targets = new Map<string, { districtId: number; x: number; z: number }>();
+  for (const node of nodes) {
+    targets.set(node.symbol, {
+      districtId: node.districtId,
+      x: node.x,
+      z: node.z
+    });
+  }
+
   return {
-    districtId,
-    x,
-    z
+    targets,
+    layoutIters,
+    minSeparation,
+    overlapFix,
+    cityRadius
   };
 }
 
@@ -2257,13 +2457,22 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
   const boundsRef = useRef<SandboxBounds>({ radius: 36, maxY: 42 });
   const moodRef = useRef(0.5);
   const moodTargetRef = useRef(0.5);
+  const volatilityRef = useRef(0.25);
   const debugRef = useRef<TopCoinsDebugOverlay>({
     asOfMs: 0,
     asOfIso: '',
     symbols: 0,
     fetchedAt: 0,
+    lastHash: 'none',
+    refreshAgeSec: 0,
     lastError: null,
     lastFetchOk: false,
+    logosMissing: 0,
+    logosAttempted: 0,
+    logosDownloaded: 0,
+    layoutIters: 0,
+    minSeparation: 0,
+    overlapFix: 'ok',
     topGainer: { symbol: 'N/A', pct: 0 },
     topLoser: { symbol: 'N/A', pct: 0 },
     topVolume: { symbol: 'N/A', quoteVolume: 0 }
@@ -2321,25 +2530,61 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     const nextSymbols = new Set<string>();
     const topGainerSymbol = snapshot.stats.topGainer.symbol;
     const topLoserSymbol = snapshot.stats.topLoser.symbol;
+    const topVolumeSymbol = snapshot.stats.topVolume.symbol;
     const maxQuoteVolume = Math.max(snapshot.stats.sessionMaxQuoteVolume, 1);
     const now = snapshot.emittedAt;
+    const baseBySymbol = new Map<string, number>();
 
     for (let i = 0; i < snapshot.items.length; i++) {
       const item = snapshot.items[i];
       if (!item) continue;
-      nextSymbols.add(item.symbol);
+      const volumeNorm = MathUtils.clamp(Math.log10(item.quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
+      let baseTarget = MathUtils.lerp(0.9, 4.8, Math.pow(volumeNorm, 0.72));
+      if (item.symbol === topVolumeSymbol) {
+        baseTarget *= 1.16;
+      }
+      baseBySymbol.set(item.symbol, MathUtils.clamp(baseTarget, 0.9, 6.2));
+    }
 
-      const rank = i + 1;
+    const layout = buildTopCoinsLayoutTargets({
+      items: snapshot.items.map((item, index) => ({
+        symbol: item.symbol,
+        rank: item.rank || index + 1
+      })),
+      states,
+      baseBySymbol
+    });
+
+    let absPctSum = 0;
+    for (let i = 0; i < snapshot.items.length; i++) {
+      const item = snapshot.items[i];
+      if (!item) continue;
+      nextSymbols.add(item.symbol);
+      absPctSum += Math.abs(item.priceChangePercent);
+
+      const rank = item.rank || i + 1;
       const isTopGainer = item.symbol === topGainerSymbol;
       const isTopLoser = item.symbol === topLoserSymbol;
-      const placement = mapSymbolToPlacement(item.symbol);
+      const isTopVolume = item.symbol === topVolumeSymbol;
+      const placement = layout.targets.get(item.symbol);
       const sequence = (hashString32(item.symbol) % 1_000_000) + 1;
       const prev = states.get(item.symbol);
 
       const volumeNorm = MathUtils.clamp(Math.log10(item.quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
       const nextHeight = mapPctToHeight(item.priceChangePercent, isTopGainer, isTopLoser);
-      const nextBase = MathUtils.lerp(0.9, 4.8, Math.pow(volumeNorm, 0.72));
-      const nextGlowStrength = MathUtils.clamp(0.72 + volumeNorm * 0.78 + Math.min(0.42, Math.abs(item.priceChangePercent) * 0.012), 0.72, 1.95);
+      const nextBase = baseBySymbol.get(item.symbol) ?? MathUtils.lerp(0.9, 4.8, Math.pow(volumeNorm, 0.72));
+      let nextGlowStrength = MathUtils.clamp(
+        0.72 + volumeNorm * 0.78 + Math.min(0.42, Math.abs(item.priceChangePercent) * 0.012),
+        0.72,
+        1.95
+      );
+      if (isTopGainer) nextGlowStrength *= 1.16;
+      if (isTopLoser) nextGlowStrength *= 0.98;
+      if (isTopVolume) nextGlowStrength *= 1.12;
+
+      const targetX = placement?.x ?? prev?.xTarget ?? prev?.x ?? 0;
+      const targetZ = placement?.z ?? prev?.zTarget ?? prev?.z ?? 0;
+      const districtId = placement?.districtId ?? prev?.districtId ?? (hashString32(item.symbol) % TOP_COINS_DISTRICT_COUNT);
 
       if (!prev) {
         states.set(item.symbol, {
@@ -2347,9 +2592,11 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
           baseAsset: item.baseAsset,
           quoteAsset: item.quoteAsset,
           sequence,
-          districtId: placement.districtId,
-          x: placement.x,
-          z: placement.z,
+          districtId,
+          x: targetX,
+          z: targetZ,
+          xTarget: targetX,
+          zTarget: targetZ,
           rank,
           emittedAt: now,
           active: true,
@@ -2367,8 +2614,11 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
           glowStrengthTarget: nextGlowStrength,
           opacity: 1,
           opacityTarget: 1,
+          smoothAlpha: MathUtils.lerp(2.8, 5.0, hashUnitString(item.symbol, 933)),
           isTopGainer,
-          isTopLoser
+          isTopLoser,
+          isTopVolume,
+          logoPath: item.logoPath ?? null
         });
         continue;
       }
@@ -2395,6 +2645,9 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       prev.quoteAsset = item.quoteAsset;
       prev.rank = rank;
       prev.active = true;
+      prev.districtId = districtId;
+      prev.xTarget = targetX;
+      prev.zTarget = targetZ;
       prev.pctTarget = item.priceChangePercent;
       prev.quoteVolumeTarget = item.quoteVolume;
       prev.lastPriceTarget = item.lastPrice;
@@ -2404,7 +2657,14 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       prev.opacityTarget = 1;
       prev.isTopGainer = isTopGainer;
       prev.isTopLoser = isTopLoser;
+      prev.isTopVolume = isTopVolume;
+      prev.logoPath = item.logoPath ?? null;
     }
+
+    volatilityRef.current =
+      snapshot.items.length > 0
+        ? MathUtils.clamp((absPctSum / snapshot.items.length) / 6, 0.15, 1.2)
+        : 0.2;
 
     for (const [symbol, state] of states) {
       if (nextSymbols.has(symbol)) continue;
@@ -2421,8 +2681,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       slot.serial = recordCeremonySerialRef.current;
       slot.active = true;
       slot.towerSequence = topGainerState.sequence;
-      slot.x = topGainerState.x;
-      slot.z = topGainerState.z;
+      slot.x = topGainerState.xTarget;
+      slot.z = topGainerState.zTarget;
       slot.towerHeight = topGainerState.heightTarget;
       slot.startTimeMs = performance.now();
       slot.durationMs = 1400;
@@ -2444,14 +2704,14 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       let cz = 0;
       let radiusEstimate = 5.2;
       for (const state of list) {
-        cx += state.x;
-        cz += state.z;
+        cx += state.xTarget;
+        cz += state.zTarget;
       }
       if (list.length > 0) {
         cx /= list.length;
         cz /= list.length;
         for (const state of list) {
-          radiusEstimate = Math.max(radiusEstimate, Math.hypot(state.x - cx, state.z - cz) + state.baseTarget);
+          radiusEstimate = Math.max(radiusEstimate, Math.hypot(state.xTarget - cx, state.zTarget - cz) + state.baseTarget);
         }
       }
       districts.push({
@@ -2479,7 +2739,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       if (dedupe.has(key)) return;
       dedupe.add(key);
 
-      const segment = segmentFromPoints(a.x, a.z, b.x, b.z);
+      const segment = segmentFromPoints(a.xTarget, a.zTarget, b.xTarget, b.zTarget);
       if (segment.length < 1.2) return;
 
       const avgPct = (a.pctTarget + b.pctTarget) * 0.5;
@@ -2529,7 +2789,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
 
       for (let i = 0; i < particleCount; i++) {
         const phase = hashUnitString(`${trace.id}:${i}`, 61);
-        const speed = (0.018 + avgVolNorm * 0.05) * (arterial ? 1.16 : 1);
+        const speedMood = MathUtils.lerp(0.86, 1.24, volatilityRef.current);
+        const speed = (0.018 + avgVolNorm * 0.05) * (arterial ? 1.16 : 1) * speedMood;
         const c = avgPct >= 0 ? '#f0d8aa' : '#d8b8b2';
         const entry: TrafficParticleDatum = {
           id: `${trace.id}-P-${i}`,
@@ -2590,11 +2851,11 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     arterialTrafficRef.current = arterialTrafficParticles;
 
     const maxRadius = Math.max(
-      30,
+      layout.cityRadius,
       ...snapshot.items
         .map((item) => states.get(item.symbol))
         .filter((state): state is TopCoinSymbolState => Boolean(state))
-        .map((state) => Math.hypot(state.x, state.z) + state.baseTarget * 2.8)
+        .map((state) => Math.hypot(state.xTarget, state.zTarget) + state.baseTarget * 2.8)
     );
     const maxHeight = Math.max(
       24,
@@ -2616,8 +2877,16 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       asOfIso: snapshot.asOf > 0 ? new Date(snapshot.asOf).toISOString() : '',
       symbols: snapshot.debug.symbols,
       fetchedAt: snapshot.debug.fetchedAt,
+      lastHash: snapshot.debug.lastHash,
+      refreshAgeSec: snapshot.debug.refreshAgeSec,
       lastError: snapshot.debug.lastError,
       lastFetchOk: snapshot.debug.lastFetchOk,
+      logosMissing: snapshot.debug.logosMissing,
+      logosAttempted: snapshot.debug.logosAttempted,
+      logosDownloaded: snapshot.debug.logosDownloaded,
+      layoutIters: layout.layoutIters,
+      minSeparation: layout.minSeparation,
+      overlapFix: layout.overlapFix,
       topGainer: snapshot.stats.topGainer,
       topLoser: snapshot.stats.topLoser,
       topVolume: snapshot.stats.topVolume
@@ -2639,6 +2908,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       moodRef.current = easeTowards(moodRef.current, moodTargetRef.current, 2.8, dt);
 
       for (const [symbol, state] of statesRef.current) {
+        const prevX = state.x;
+        const prevZ = state.z;
         const prevHeight = state.height;
         const prevBase = state.base;
         const prevPct = state.pct;
@@ -2647,6 +2918,9 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         const prevGlow = state.glowStrength;
         const prevOpacity = state.opacity;
 
+        const smoothAlpha = Number.isFinite(state.smoothAlpha) ? state.smoothAlpha : 3.8;
+        state.x = easeTowards(state.x, state.xTarget, smoothAlpha, dt);
+        state.z = easeTowards(state.z, state.zTarget, smoothAlpha, dt);
         state.height = easeTowards(state.height, state.heightTarget, 4.2, dt);
         state.base = easeTowards(state.base, state.baseTarget, 3.6, dt);
         state.pct = easeTowards(state.pct, state.pctTarget, 3.4, dt);
@@ -2662,6 +2936,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         }
 
         if (
+          Math.abs(state.x - prevX) > 0.001 ||
+          Math.abs(state.z - prevZ) > 0.001 ||
           Math.abs(state.height - prevHeight) > 0.001 ||
           Math.abs(state.base - prevBase) > 0.001 ||
           Math.abs(state.pct - prevPct) > 0.001 ||
@@ -2694,19 +2970,26 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
 
     const out: TowerDatum[] = [];
     for (const state of list) {
-      const pctMagnitude = MathUtils.clamp(Math.abs(state.pct) / Math.max(1, debugRef.current.topGainer.pct || 1), 0, 1);
+      const pctMagnitude = MathUtils.clamp(Math.abs(state.pct) / Math.max(1, Math.abs(debugRef.current.topGainer.pct) || 1), 0, 1);
       const isPositive = state.pct >= 0;
       const accent = isPositive ? new Color('#91c88f') : new Color('#c67d73');
       const glow = TRACE_ORANGE.clone().lerp(accent, 0.32 + pctMagnitude * 0.4);
       if (state.isTopLoser) {
         glow.lerp(new Color('#7aa6d9'), 0.58);
       }
+      if (state.isTopGainer) {
+        glow.lerp(new Color('#ffd98f'), 0.34);
+      }
       const core = CORE_GRAPHITE.clone().lerp(CORE_GRAPHITE_HI, 0.26 + pctMagnitude * 0.28);
+      if (state.isTopLoser) {
+        core.lerp(new Color('#8da5bb'), 0.18);
+      }
       const districtTint = TOP_COINS_DISTRICT_TINTS[state.districtId % TOP_COINS_DISTRICT_TINTS.length] ?? '#ead8bb';
       const baseAspect = MathUtils.lerp(0.82, 1.24, hashUnitString(state.symbol, 13));
       const sqrtAspect = Math.sqrt(baseAspect);
-      const baseW = MathUtils.clamp(state.base * sqrtAspect, 0.82, 5.8);
-      const baseD = MathUtils.clamp(state.base / sqrtAspect, 0.82, 5.8);
+      const topVolumeBoost = state.isTopVolume ? 1.14 : 1;
+      const baseW = MathUtils.clamp(state.base * sqrtAspect * topVolumeBoost, 0.82, 6.4);
+      const baseD = MathUtils.clamp(state.base / sqrtAspect * topVolumeBoost, 0.82, 6.4);
       out.push({
         sequence: state.sequence,
         x: state.x,
@@ -2723,11 +3006,11 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         coreColor: `#${core.getHexString()}`,
         glowColor: `#${glow.getHexString()}`,
         glowStrength: state.glowStrength * MathUtils.clamp(state.opacity, 0, 1),
-        bandCount: state.isTopGainer || state.rank <= 3 ? 4 : state.rank <= 16 ? 3 : 2,
-        heightScore: MathUtils.clamp(Math.abs(state.pct) / Math.max(1, debugRef.current.topGainer.pct || 1), 0, 1),
-        isHero: state.isTopGainer || state.isTopLoser || state.rank <= 3,
-        heroMult: state.isTopGainer ? 1.24 : state.isTopLoser ? 1.1 : state.rank <= 3 ? 1.08 : 1,
-        capGlowBoost: state.isTopGainer ? 1.58 : state.isTopLoser ? 1.28 : 1.06,
+        bandCount: state.isTopGainer || state.isTopVolume || state.rank <= 3 ? 4 : state.rank <= 16 ? 3 : 2,
+        heightScore: MathUtils.clamp(Math.abs(state.pct) / Math.max(1, Math.abs(debugRef.current.topGainer.pct) || 1), 0, 1),
+        isHero: state.isTopGainer || state.isTopLoser || state.isTopVolume || state.rank <= 3,
+        heroMult: state.isTopGainer ? 1.24 : state.isTopLoser ? 1.1 : state.isTopVolume ? 1.14 : state.rank <= 3 ? 1.08 : 1,
+        capGlowBoost: state.isTopGainer ? 1.58 : state.isTopLoser ? 1.28 : state.isTopVolume ? 1.34 : 1.06,
         heroMode: state.isTopGainer ? 'guarantee' : state.rank <= 3 ? 'roll' : 'none',
         intensity: MathUtils.clamp(Math.abs(state.pct) / 12, 0, 1),
         imbalance: MathUtils.clamp(state.pct / 12, -1, 1),
@@ -2751,7 +3034,11 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         priceChangePercent: state.pct,
         quoteVolume24h: state.quoteVolume,
         lastPrice: state.lastPrice,
-        rank: state.rank
+        rank: state.rank,
+        logoPath: state.logoPath,
+        isTopGainer: state.isTopGainer,
+        isTopLoser: state.isTopLoser,
+        isTopVolume: state.isTopVolume
       });
     }
 
@@ -3505,6 +3792,222 @@ function HoverTowerLabel({ tower }: { tower: TowerDatum }) {
   );
 }
 
+const topCoinLogoTextureCache = new Map<string, Texture | null>();
+const topCoinLogoTextureInflight = new Map<string, Promise<Texture | null>>();
+const topCoinTickerTextureCache = new Map<string, CanvasTexture>();
+const topCoinLogoLoader = new TextureLoader();
+
+function resolveTopCoinLogoUrl(logoPath: string) {
+  if (/^https?:\/\//i.test(logoPath)) return null;
+  const base = import.meta.env.BASE_URL || '/';
+  const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;
+  if (logoPath.startsWith('/')) {
+    return `${normalizedBase}${logoPath}`;
+  }
+  return `${normalizedBase}/${logoPath}`;
+}
+
+function getTopCoinTickerTexture(symbol: string) {
+  const key = symbol.trim().toUpperCase() || 'N/A';
+  const existing = topCoinTickerTextureCache.get(key);
+  if (existing) return existing;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    const fallback = finalizeCanvasTexture(new CanvasTexture(canvas));
+    topCoinTickerTextureCache.set(key, fallback);
+    return fallback;
+  }
+
+  const center = canvas.width * 0.5;
+  const radius = canvas.width * 0.45;
+  const ring = canvas.width * 0.49;
+  const grad = ctx.createRadialGradient(center, center, canvas.width * 0.12, center, center, ring);
+  grad.addColorStop(0, 'rgba(28,32,40,0.98)');
+  grad.addColorStop(1, 'rgba(9,11,14,0.96)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.beginPath();
+  ctx.arc(center, center, ring, 0, Math.PI * 2);
+  ctx.lineWidth = 8;
+  ctx.strokeStyle = 'rgba(247,147,26,0.82)';
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(center, center, radius, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(247,147,26,0.16)';
+  ctx.fill();
+
+  ctx.fillStyle = '#fff7ea';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const label = key.length > 7 ? `${key.slice(0, 6)}…` : key;
+  ctx.font = `700 ${Math.max(34, Math.floor(86 - Math.max(0, label.length - 3) * 6))}px ui-sans-serif, system-ui, sans-serif`;
+  ctx.fillText(label, center, center);
+
+  const texture = finalizeCanvasTexture(new CanvasTexture(canvas));
+  topCoinTickerTextureCache.set(key, texture);
+  return texture;
+}
+
+function loadTopCoinLogoTexture(logoPath: string) {
+  const cached = topCoinLogoTextureCache.get(logoPath);
+  if (cached !== undefined) return Promise.resolve(cached);
+  const inFlight = topCoinLogoTextureInflight.get(logoPath);
+  if (inFlight) return inFlight;
+
+  const promise = new Promise<Texture | null>((resolve) => {
+    const url = resolveTopCoinLogoUrl(logoPath);
+    if (!url) {
+      topCoinLogoTextureCache.set(logoPath, null);
+      topCoinLogoTextureInflight.delete(logoPath);
+      resolve(null);
+      return;
+    }
+    topCoinLogoLoader.load(
+      url,
+      (texture) => {
+        texture.colorSpace = SRGBColorSpace;
+        texture.minFilter = LinearFilter;
+        texture.magFilter = LinearFilter;
+        texture.needsUpdate = true;
+        topCoinLogoTextureCache.set(logoPath, texture);
+        topCoinLogoTextureInflight.delete(logoPath);
+        resolve(texture);
+      },
+      undefined,
+      () => {
+        topCoinLogoTextureCache.set(logoPath, null);
+        topCoinLogoTextureInflight.delete(logoPath);
+        resolve(null);
+      }
+    );
+  });
+
+  topCoinLogoTextureInflight.set(logoPath, promise);
+  return promise;
+}
+
+function useTopCoinDiscTexture(logoPath: string | null | undefined, symbol: string | undefined) {
+  const fallback = useMemo(() => getTopCoinTickerTexture(symbol ?? 'N/A'), [symbol]);
+  const [texture, setTexture] = useState<Texture>(fallback);
+
+  useEffect(() => {
+    let mounted = true;
+    if (!logoPath) {
+      setTexture(fallback);
+      return () => {
+        mounted = false;
+      };
+    }
+
+    const cached = topCoinLogoTextureCache.get(logoPath);
+    if (cached !== undefined) {
+      setTexture(cached ?? fallback);
+      return () => {
+        mounted = false;
+      };
+    }
+
+    loadTopCoinLogoTexture(logoPath).then((loaded) => {
+      if (!mounted) return;
+      setTexture(loaded ?? fallback);
+    });
+
+    return () => {
+      mounted = false;
+    };
+  }, [fallback, logoPath]);
+
+  return texture;
+}
+
+function TopCoinLogoDisc({
+  tower,
+  focusMode,
+  isHovered
+}: {
+  tower: TowerDatum;
+  focusMode: boolean;
+  isHovered: boolean;
+}) {
+  const { camera } = useThree();
+  const groupRef = useRef<Group>(null);
+  const discRef = useRef<Mesh>(null);
+  const ringRef = useRef<Mesh>(null);
+  const bodyRef = useRef<Mesh>(null);
+  const texture = useTopCoinDiscTexture(tower.logoPath, tower.symbol);
+
+  useFrame(({ clock }, delta) => {
+    const g = groupRef.current;
+    if (!g) return;
+    const t = clock.getElapsedTime() + tower.sequence * 0.015;
+    const bob = Math.sin(t * 1.14) * 0.11;
+    g.position.set(tower.x, tower.height + 1.2 + bob, tower.z);
+    g.rotation.y += delta * 0.28;
+
+    const distance = camera.position.distanceTo(g.position);
+    const rankScale = tower.rank ? MathUtils.clamp(1.08 - tower.rank / 360, 0.78, 1.1) : 1;
+    const scale = MathUtils.clamp((0.82 + distance * 0.0056) * rankScale, 0.76, 2.35);
+    g.scale.set(scale, scale, scale);
+
+    const dimFactor = focusMode && !isHovered ? FOCUS_NON_HOVER_DIM : 1;
+    const hoverBoost = isHovered ? 1.2 : 1;
+    const bodyMat = bodyRef.current?.material as { opacity?: number } | undefined;
+    if (bodyMat) bodyMat.opacity = MathUtils.damp(bodyMat.opacity ?? 0.72, 0.72 * dimFactor * hoverBoost, 8, delta);
+    const discMat = discRef.current?.material as { opacity?: number } | undefined;
+    if (discMat) discMat.opacity = MathUtils.damp(discMat.opacity ?? 0.96, 0.96 * dimFactor * hoverBoost, 9, delta);
+    const ringMat = ringRef.current?.material as { opacity?: number } | undefined;
+    if (ringMat) ringMat.opacity = MathUtils.damp(ringMat.opacity ?? 0.34, 0.34 * dimFactor * hoverBoost, 8, delta);
+  });
+
+  if (tower.mode !== 'top200') return null;
+
+  return (
+    <group ref={groupRef} position={[tower.x, tower.height + 1.2, tower.z]} renderOrder={6.95}>
+      <mesh ref={bodyRef} rotation={[-Math.PI / 2, 0, 0]} renderOrder={6.951}>
+        <cylinderGeometry args={[0.62, 0.62, 0.08, 24]} />
+        <meshBasicMaterial
+          color={tower.isTopLoser ? '#6f8fb5' : tower.isTopGainer ? '#f3bf74' : '#d8b07c'}
+          transparent
+          opacity={0.72}
+          toneMapped={false}
+          depthTest
+          depthWrite={false}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+      <mesh ref={discRef} position={[0, 0.045, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={6.952}>
+        <circleGeometry args={[0.48, 32]} />
+        <meshBasicMaterial
+          map={texture}
+          transparent
+          opacity={0.96}
+          toneMapped={false}
+          depthTest
+          depthWrite={false}
+        />
+      </mesh>
+      <mesh ref={ringRef} position={[0, 0.055, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={6.953}>
+        <torusGeometry args={[0.56, 0.03, 8, 42]} />
+        <meshBasicMaterial
+          color={tower.isTopGainer ? '#f9c786' : tower.isTopLoser ? '#7ca5d8' : '#f1d2a4'}
+          transparent
+          opacity={0.34}
+          toneMapped={false}
+          depthTest
+          depthWrite={false}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+    </group>
+  );
+}
+
 function HoverProjectionTracker({
   tower,
   onHudUpdate
@@ -3772,6 +4275,8 @@ function AnimatedHoloTower({
   const shellRefs = useRef<Array<Mesh | null>>([]);
   const edgeRefs = useRef<Array<Mesh | null>>([]);
   const crownRef = useRef<Mesh>(null);
+  const topLoserHazeRef = useRef<Mesh>(null);
+  const topVolumeBandRef = useRef<Mesh>(null);
   const bandRefs = useRef<Array<Mesh | null>>([]);
   const microBandRefs = useRef<Array<Mesh | null>>([]);
   const antennaTipRefs = useRef<Array<Mesh | null>>([]);
@@ -3902,6 +4407,28 @@ function AnimatedHoloTower({
       const crownTarget =
         CROWN_OPACITY * tower.glowStrength * tower.capGlowBoost * birthGlowAlpha * focusDim * hoverBoost * (isTallest ? 1.06 : 1);
       crownMat.opacity = MathUtils.damp(crownMat.opacity ?? 0, MathUtils.clamp(crownTarget, 0, 1), 10, delta);
+    }
+    const loserHazeMat = topLoserHazeRef.current?.material as { opacity?: number; color?: Color } | undefined;
+    if (loserHazeMat?.color) {
+      loserHazeMat.color.copy(tempColorA.set('#6f95c8').lerp(tempColorB.set('#9ec1e9'), hoverMixRef.current * 0.42));
+    }
+    if (loserHazeMat) {
+      const loserTarget =
+        tower.mode === 'top200' && tower.isTopLoser
+          ? 0.22 * birthGlowAlpha * focusDim * MathUtils.lerp(1, 1.14, hoverMixRef.current)
+          : 0;
+      loserHazeMat.opacity = MathUtils.damp(loserHazeMat.opacity ?? 0, loserTarget, 9, delta);
+    }
+    const volumeBandMat = topVolumeBandRef.current?.material as { opacity?: number; color?: Color } | undefined;
+    if (volumeBandMat?.color) {
+      volumeBandMat.color.copy(tempColorA.set('#f9d39c').lerp(BTC_ORANGE, 0.2 + hoverMixRef.current * 0.5));
+    }
+    if (volumeBandMat) {
+      const volumeTarget =
+        tower.mode === 'top200' && tower.isTopVolume
+          ? 0.3 * birthGlowAlpha * focusDim * MathUtils.lerp(1, 1.1, hoverMixRef.current)
+          : 0;
+      volumeBandMat.opacity = MathUtils.damp(volumeBandMat.opacity ?? 0, volumeTarget, 9, delta);
     }
 
     for (let i = 0; i < segments.length; i++) {
@@ -4260,7 +4787,52 @@ function AnimatedHoloTower({
           })
         : null}
 
-      {isTallest ? <TallestBtcDecals tower={tower} focusMode={focusMode} isHovered={isHovered} /> : null}
+      {tower.mode === 'top200' ? <TopCoinLogoDisc tower={tower} focusMode={focusMode} isHovered={isHovered} /> : null}
+      {isTallest && tower.mode !== 'top200' ? <TallestBtcDecals tower={tower} focusMode={focusMode} isHovered={isHovered} /> : null}
+      <mesh
+        ref={topLoserHazeRef}
+        position={[0, 0.12, 0]}
+        rotation={[Math.PI, 0, 0]}
+        renderOrder={6.11}
+        visible={tower.mode === 'top200' && Boolean(tower.isTopLoser)}
+      >
+        <coneGeometry args={[Math.max(0.35, Math.max(tower.baseW, tower.baseD) * 0.46), 1.1, 28, 1, true]} />
+        <meshBasicMaterial
+          color="#6f95c8"
+          transparent
+          opacity={0}
+          toneMapped={false}
+          depthTest
+          depthWrite={false}
+          side={DoubleSide}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+      <mesh
+        ref={topVolumeBandRef}
+        position={[0, 0.16, 0]}
+        rotation={[Math.PI / 2, 0, 0]}
+        renderOrder={6.19}
+        visible={tower.mode === 'top200' && Boolean(tower.isTopVolume)}
+      >
+        <torusGeometry
+          args={[
+            Math.max(0.38, Math.max(tower.baseW, tower.baseD) * 0.58),
+            Math.max(0.03, Math.max(tower.baseW, tower.baseD) * 0.045),
+            12,
+            56
+          ]}
+        />
+        <meshBasicMaterial
+          color="#f9d39c"
+          transparent
+          opacity={0}
+          toneMapped={false}
+          depthTest
+          depthWrite={false}
+          blending={AdditiveBlending}
+        />
+      </mesh>
 
       <mesh ref={crownRef} position={[0, tower.height + 0.08, 0]} renderOrder={6.2}>
         <boxGeometry
@@ -6289,6 +6861,7 @@ export function MinimalVizSandbox({
   const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
   const [selectedTowerSequence, setSelectedTowerSequence] = useState<number | null>(null);
   const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const topDebug = mode === 'top200' ? topData.topCoinsDebug : null;
 
   useEffect(() => {
@@ -6315,6 +6888,15 @@ export function MinimalVizSandbox({
       setHoverHud(HOVER_HUD_HIDDEN);
     }
   }, [hoveredTowerSequence, hoverHud.visible]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNowTick(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const hoveredTower = useMemo(
     () => (hoveredTowerSequence == null ? null : towers.find((tower) => tower.sequence === hoveredTowerSequence) ?? null),
@@ -6509,20 +7091,42 @@ export function MinimalVizSandbox({
                 <span>{overlay.topDebug.asOfIso || 'n/a'}</span>
               </div>
               <div className="minimal-viz__row">
-                <span>Fetch</span>
-                <span>{overlay.topDebug.lastFetchOk ? 'ok' : 'error'}</span>
+                <span>LastFetchOk</span>
+                <span>{overlay.topDebug.lastFetchOk ? 'yes' : 'no'}</span>
               </div>
               <div className="minimal-viz__row">
                 <span>AsOfAge</span>
                 <span>
                   {overlay.topDebug.asOfMs > 0
-                    ? `${fmtFixed(Math.max(0, Date.now() - overlay.topDebug.asOfMs) / 1000, 1)}s`
+                    ? `${fmtFixed(Math.max(0, nowTick - overlay.topDebug.asOfMs) / 1000, 1)}s`
                     : 'n/a'}
                 </span>
               </div>
               <div className="minimal-viz__row">
-                <span>RefreshAge</span>
-                <span>{fmtFixed(Math.max(0, Date.now() - overlay.topDebug.fetchedAt) / 1000, 1)}s</span>
+                <span>FetchAge</span>
+                <span>{fmtFixed(Math.max(0, nowTick - overlay.topDebug.fetchedAt) / 1000, 1)}s</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>LastHash</span>
+                <span>{overlay.topDebug.lastHash}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>LogosMissing</span>
+                <span>
+                  {overlay.topDebug.logosMissing}/{overlay.topDebug.logosAttempted}
+                </span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>LayoutIters</span>
+                <span>{overlay.topDebug.layoutIters}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>MinSep</span>
+                <span>{fmtFixed(overlay.topDebug.minSeparation, 2)}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>OverlapFix</span>
+                <span>{overlay.topDebug.overlapFix}</span>
               </div>
               <div className="minimal-viz__row">
                 <span>Top+</span>

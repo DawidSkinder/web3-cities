@@ -30,13 +30,13 @@ jobs:
 
       - name: Commit snapshot if changed
         run: |
-          if git diff --quiet -- public/data/top-coins.json; then
+          if git diff --quiet -- public/data/top-coins.json public/data/logos; then
             echo "No snapshot changes."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add public/data/top-coins.json
+          git add public/data/top-coins.json public/data/logos
           git commit -m "chore(data): update top coins snapshot"
           git push

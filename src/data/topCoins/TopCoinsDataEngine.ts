@@ -15,10 +15,19 @@ function resolveDefaultEndpoint() {
   return `${base.endsWith('/') ? base : `${base}/`}data/top-coins.json`;
 }
 
-function parsePollMs(raw: unknown) {
+function parsePollMs(raw: unknown, minMs: number, fallbackMs: number) {
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return 60_000;
-  return Math.max(30_000, Math.floor(parsed));
+  if (!Number.isFinite(parsed)) return fallbackMs;
+  return Math.max(minMs, Math.floor(parsed));
+}
+
+function resolveTopPollOverrideMs() {
+  if (typeof window === 'undefined') return null;
+  const raw = new URLSearchParams(window.location.search).get('topPoll');
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds)) return null;
+  return Math.max(5_000, Math.floor(seconds * 1000));
 }
 
 function parseLimit(raw: unknown) {
@@ -54,6 +63,13 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function parseLogoPath(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+  return normalized;
+}
+
 function parseTopCoinItem(raw: unknown, fallbackRank: number): TopCoinItem | null {
   const row = asRecord(raw);
   if (!row) return null;
@@ -72,7 +88,8 @@ function parseTopCoinItem(raw: unknown, fallbackRank: number): TopCoinItem | nul
     baseVolume: Math.max(0, asNumber(row.baseVolume, 0)),
     tradeCount: Math.max(0, Math.floor(asNumber(row.tradeCount, 0))),
     highPrice: asNumber(row.highPrice, 0),
-    lowPrice: asNumber(row.lowPrice, 0)
+    lowPrice: asNumber(row.lowPrice, 0),
+    logoPath: parseLogoPath(row.logoPath)
   };
 }
 
@@ -102,38 +119,25 @@ function parsePayload(raw: unknown, limit: number): TopCoinsStaticSnapshotFile {
     window: asString(payload.window, '24h'),
     baseQuote: asString(payload.baseQuote, 'USDT').toUpperCase(),
     method: asString(payload.method, 'top200-by-quoteVolume'),
+    logosAttempted: Math.max(0, Math.floor(asNumber(payload.logosAttempted, parsedItems.length))),
+    logosDownloaded: Math.max(0, Math.floor(asNumber(payload.logosDownloaded, 0))),
+    logosMissing: Math.max(0, Math.floor(asNumber(payload.logosMissing, 0))),
     items: parsedItems.slice(0, limit)
   };
-}
-
-function sameItems(a: TopCoinItem[], b: TopCoinItem[]) {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    const left = a[i];
-    const right = b[i];
-    if (!left || !right) return false;
-    if (
-      left.rank !== right.rank ||
-      left.symbol !== right.symbol ||
-      left.baseAsset !== right.baseAsset ||
-      left.quoteAsset !== right.quoteAsset ||
-      left.lastPrice !== right.lastPrice ||
-      left.priceChangePercent !== right.priceChangePercent ||
-      left.quoteVolume !== right.quoteVolume ||
-      left.baseVolume !== right.baseVolume ||
-      left.tradeCount !== right.tradeCount ||
-      left.highPrice !== right.highPrice ||
-      left.lowPrice !== right.lowPrice
-    ) {
-      return false;
-    }
-  }
-  return true;
 }
 
 function normalizeError(error: unknown) {
   if (error instanceof Error) return error.message;
   return 'snapshot-unknown-error';
+}
+
+function hashStringFnv1a(input: string) {
+  let hash = 2166136261 >>> 0;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `h${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 export class TopCoinsDataEngine {
@@ -152,10 +156,19 @@ export class TopCoinsDataEngine {
   private sessionMaxAbsPct = 0;
   private lastSnapshot: TopCoinsSnapshot | null = null;
 
+  private lastFetchAt = 0;
+  private lastAsOf = 0;
+  private lastHash = 'none';
+
   constructor(config: TopCoinsDataEngineConfig = {}) {
     this.endpoint = config.endpoint?.trim() || resolveDefaultEndpoint();
     this.limit = parseLimit(config.limit ?? import.meta.env.VITE_TOP_COINS_LIMIT);
-    this.pollMs = parsePollMs(config.pollMs ?? import.meta.env.VITE_TOP_COINS_POLL_MS);
+
+    const topPollOverrideMs = resolveTopPollOverrideMs();
+    const configuredPoll = config.pollMs ?? import.meta.env.VITE_TOP_COINS_POLL_MS;
+    this.pollMs =
+      topPollOverrideMs ??
+      parsePollMs(configuredPoll, 30_000, 30_000);
   }
 
   start() {
@@ -166,6 +179,9 @@ export class TopCoinsDataEngine {
     this.sessionMaxQuoteVolume = 0;
     this.sessionMaxAbsPct = 0;
     this.lastSnapshot = null;
+    this.lastFetchAt = 0;
+    this.lastAsOf = 0;
+    this.lastHash = 'none';
 
     void this.pollNow();
     this.timer = window.setInterval(() => {
@@ -209,13 +225,15 @@ export class TopCoinsDataEngine {
   private shouldEmit(next: TopCoinsSnapshotSeed) {
     if (!this.lastSnapshot) return true;
     if (this.lastSnapshot.asOf !== next.asOf) return true;
-    if (!sameItems(this.lastSnapshot.items, next.items)) return true;
+    if (this.lastSnapshot.debug.lastHash !== next.debug.lastHash) return true;
     if (this.lastSnapshot.debug.lastError !== next.debug.lastError) return true;
     if (this.lastSnapshot.debug.lastFetchOk !== next.debug.lastFetchOk) return true;
+    if (this.lastSnapshot.debug.logosMissing !== next.debug.logosMissing) return true;
     return false;
   }
 
   private buildEmptySnapshot(lastError: string): TopCoinsSnapshotSeed {
+    const now = Date.now();
     return {
       kind: 'top-coins-snapshot',
       asOf: 0,
@@ -234,11 +252,18 @@ export class TopCoinsDataEngine {
       },
       debug: {
         symbols: 0,
-        fetchedAt: Date.now(),
+        fetchedAt: now,
+        lastFetchAt: now,
+        lastAsOf: 0,
+        lastHash: this.lastHash,
+        refreshAgeSec: 0,
         pollMs: this.pollMs,
         endpoint: this.endpoint,
         lastError,
-        lastFetchOk: false
+        lastFetchOk: false,
+        logosMissing: 0,
+        logosAttempted: 0,
+        logosDownloaded: 0
       }
     };
   }
@@ -255,12 +280,17 @@ export class TopCoinsDataEngine {
         if (error instanceof DOMException && error.name === 'AbortError') return;
 
         const message = normalizeError(error);
+        const now = Date.now();
+
         if (this.lastSnapshot) {
+          const lastSuccessfulFetchAt = this.lastSnapshot.debug.lastFetchAt || this.lastFetchAt || now;
           const next: TopCoinsSnapshotSeed = {
             ...this.lastSnapshot,
             debug: {
               ...this.lastSnapshot.debug,
-              fetchedAt: Date.now(),
+              fetchedAt: now,
+              lastFetchAt: lastSuccessfulFetchAt,
+              refreshAgeSec: Math.max(0, (now - Math.max(lastSuccessfulFetchAt, 1)) / 1000),
               lastError: message,
               lastFetchOk: false
             }
@@ -281,7 +311,11 @@ export class TopCoinsDataEngine {
   }
 
   private async fetchAndEmit(signal: AbortSignal) {
-    const response = await fetch(this.endpoint, {
+    const now = Date.now();
+    const url = new URL(this.endpoint, window.location.origin);
+    url.searchParams.set('v', String(now));
+
+    const response = await fetch(url.toString(), {
       method: 'GET',
       headers: {
         Accept: 'application/json'
@@ -294,9 +328,12 @@ export class TopCoinsDataEngine {
       throw new Error(`snapshot-http-${response.status}`);
     }
 
+    const body = await response.text();
+    const bodyHash = hashStringFnv1a(body);
+
     let json: unknown;
     try {
-      json = await response.json();
+      json = JSON.parse(body);
     } catch {
       throw new Error('snapshot-invalid-json');
     }
@@ -316,6 +353,10 @@ export class TopCoinsDataEngine {
       ...items.map((item) => item.quoteVolume)
     );
     this.sessionMaxAbsPct = Math.max(this.sessionMaxAbsPct, ...items.map((item) => Math.abs(item.priceChangePercent)));
+
+    this.lastFetchAt = now;
+    this.lastAsOf = payload.asOf;
+    this.lastHash = bodyHash;
 
     const next: TopCoinsSnapshotSeed = {
       kind: 'top-coins-snapshot',
@@ -344,13 +385,30 @@ export class TopCoinsDataEngine {
       },
       debug: {
         symbols: items.length,
-        fetchedAt: Date.now(),
+        fetchedAt: now,
+        lastFetchAt: now,
+        lastAsOf: payload.asOf,
+        lastHash: bodyHash,
+        refreshAgeSec: Math.max(0, (now - payload.asOf) / 1000),
         pollMs: this.pollMs,
         endpoint: this.endpoint,
         lastError: null,
-        lastFetchOk: true
+        lastFetchOk: true,
+        logosMissing: payload.logosMissing ?? 0,
+        logosAttempted: payload.logosAttempted ?? items.length,
+        logosDownloaded: payload.logosDownloaded ?? 0
       }
     };
+
+    const changed =
+      !this.lastSnapshot ||
+      this.lastSnapshot.asOf !== payload.asOf ||
+      this.lastSnapshot.debug.lastHash !== bodyHash ||
+      !this.lastSnapshot.debug.lastFetchOk ||
+      this.lastSnapshot.debug.lastError != null;
+    if (!changed) {
+      return;
+    }
 
     if (this.shouldEmit(next)) {
       this.emit(next);
