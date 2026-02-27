@@ -1138,7 +1138,9 @@ function nextParkInterval(seed: number) {
   return PARK_CADENCE_BASE + Math.round((hash01(seed, 7021) * 2 - 1) * PARK_CADENCE_JITTER);
 }
 
-function parkConflictsTower(x: number, z: number, w: number, d: number, tower: TowerDatum) {
+type ParkTowerCollisionTarget = Pick<TowerDatum, 'x' | 'z' | 'baseW' | 'baseD' | 'footprintX' | 'footprintZ'>;
+
+function parkConflictsTower(x: number, z: number, w: number, d: number, tower: ParkTowerCollisionTarget) {
   const dx = Math.abs(x - tower.x);
   const dz = Math.abs(z - tower.z);
   const towerHalfX = Math.max(tower.baseW, tower.footprintX) * 0.62;
@@ -2216,12 +2218,12 @@ const TOP_COINS_DISTRICT_TINTS = [
 const TOP_HEIGHT_SEA_LEVEL = 14;
 const TOP_HEIGHT_POSITIVE_RANGE = 42;
 const TOP_HEIGHT_NEGATIVE_RANGE = 9.4;
-const TOP_LAYOUT_PADDING = 1.15;
-const TOP_LAYOUT_INITIAL_ITERS = 56;
-const TOP_LAYOUT_REFRESH_ITERS = 18;
-const TOP_LAYOUT_SLOT_RING = 8;
-const TOP_LAYOUT_INNER_RADIUS = 18;
-const TOP_LAYOUT_RING_STEP = 7.6;
+const TOP_LAYOUT_PADDING = 1.4;
+const TOP_LAYOUT_INITIAL_ITERS = 64;
+const TOP_LAYOUT_REFRESH_ITERS = 20;
+const TOP_LAYOUT_SLOT_RING = 3;
+const TOP_LAYOUT_INNER_RADIUS = 22;
+const TOP_LAYOUT_RING_STEP = 8.6;
 const TOP_LAYOUT_EDGE_PAD = 5.2;
 
 type TopCoinsLayoutNode = {
@@ -2238,6 +2240,16 @@ type TopCoinsLayoutResult = {
   minSeparation: number;
   overlapFix: 'ok' | 'iterating';
   cityRadius: number;
+};
+
+type TopCoinsParkTower = ParkTowerCollisionTarget & {
+  sequence: number;
+  height: number;
+};
+
+type TopCoinsParkResult = {
+  parks: ParkDatum[];
+  trees: ParkTreeDatum[];
 };
 
 function hashString32(value: string) {
@@ -2431,6 +2443,143 @@ function buildTopCoinsLayoutTargets({
   };
 }
 
+function buildTopCoinsDecorativeParks({
+  towers,
+  cityRadius
+}: {
+  towers: TopCoinsParkTower[];
+  cityRadius: number;
+}): TopCoinsParkResult {
+  const parks: ParkDatum[] = [];
+  const trees: ParkTreeDatum[] = [];
+  if (!ENABLE_PARKS_V2 || towers.length < 20) {
+    return { parks, trees };
+  }
+
+  const desiredParks = Math.min(MAX_PARKS_VISIBLE, Math.max(2, Math.round(towers.length / 44)));
+  const attemptsMax = desiredParks * 40;
+  const now = Date.now();
+
+  for (let attempt = 0; attempt < attemptsMax && parks.length < desiredParks; attempt++) {
+    const seed = 81_001 + attempt * 137;
+    const angle = hash01(seed, 1) * Math.PI * 2;
+    const radialN = MathUtils.lerp(0.34, 0.9, hash01(seed, 3));
+    const radialJitter = (hash01(seed, 5) - 0.5) * MathUtils.lerp(6, 14, radialN);
+    const radial = Math.max(9, cityRadius * radialN + radialJitter);
+    const x = Math.cos(angle) * radial;
+    const z = Math.sin(angle) * radial;
+    const w = MathUtils.lerp(4.8, 8.6, hash01(seed, 7));
+    const d = MathUtils.lerp(4.4, 7.8, hash01(seed, 9));
+    const yaw = hash01(seed, 11) * Math.PI;
+    const radius = Math.max(w, d) * 0.58;
+
+    if (Math.hypot(x, z) > cityRadius * 1.02) continue;
+
+    let blocked = false;
+    for (let i = 0; i < towers.length; i++) {
+      if (parkConflictsTower(x, z, w, d, towers[i])) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+    for (let i = 0; i < parks.length; i++) {
+      if (parkConflictsPark(x, z, w, d, parks[i])) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+
+    const patchColor = CORE_GRAPHITE.clone().lerp(CORE_GRAPHITE_HI, 0.48).lerp(BTC_ORANGE, 0.04);
+    const edgeColor = BTC_SELL_WARM.clone().lerp(BTC_PALE_AMBER, 0.3).lerp(BTC_ORANGE, 0.22);
+    const treeStart = trees.length;
+    const requestedTreeCount = Math.max(
+      10,
+      Math.round(MathUtils.lerp(14, 30, hash01(seed, 13)) * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.72 : 1))
+    );
+
+    for (let i = 0; i < requestedTreeCount; i++) {
+      let localX = 0;
+      let localZ = 0;
+      let hasPoint = false;
+      for (let a = 0; a < 6; a++) {
+        const px = (hash01(seed, i, a, 17) - 0.5) * (w * 0.82);
+        const pz = (hash01(seed, i, a, 19) - 0.5) * (d * 0.82);
+        if (Math.abs(px) < w * 0.13 && hash01(seed, i, a, 23) > 0.24) continue;
+        if (Math.abs(pz) < d * 0.11 && hash01(seed, i, a, 29) > 0.72) continue;
+        localX = px;
+        localZ = pz;
+        hasPoint = true;
+        break;
+      }
+      if (!hasPoint) continue;
+
+      const cs = Math.cos(yaw);
+      const sn = Math.sin(yaw);
+      const worldX = x + localX * cs - localZ * sn;
+      const worldZ = z + localX * sn + localZ * cs;
+      if (Math.hypot(worldX, worldZ) > cityRadius * 1.06) continue;
+
+      trees.push({
+        x: worldX,
+        z: worldZ,
+        yaw: hash01(seed, i, 31) * Math.PI * 2,
+        trunkH: (() => {
+          const tallRoll = hash01(seed, i, 37);
+          const tallMul = tallRoll > 0.9 ? MathUtils.lerp(1.22, 1.58, hash01(seed, i, 41)) : tallRoll > 0.72 ? 1.1 : 1;
+          return MathUtils.lerp(0.24, 0.56, hash01(seed, i, 43)) * tallMul;
+        })(),
+        crownH: (() => {
+          const tallRoll = hash01(seed, i, 37);
+          const tallMul = tallRoll > 0.9 ? MathUtils.lerp(1.16, 1.4, hash01(seed, i, 47)) : tallRoll > 0.72 ? 1.06 : 1;
+          return MathUtils.lerp(0.46, 0.98, hash01(seed, i, 53)) * tallMul;
+        })(),
+        crownR: MathUtils.lerp(0.18, 0.42, hash01(seed, i, 59)) * MathUtils.lerp(0.9, 1.12, hash01(seed, i, 61)),
+        tintMix: hash01(seed, i, 67)
+      });
+    }
+
+    if (trees.length <= treeStart) continue;
+
+    let linkX: number | null = null;
+    let linkZ: number | null = null;
+    let linkDistBest = Infinity;
+    for (let i = 0; i < towers.length; i++) {
+      const t = towers[i];
+      const dist = Math.hypot(t.x - x, t.z - z);
+      if (dist < linkDistBest) {
+        linkDistBest = dist;
+        linkX = t.x;
+        linkZ = t.z;
+      }
+    }
+
+    const treeCount = trees.length - treeStart;
+    const fireflyCount = Math.max(4, Math.min(treeCount, Math.round(treeCount * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.45 : 0.8))));
+    parks.push({
+      id: `top-park-${parks.length}-${seed}`,
+      x,
+      z,
+      w,
+      d,
+      yaw,
+      patchColor: `#${patchColor.getHexString()}`,
+      edgeColor: `#${edgeColor.getHexString()}`,
+      seed,
+      radius,
+      fireflyCount,
+      linkX,
+      linkZ,
+      emittedAt: now,
+      treeStart,
+      treeCount
+    });
+  }
+
+  return { parks, trees };
+}
+
 function easeTowards(current: number, target: number, lambda: number, dtSec: number) {
   const t = 1 - Math.exp(-Math.max(0.001, lambda) * Math.max(0.0001, dtSec));
   return current + (target - current) * t;
@@ -2453,6 +2602,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
   const arterialTracesRef = useRef<TraceDatum[]>([]);
   const trafficRef = useRef<TrafficParticleDatum[]>([]);
   const arterialTrafficRef = useRef<TrafficParticleDatum[]>([]);
+  const parksRef = useRef<ParkDatum[]>([]);
+  const parkTreesRef = useRef<ParkTreeDatum[]>([]);
   const districtsRef = useRef<DistrictDatum[]>([]);
   const boundsRef = useRef<SandboxBounds>({ radius: 36, maxY: 42 });
   const moodRef = useRef(0.5);
@@ -2520,6 +2671,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         arterialTracesRef.current = [];
         trafficRef.current = [];
         arterialTrafficRef.current = [];
+        parksRef.current = [];
+        parkTreesRef.current = [];
         districtsRef.current = [];
         boundsRef.current = { radius: 36, maxY: 42 };
         setVersion((v) => v + 1);
@@ -2539,11 +2692,11 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       const item = snapshot.items[i];
       if (!item) continue;
       const volumeNorm = MathUtils.clamp(Math.log10(item.quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
-      let baseTarget = MathUtils.lerp(0.9, 4.8, Math.pow(volumeNorm, 0.72));
+      let baseTarget = MathUtils.lerp(0.74, 2.7, Math.pow(volumeNorm, 0.58));
       if (item.symbol === topVolumeSymbol) {
-        baseTarget *= 1.16;
+        baseTarget *= 1.08;
       }
-      baseBySymbol.set(item.symbol, MathUtils.clamp(baseTarget, 0.9, 6.2));
+      baseBySymbol.set(item.symbol, MathUtils.clamp(baseTarget, 0.74, 3.4));
     }
 
     const layout = buildTopCoinsLayoutTargets({
@@ -2572,7 +2725,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
 
       const volumeNorm = MathUtils.clamp(Math.log10(item.quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
       const nextHeight = mapPctToHeight(item.priceChangePercent, isTopGainer, isTopLoser);
-      const nextBase = baseBySymbol.get(item.symbol) ?? MathUtils.lerp(0.9, 4.8, Math.pow(volumeNorm, 0.72));
+      const nextBase = baseBySymbol.get(item.symbol) ?? MathUtils.lerp(0.74, 2.7, Math.pow(volumeNorm, 0.58));
       let nextGlowStrength = MathUtils.clamp(
         0.72 + volumeNorm * 0.78 + Math.min(0.42, Math.abs(item.priceChangePercent) * 0.012),
         0.72,
@@ -2869,6 +3022,33 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       maxY: maxHeight
     };
 
+    const parkTowerTargets: TopCoinsParkTower[] = [];
+    for (const item of snapshot.items) {
+      const state = states.get(item.symbol);
+      if (!state) continue;
+      const baseAspect = MathUtils.lerp(0.82, 1.24, hashUnitString(state.symbol, 13));
+      const sqrtAspect = Math.sqrt(baseAspect);
+      const topVolumeBoost = state.isTopVolume ? 1.08 : 1;
+      const baseW = MathUtils.clamp(state.baseTarget * sqrtAspect * topVolumeBoost, 0.72, 4.35);
+      const baseD = MathUtils.clamp(state.baseTarget / sqrtAspect * topVolumeBoost, 0.72, 4.35);
+      parkTowerTargets.push({
+        sequence: state.sequence,
+        x: state.xTarget,
+        z: state.zTarget,
+        height: state.heightTarget,
+        baseW,
+        baseD,
+        footprintX: MathUtils.clamp(baseW * 0.98, 0.7, 3.95),
+        footprintZ: MathUtils.clamp(baseD * 0.98, 0.7, 3.95)
+      });
+    }
+    const decorativeParks = buildTopCoinsDecorativeParks({
+      towers: parkTowerTargets,
+      cityRadius: boundsRef.current.radius
+    });
+    parksRef.current = decorativeParks.parks;
+    parkTreesRef.current = decorativeParks.trees;
+
     const totalBreadth = snapshot.stats.marketBreadth.positive + snapshot.stats.marketBreadth.negative;
     moodTargetRef.current = totalBreadth > 0 ? snapshot.stats.marketBreadth.positive / totalBreadth : 0.5;
 
@@ -2987,9 +3167,9 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       const districtTint = TOP_COINS_DISTRICT_TINTS[state.districtId % TOP_COINS_DISTRICT_TINTS.length] ?? '#ead8bb';
       const baseAspect = MathUtils.lerp(0.82, 1.24, hashUnitString(state.symbol, 13));
       const sqrtAspect = Math.sqrt(baseAspect);
-      const topVolumeBoost = state.isTopVolume ? 1.14 : 1;
-      const baseW = MathUtils.clamp(state.base * sqrtAspect * topVolumeBoost, 0.82, 6.4);
-      const baseD = MathUtils.clamp(state.base / sqrtAspect * topVolumeBoost, 0.82, 6.4);
+      const topVolumeBoost = state.isTopVolume ? 1.08 : 1;
+      const baseW = MathUtils.clamp(state.base * sqrtAspect * topVolumeBoost, 0.72, 4.35);
+      const baseD = MathUtils.clamp(state.base / sqrtAspect * topVolumeBoost, 0.72, 4.35);
       out.push({
         sequence: state.sequence,
         x: state.x,
@@ -2998,8 +3178,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         archetypeId: (state.sequence % 6) as TowerArchetypeId,
         baseW,
         baseD,
-        footprintX: MathUtils.clamp(baseW * 0.98, 0.8, 5.6),
-        footprintZ: MathUtils.clamp(baseD * 0.98, 0.8, 5.6),
+        footprintX: MathUtils.clamp(baseW * 0.98, 0.7, 3.95),
+        footprintZ: MathUtils.clamp(baseD * 0.98, 0.7, 3.95),
         taper: MathUtils.lerp(0.03, 0.16, hashUnitString(state.symbol, 29)),
         podiumRatio: MathUtils.lerp(0.12, 0.24, hashUnitString(state.symbol, 37)),
         crownRatio: MathUtils.lerp(0.08, 0.16, hashUnitString(state.symbol, 41)),
@@ -3069,8 +3249,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     arterialTraces: arterialTracesRef.current,
     trafficParticles: trafficRef.current,
     arterialTrafficParticles: arterialTrafficRef.current,
-    parks: [] as ParkDatum[],
-    parkTrees: [] as ParkTreeDatum[],
+    parks: parksRef.current,
+    parkTrees: parkTreesRef.current,
     districts: districtsRef.current,
     shockwaves: shockwavesRef.current,
     recordCeremonies: recordCeremoniesRef.current,
@@ -3079,9 +3259,9 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     latestHeightDebug: null as HeightDebugSnapshot | null,
     tallestTowerSequence,
     tallestTowerHeight,
-    parksAttempted: 0,
-    parksPlaced: 0,
-    lastParkSkipReason: 'n/a',
+    parksAttempted: parksRef.current.length,
+    parksPlaced: parksRef.current.length,
+    lastParkSkipReason: parksRef.current.length > 0 ? 'placed' : 'no-slot',
     topCoinsDebug: debugRef.current
   };
 }
