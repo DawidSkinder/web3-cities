@@ -2702,28 +2702,48 @@ function mapTopCoinTowerMetrics({
   isTopVolume: boolean;
 }) {
   const volumeNorm = MathUtils.clamp(Math.log10(quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
-  const moveNorm = MathUtils.clamp(Math.abs(pct) / 26, 0, 1);
-  const rankNorm = MathUtils.clamp(1 - (rank - 1) / 199, 0, 1);
+  const gainPct = Math.max(0, pct);
+  const lossPct = Math.max(0, -pct);
 
-  // Reuse BTC skyline curve feel: score -> pow(gamma) -> physical height.
-  let heightScore = MathUtils.clamp(volumeNorm * 0.52 + moveNorm * 0.38 + rankNorm * 0.1, 0, 1);
-  if (isTopGainer || isTopLoser) heightScore = Math.max(heightScore, 0.84);
-  if (isTopVolume) heightScore = Math.max(heightScore, 0.9);
+  // Dedicated Top Coins skyline scale:
+  // - Any losses quickly collapse toward micro towers.
+  // - Positive movers follow a steep nonlinear ramp so +20/+40/+60 become clear landmarks.
+  const minCityTower = 3.0;
+  const neutralTower = 4.4;
+  let height = minCityTower;
+  let sizeScore = 0.04;
 
-  let height = MIN_HEIGHT + (MAX_HEIGHT - MIN_HEIGHT) * Math.pow(heightScore, HEIGHT_GAMMA);
-  const pctBias = MathUtils.clamp(Math.abs(pct) / 30, 0, 1);
-  if (pct < 0) {
-    height *= MathUtils.lerp(0.62, 0.84, volumeNorm);
-  } else if (pct > 0) {
-    height *= MathUtils.lerp(1, 1.08, pctBias);
+  if (gainPct > 0) {
+    const gainCurve = Math.pow(Math.tanh(gainPct / 24), 1.35);
+    height = neutralTower + gainCurve * 77;
+    sizeScore = 0.12 + gainCurve * 0.74 + volumeNorm * 0.14;
+    if (rank <= 3) sizeScore += 0.05;
+  } else {
+    const lossQuick = MathUtils.clamp(lossPct / 1.0, 0, 1);
+    const residual = 1 - lossQuick;
+    height = minCityTower + residual * 1.35;
+    sizeScore = 0.04 + residual * 0.08 + volumeNorm * 0.04;
   }
-  if (isTopGainer) height *= 1.22;
-  if (isTopVolume) height *= 1.12;
-  if (isTopLoser) height *= 0.9;
 
-  let sizeScore = MathUtils.clamp(volumeNorm * 0.78 + heightScore * 0.18 + rankNorm * 0.04, 0, 1);
-  if (isTopVolume) sizeScore = Math.max(sizeScore, 0.95);
-  if (rank <= 3) sizeScore = Math.max(sizeScore, 0.86);
+  if (isTopGainer) {
+    height *= 1.12;
+    sizeScore += 0.08;
+  }
+  if (isTopLoser) {
+    height = Math.min(height, 3.2);
+    sizeScore = Math.min(sizeScore, 0.14);
+  }
+  if (isTopVolume) {
+    if (gainPct > 0) {
+      height *= 1.04;
+      sizeScore = Math.max(sizeScore, 0.58);
+    } else {
+      sizeScore = Math.min(0.22, sizeScore + 0.05);
+    }
+  }
+
+  sizeScore = MathUtils.clamp(sizeScore, 0.03, 1);
+  const heightScore = MathUtils.clamp((height - minCityTower) / Math.max(1, HERO_MAX_HEIGHT - minCityTower), 0, 1);
 
   return {
     height: MathUtils.clamp(height, TOWER_VISUAL_MIN_HEIGHT, HERO_MAX_HEIGHT),
@@ -4251,7 +4271,7 @@ function TopCoinLogoDisc({
   focusMode: boolean;
   isHovered: boolean;
 }) {
-  const { camera } = useThree();
+  const { camera, gl } = useThree();
   const groupRef = useRef<Group>(null);
   const discRef = useRef<Mesh>(null);
   const ringRef = useRef<Mesh>(null);
@@ -4259,6 +4279,13 @@ function TopCoinLogoDisc({
   const worldPosRef = useRef(new Vector3());
   const ticker = useMemo(() => getTopCoinTicker(tower.symbol, tower.baseAsset), [tower.baseAsset, tower.symbol]);
   const texture = useTopCoinDiscTexture(tower.logoPath, ticker);
+
+  useEffect(() => {
+    if (!texture) return;
+    const maxAniso = gl.capabilities.getMaxAnisotropy();
+    texture.anisotropy = Math.max(2, Math.min(8, maxAniso || 1));
+    texture.needsUpdate = true;
+  }, [gl, texture]);
 
   useFrame(({ clock }, delta) => {
     const g = groupRef.current;
