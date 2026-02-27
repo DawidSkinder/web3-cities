@@ -165,6 +165,7 @@ canvas {
     inset 0 1px 0 rgba(255, 255, 255, 0.03);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+  pointer-events: auto;
 }
 
 .minimal-viz__title {
@@ -194,4 +195,21 @@ canvas {
   text-align: right;
   color: rgba(236, 247, 255, 0.92);
   font-feature-settings: 'tnum' 1;
+}
+
+.minimal-viz__row--control {
+  pointer-events: auto;
+  align-items: center;
+}
+
+.minimal-viz__select {
+  width: 100%;
+  min-width: 168px;
+  border: 1px solid rgba(132, 169, 214, 0.3);
+  border-radius: 6px;
+  background: rgba(11, 15, 20, 0.9);
+  color: rgba(236, 247, 255, 0.94);
+  padding: 4px 6px;
+  font-size: 11px;
+  pointer-events: auto;
 }
