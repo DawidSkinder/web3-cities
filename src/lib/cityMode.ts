@@ -21,7 +21,15 @@ export function resolveCityMode(): CityMode {
   }
 
   const envMode = normalizeCityMode(import.meta.env.VITE_CITY_MODE);
-  return envMode ?? 'top200';
+  if (envMode) {
+    return envMode;
+  }
+
+  if (typeof window !== 'undefined' && window.location.hostname.endsWith('github.io')) {
+    return 'btc';
+  }
+
+  return 'top200';
 }
 
 export function writeCityModeToUrl(mode: CityMode) {

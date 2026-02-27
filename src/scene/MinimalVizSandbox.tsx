@@ -664,6 +664,15 @@ function fmtSignedPct(v: number, digits = 2) {
   return `${sign}${v.toFixed(digits)}%`;
 }
 
+function fmtTopCoinsError(error: string | null) {
+  if (!error) return 'none';
+  if (error.startsWith('proxy-unavailable:')) {
+    const code = error.split(':')[1] ?? 'n/a';
+    return `proxy unavailable (${code})`;
+  }
+  return error;
+}
+
 function drawRoundedRect(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -6530,7 +6539,7 @@ export function MinimalVizSandbox({
               </div>
               <div className="minimal-viz__row">
                 <span>Error</span>
-                <span>{overlay.topDebug.lastError ?? 'none'}</span>
+                <span>{fmtTopCoinsError(overlay.topDebug.lastError)}</span>
               </div>
             </>
           ) : null}

@@ -12,6 +12,9 @@ Mode can be selected from the SANDBOX panel or via query param:
 Fallback env:
 - `VITE_CITY_MODE=top200|btc`
 
+Note:
+- On `*.github.io` static hosting (no server functions), app falls back to `btc` by default unless `?mode=` or `VITE_CITY_MODE` explicitly selects another mode.
+
 ## Top Coins Proxy (`/api/top-coins`)
 The frontend never calls Binance REST directly. It calls:
 

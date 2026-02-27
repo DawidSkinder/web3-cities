@@ -8,6 +8,8 @@ type TopCoinsDataEngineConfig = {
 };
 
 type TopCoinsSnapshotListener = (snapshot: TopCoinsSnapshot) => void;
+type TopCoinsFatalReason = 'proxy-unavailable';
+type TopCoinsFatalListener = (reason: TopCoinsFatalReason) => void;
 
 const DEFAULT_ENDPOINT = '/api/top-coins';
 
@@ -43,10 +45,12 @@ export class TopCoinsDataEngine {
   private activeAbort: AbortController | null = null;
   private sequence = 0;
   private lastSnapshot: TopCoinsSnapshot | null = null;
+  private fatalEmitted = false;
 
   private sessionMaxQuoteVolume = 0;
   private sessionMaxAbsPct = 0;
   private lastError: string | null = null;
+  private readonly fatalListeners = new Set<TopCoinsFatalListener>();
 
   constructor(config: TopCoinsDataEngineConfig = {}) {
     this.endpoint = config.endpoint ?? DEFAULT_ENDPOINT;
@@ -64,6 +68,7 @@ export class TopCoinsDataEngine {
     this.sessionMaxAbsPct = 0;
     this.lastError = null;
     this.lastSnapshot = null;
+    this.fatalEmitted = false;
 
     void this.pollNow();
     this.timer = window.setInterval(() => {
@@ -91,6 +96,13 @@ export class TopCoinsDataEngine {
     };
   }
 
+  onFatal(listener: TopCoinsFatalListener) {
+    this.fatalListeners.add(listener);
+    return () => {
+      this.fatalListeners.delete(listener);
+    };
+  }
+
   private async pollNow() {
     if (!this.started || this.activeRequest) {
       return this.activeRequest;
@@ -101,7 +113,11 @@ export class TopCoinsDataEngine {
       .catch((error) => {
         if (!this.started) return;
         this.lastError = error instanceof Error ? error.message : 'unknown-error';
-        console.warn('[Top Coins Engine] poll failed', error);
+        const isProxyUnavailable = this.lastError.startsWith('proxy-unavailable:');
+        if (!isProxyUnavailable) {
+          console.warn('[Top Coins Engine] poll failed', error);
+        }
+
         if (this.lastSnapshot) {
           this.sequence += 1;
           const erroredSnapshot: TopCoinsSnapshot = {
@@ -118,39 +134,49 @@ export class TopCoinsDataEngine {
           for (const listener of this.listeners) {
             listener(erroredSnapshot);
           }
-          return;
+        } else {
+          this.sequence += 1;
+          const emptyErrorSnapshot: TopCoinsSnapshot = {
+            kind: 'top-coins-snapshot',
+            sequence: this.sequence,
+            emittedAt: Date.now(),
+            asOf: new Date().toISOString(),
+            ttlMs: this.pollMs,
+            items: [],
+            stats: {
+              topGainer: { symbol: 'N/A', pct: 0 },
+              topLoser: { symbol: 'N/A', pct: 0 },
+              topVolume: { symbol: 'N/A', quoteVolume: 0 },
+              sessionMaxQuoteVolume: this.sessionMaxQuoteVolume,
+              sessionMaxAbsPct: this.sessionMaxAbsPct,
+              marketBreadth: { positive: 0, negative: 0 }
+            },
+            debug: {
+              symbols: 0,
+              cacheHit: false,
+              cacheAgeMs: 0,
+              cacheSource: 'stale',
+              fetchedAt: Date.now(),
+              pollMs: this.pollMs,
+              lastError: this.lastError,
+              quote: this.quote
+            }
+          };
+          this.lastSnapshot = emptyErrorSnapshot;
+          for (const listener of this.listeners) {
+            listener(emptyErrorSnapshot);
+          }
         }
 
-        this.sequence += 1;
-        const emptyErrorSnapshot: TopCoinsSnapshot = {
-          kind: 'top-coins-snapshot',
-          sequence: this.sequence,
-          emittedAt: Date.now(),
-          asOf: new Date().toISOString(),
-          ttlMs: this.pollMs,
-          items: [],
-          stats: {
-            topGainer: { symbol: 'N/A', pct: 0 },
-            topLoser: { symbol: 'N/A', pct: 0 },
-            topVolume: { symbol: 'N/A', quoteVolume: 0 },
-            sessionMaxQuoteVolume: this.sessionMaxQuoteVolume,
-            sessionMaxAbsPct: this.sessionMaxAbsPct,
-            marketBreadth: { positive: 0, negative: 0 }
-          },
-          debug: {
-            symbols: 0,
-            cacheHit: false,
-            cacheAgeMs: 0,
-            cacheSource: 'stale',
-            fetchedAt: Date.now(),
-            pollMs: this.pollMs,
-            lastError: this.lastError,
-            quote: this.quote
+        if (isProxyUnavailable && !this.fatalEmitted) {
+          this.fatalEmitted = true;
+          if (this.timer != null) {
+            window.clearInterval(this.timer);
+            this.timer = null;
           }
-        };
-        this.lastSnapshot = emptyErrorSnapshot;
-        for (const listener of this.listeners) {
-          listener(emptyErrorSnapshot);
+          for (const listener of this.fatalListeners) {
+            listener('proxy-unavailable');
+          }
         }
       })
       .finally(() => {
@@ -175,6 +201,11 @@ export class TopCoinsDataEngine {
     });
 
     if (!response.ok) {
+      const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+      if (response.status === 404 || contentType.includes('text/html')) {
+        throw new Error(`proxy-unavailable:${response.status}`);
+      }
+
       const message = await response.text();
       throw new Error(`proxy ${response.status}: ${message.slice(0, 180)}`);
     }
