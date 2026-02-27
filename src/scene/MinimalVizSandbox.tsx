@@ -666,9 +666,15 @@ function fmtSignedPct(v: number, digits = 2) {
 
 function fmtTopCoinsError(error: string | null) {
   if (!error) return 'none';
-  if (error.startsWith('proxy-unavailable:')) {
-    const code = error.split(':')[1] ?? 'n/a';
-    return `proxy unavailable (${code})`;
+  if (error.startsWith('snapshot-http-')) {
+    const code = error.split('snapshot-http-')[1] ?? 'n/a';
+    return `snapshot unavailable (${code})`;
+  }
+  if (error === 'snapshot-invalid-json') {
+    return 'snapshot invalid json';
+  }
+  if (error === 'snapshot-invalid-payload' || error === 'snapshot-invalid-asof') {
+    return 'snapshot invalid data';
   }
   return error;
 }
@@ -2136,13 +2142,12 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
 }
 
 type TopCoinsDebugOverlay = {
-  asOf: string;
+  asOfMs: number;
+  asOfIso: string;
   symbols: number;
-  cacheHit: boolean;
-  cacheAgeMs: number;
-  cacheSource: 'binance' | 'stale';
   fetchedAt: number;
   lastError: string | null;
+  lastFetchOk: boolean;
   topGainer: { symbol: string; pct: number };
   topLoser: { symbol: string; pct: number };
   topVolume: { symbol: string; quoteVolume: number };
@@ -2253,13 +2258,12 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
   const moodRef = useRef(0.5);
   const moodTargetRef = useRef(0.5);
   const debugRef = useRef<TopCoinsDebugOverlay>({
-    asOf: '',
+    asOfMs: 0,
+    asOfIso: '',
     symbols: 0,
-    cacheHit: false,
-    cacheAgeMs: 0,
-    cacheSource: 'binance',
     fetchedAt: 0,
     lastError: null,
+    lastFetchOk: false,
     topGainer: { symbol: 'N/A', pct: 0 },
     topLoser: { symbol: 'N/A', pct: 0 },
     topVolume: { symbol: 'N/A', quoteVolume: 0 }
@@ -2608,13 +2612,12 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     moodTargetRef.current = totalBreadth > 0 ? snapshot.stats.marketBreadth.positive / totalBreadth : 0.5;
 
     debugRef.current = {
-      asOf: snapshot.asOf,
+      asOfMs: snapshot.asOf,
+      asOfIso: snapshot.asOf > 0 ? new Date(snapshot.asOf).toISOString() : '',
       symbols: snapshot.debug.symbols,
-      cacheHit: snapshot.debug.cacheHit,
-      cacheAgeMs: snapshot.debug.cacheAgeMs,
-      cacheSource: snapshot.debug.cacheSource,
       fetchedAt: snapshot.debug.fetchedAt,
       lastError: snapshot.debug.lastError,
+      lastFetchOk: snapshot.debug.lastFetchOk,
       topGainer: snapshot.stats.topGainer,
       topLoser: snapshot.stats.topLoser,
       topVolume: snapshot.stats.topVolume
@@ -2738,8 +2741,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         usdScoreDist: MathUtils.clamp(Math.abs(state.pct) / 20, 0, 1),
         averagePrice: state.lastPrice,
         tradeCount: 0,
-        windowStart: snapshot ? Date.parse(snapshot.asOf) : Date.now(),
-        windowEnd: snapshot ? Date.parse(snapshot.asOf) : Date.now(),
+        windowStart: snapshot?.asOf ?? Date.now(),
+        windowEnd: snapshot?.asOf ?? Date.now(),
         emittedAt: state.emittedAt,
         mode: 'top200',
         symbol: state.symbol,
@@ -6403,7 +6406,7 @@ export function MinimalVizSandbox({
                 onModeChange?.(nextMode);
               }}
             >
-              <option value="top200">Top Coins Skyline (Binance REST)</option>
+              <option value="top200">Top Coins Skyline (Binance Spot REST)</option>
               <option value="btc">Bitcoin Spot Buys (Binance WS)</option>
             </select>
           </div>
@@ -6503,17 +6506,19 @@ export function MinimalVizSandbox({
               </div>
               <div className="minimal-viz__row">
                 <span>AsOf</span>
-                <span>{overlay.topDebug.asOf || 'n/a'}</span>
+                <span>{overlay.topDebug.asOfIso || 'n/a'}</span>
               </div>
               <div className="minimal-viz__row">
-                <span>Cache</span>
+                <span>Fetch</span>
+                <span>{overlay.topDebug.lastFetchOk ? 'ok' : 'error'}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>AsOfAge</span>
                 <span>
-                  {overlay.topDebug.cacheHit ? 'hit' : 'miss'} · {overlay.topDebug.cacheSource}
+                  {overlay.topDebug.asOfMs > 0
+                    ? `${fmtFixed(Math.max(0, Date.now() - overlay.topDebug.asOfMs) / 1000, 1)}s`
+                    : 'n/a'}
                 </span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>CacheAge</span>
-                <span>{fmtFixed(overlay.topDebug.cacheAgeMs / 1000, 1)}s</span>
               </div>
               <div className="minimal-viz__row">
                 <span>RefreshAge</span>

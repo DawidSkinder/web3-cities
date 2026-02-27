@@ -1,31 +1,23 @@
 export type TopCoinItem = {
+  rank: number;
   symbol: string;
   baseAsset: string;
   quoteAsset: string;
   lastPrice: number;
   priceChangePercent: number;
   quoteVolume: number;
-  volume: number;
+  baseVolume: number;
+  tradeCount: number;
   highPrice: number;
   lowPrice: number;
-  openPrice: number;
-  closeTime: number;
-  tradeCount: number;
 };
 
-export type TopCoinsApiResponse = {
-  asOf: string;
-  cache: {
-    hit: boolean;
-    ageMs: number;
-    ttlMs: number;
-    source: 'binance' | 'stale';
-  };
-  universe: {
-    quote: string;
-    limit: number;
-    excluded: string[];
-  };
+export type TopCoinsStaticSnapshotFile = {
+  asOf: number;
+  source: string;
+  window: string;
+  baseQuote: string;
+  method: string;
   items: TopCoinItem[];
 };
 
@@ -33,7 +25,7 @@ export type TopCoinsSnapshot = {
   kind: 'top-coins-snapshot';
   sequence: number;
   emittedAt: number;
-  asOf: string;
+  asOf: number;
   ttlMs: number;
   items: TopCoinItem[];
   stats: {
@@ -49,12 +41,10 @@ export type TopCoinsSnapshot = {
   };
   debug: {
     symbols: number;
-    cacheHit: boolean;
-    cacheAgeMs: number;
-    cacheSource: 'binance' | 'stale';
     fetchedAt: number;
     pollMs: number;
+    endpoint: string;
     lastError: string | null;
-    quote: string;
+    lastFetchOk: boolean;
   };
 };

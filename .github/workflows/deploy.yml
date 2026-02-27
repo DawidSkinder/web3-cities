@@ -31,20 +31,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Validate Top Coins Proxy URL
-        env:
-          VITE_TOP_COINS_API_URL: ${{ vars.VITE_TOP_COINS_API_URL }}
-        run: |
-          if [ -z "$VITE_TOP_COINS_API_URL" ]; then
-            echo "Missing required repository variable: VITE_TOP_COINS_API_URL"
-            echo "Set it to your deployed proxy endpoint, e.g. https://<worker>.workers.dev/api/top-coins"
-            exit 1
-          fi
-
       - name: Build
         run: npm run build
         env:
-          VITE_TOP_COINS_API_URL: ${{ vars.VITE_TOP_COINS_API_URL }}
           VITE_CITY_MODE: ${{ vars.VITE_CITY_MODE }}
 
       - name: Setup Pages

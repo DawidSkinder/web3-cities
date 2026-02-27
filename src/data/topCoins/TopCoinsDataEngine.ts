@@ -1,20 +1,30 @@
-import type { TopCoinItem, TopCoinsApiResponse, TopCoinsSnapshot } from './types';
+import type { TopCoinItem, TopCoinsSnapshot, TopCoinsStaticSnapshotFile } from './types';
 
 type TopCoinsDataEngineConfig = {
   endpoint?: string;
   limit?: number;
-  quote?: string;
   pollMs?: number;
 };
 
 type TopCoinsSnapshotListener = (snapshot: TopCoinsSnapshot) => void;
 
-const DEFAULT_ENDPOINT = '/api/top-coins';
+type TopCoinsSnapshotSeed = Omit<TopCoinsSnapshot, 'sequence' | 'emittedAt'>;
+
+function resolveDefaultEndpoint() {
+  const base = import.meta.env.BASE_URL || '/';
+  return `${base.endsWith('/') ? base : `${base}/`}data/top-coins.json`;
+}
 
 function parsePollMs(raw: unknown) {
   const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return 60_000;
   return Math.max(30_000, Math.floor(parsed));
+}
+
+function parseLimit(raw: unknown) {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return 200;
+  return Math.max(1, Math.min(200, Math.floor(parsed)));
 }
 
 function topBy<T>(items: T[], getValue: (item: T) => number) {
@@ -30,10 +40,105 @@ function topBy<T>(items: T[], getValue: (item: T) => number) {
   return best;
 }
 
+function asNumber(value: unknown, fallback = 0) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function asString(value: unknown, fallback = '') {
+  return typeof value === 'string' ? value : fallback;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function parseTopCoinItem(raw: unknown, fallbackRank: number): TopCoinItem | null {
+  const row = asRecord(raw);
+  if (!row) return null;
+
+  const symbol = asString(row.symbol).trim().toUpperCase();
+  if (!symbol) return null;
+
+  return {
+    rank: Math.max(1, Math.floor(asNumber(row.rank, fallbackRank))),
+    symbol,
+    baseAsset: asString(row.baseAsset).trim().toUpperCase() || symbol.replace(/USDT$/, ''),
+    quoteAsset: asString(row.quoteAsset).trim().toUpperCase() || 'USDT',
+    lastPrice: asNumber(row.lastPrice, 0),
+    priceChangePercent: asNumber(row.priceChangePercent, 0),
+    quoteVolume: Math.max(0, asNumber(row.quoteVolume, 0)),
+    baseVolume: Math.max(0, asNumber(row.baseVolume, 0)),
+    tradeCount: Math.max(0, Math.floor(asNumber(row.tradeCount, 0))),
+    highPrice: asNumber(row.highPrice, 0),
+    lowPrice: asNumber(row.lowPrice, 0)
+  };
+}
+
+function parsePayload(raw: unknown, limit: number): TopCoinsStaticSnapshotFile {
+  const payload = asRecord(raw);
+  if (!payload) {
+    throw new Error('snapshot-invalid-payload');
+  }
+
+  const itemsRaw = Array.isArray(payload.items) ? payload.items : [];
+  const parsedItems: TopCoinItem[] = [];
+  for (let i = 0; i < itemsRaw.length; i++) {
+    const item = parseTopCoinItem(itemsRaw[i], i + 1);
+    if (item) parsedItems.push(item);
+  }
+
+  parsedItems.sort((a, b) => a.rank - b.rank || a.symbol.localeCompare(b.symbol));
+
+  const asOf = Math.floor(asNumber(payload.asOf, NaN));
+  if (!Number.isFinite(asOf) || asOf <= 0) {
+    throw new Error('snapshot-invalid-asof');
+  }
+
+  return {
+    asOf,
+    source: asString(payload.source, 'binance-spot-rest'),
+    window: asString(payload.window, '24h'),
+    baseQuote: asString(payload.baseQuote, 'USDT').toUpperCase(),
+    method: asString(payload.method, 'top200-by-quoteVolume'),
+    items: parsedItems.slice(0, limit)
+  };
+}
+
+function sameItems(a: TopCoinItem[], b: TopCoinItem[]) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const left = a[i];
+    const right = b[i];
+    if (!left || !right) return false;
+    if (
+      left.rank !== right.rank ||
+      left.symbol !== right.symbol ||
+      left.baseAsset !== right.baseAsset ||
+      left.quoteAsset !== right.quoteAsset ||
+      left.lastPrice !== right.lastPrice ||
+      left.priceChangePercent !== right.priceChangePercent ||
+      left.quoteVolume !== right.quoteVolume ||
+      left.baseVolume !== right.baseVolume ||
+      left.tradeCount !== right.tradeCount ||
+      left.highPrice !== right.highPrice ||
+      left.lowPrice !== right.lowPrice
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function normalizeError(error: unknown) {
+  if (error instanceof Error) return error.message;
+  return 'snapshot-unknown-error';
+}
+
 export class TopCoinsDataEngine {
   private readonly endpoint: string;
   private readonly limit: number;
-  private readonly quote: string;
   private readonly pollMs: number;
 
   private readonly listeners = new Set<TopCoinsSnapshotListener>();
@@ -41,17 +146,15 @@ export class TopCoinsDataEngine {
   private timer: number | null = null;
   private activeRequest: Promise<void> | null = null;
   private activeAbort: AbortController | null = null;
-  private sequence = 0;
-  private lastSnapshot: TopCoinsSnapshot | null = null;
 
+  private sequence = 0;
   private sessionMaxQuoteVolume = 0;
   private sessionMaxAbsPct = 0;
-  private lastError: string | null = null;
+  private lastSnapshot: TopCoinsSnapshot | null = null;
 
   constructor(config: TopCoinsDataEngineConfig = {}) {
-    this.endpoint = config.endpoint ?? (import.meta.env.VITE_TOP_COINS_API_URL?.trim() || DEFAULT_ENDPOINT);
-    this.limit = Math.max(1, Math.min(500, Math.floor(config.limit ?? 200)));
-    this.quote = (config.quote ?? 'USDT').trim().toUpperCase() || 'USDT';
+    this.endpoint = config.endpoint?.trim() || resolveDefaultEndpoint();
+    this.limit = parseLimit(config.limit ?? import.meta.env.VITE_TOP_COINS_LIMIT);
     this.pollMs = parsePollMs(config.pollMs ?? import.meta.env.VITE_TOP_COINS_POLL_MS);
   }
 
@@ -62,7 +165,6 @@ export class TopCoinsDataEngine {
     this.sequence = 0;
     this.sessionMaxQuoteVolume = 0;
     this.sessionMaxAbsPct = 0;
-    this.lastError = null;
     this.lastSnapshot = null;
 
     void this.pollNow();
@@ -91,6 +193,56 @@ export class TopCoinsDataEngine {
     };
   }
 
+  private emit(seed: TopCoinsSnapshotSeed) {
+    this.sequence += 1;
+    const snapshot: TopCoinsSnapshot = {
+      ...seed,
+      sequence: this.sequence,
+      emittedAt: Date.now()
+    };
+    this.lastSnapshot = snapshot;
+    for (const listener of this.listeners) {
+      listener(snapshot);
+    }
+  }
+
+  private shouldEmit(next: TopCoinsSnapshotSeed) {
+    if (!this.lastSnapshot) return true;
+    if (this.lastSnapshot.asOf !== next.asOf) return true;
+    if (!sameItems(this.lastSnapshot.items, next.items)) return true;
+    if (this.lastSnapshot.debug.lastError !== next.debug.lastError) return true;
+    if (this.lastSnapshot.debug.lastFetchOk !== next.debug.lastFetchOk) return true;
+    return false;
+  }
+
+  private buildEmptySnapshot(lastError: string): TopCoinsSnapshotSeed {
+    return {
+      kind: 'top-coins-snapshot',
+      asOf: 0,
+      ttlMs: this.pollMs,
+      items: [],
+      stats: {
+        topGainer: { symbol: 'N/A', pct: 0 },
+        topLoser: { symbol: 'N/A', pct: 0 },
+        topVolume: { symbol: 'N/A', quoteVolume: 0 },
+        sessionMaxQuoteVolume: this.sessionMaxQuoteVolume,
+        sessionMaxAbsPct: this.sessionMaxAbsPct,
+        marketBreadth: {
+          positive: 0,
+          negative: 0
+        }
+      },
+      debug: {
+        symbols: 0,
+        fetchedAt: Date.now(),
+        pollMs: this.pollMs,
+        endpoint: this.endpoint,
+        lastError,
+        lastFetchOk: false
+      }
+    };
+  }
+
   private async pollNow() {
     if (!this.started || this.activeRequest) {
       return this.activeRequest;
@@ -100,60 +252,24 @@ export class TopCoinsDataEngine {
     this.activeRequest = this.fetchAndEmit(this.activeAbort.signal)
       .catch((error) => {
         if (!this.started) return;
-        this.lastError = error instanceof Error ? error.message : 'unknown-error';
-        const isProxyUnavailable = this.lastError.startsWith('proxy-unavailable:');
-        if (!isProxyUnavailable) {
-          console.warn('[Top Coins Engine] poll failed', error);
-        }
+        if (error instanceof DOMException && error.name === 'AbortError') return;
 
+        const message = normalizeError(error);
         if (this.lastSnapshot) {
-          this.sequence += 1;
-          const erroredSnapshot: TopCoinsSnapshot = {
+          const next: TopCoinsSnapshotSeed = {
             ...this.lastSnapshot,
-            sequence: this.sequence,
-            emittedAt: Date.now(),
             debug: {
               ...this.lastSnapshot.debug,
               fetchedAt: Date.now(),
-              lastError: this.lastError
+              lastError: message,
+              lastFetchOk: false
             }
           };
-          this.lastSnapshot = erroredSnapshot;
-          for (const listener of this.listeners) {
-            listener(erroredSnapshot);
+          if (this.shouldEmit(next)) {
+            this.emit(next);
           }
         } else {
-          this.sequence += 1;
-          const emptyErrorSnapshot: TopCoinsSnapshot = {
-            kind: 'top-coins-snapshot',
-            sequence: this.sequence,
-            emittedAt: Date.now(),
-            asOf: new Date().toISOString(),
-            ttlMs: this.pollMs,
-            items: [],
-            stats: {
-              topGainer: { symbol: 'N/A', pct: 0 },
-              topLoser: { symbol: 'N/A', pct: 0 },
-              topVolume: { symbol: 'N/A', quoteVolume: 0 },
-              sessionMaxQuoteVolume: this.sessionMaxQuoteVolume,
-              sessionMaxAbsPct: this.sessionMaxAbsPct,
-              marketBreadth: { positive: 0, negative: 0 }
-            },
-            debug: {
-              symbols: 0,
-              cacheHit: false,
-              cacheAgeMs: 0,
-              cacheSource: 'stale',
-              fetchedAt: Date.now(),
-              pollMs: this.pollMs,
-              lastError: this.lastError,
-              quote: this.quote
-            }
-          };
-          this.lastSnapshot = emptyErrorSnapshot;
-          for (const listener of this.listeners) {
-            listener(emptyErrorSnapshot);
-          }
+          this.emit(this.buildEmptySnapshot(message));
         }
       })
       .finally(() => {
@@ -165,30 +281,28 @@ export class TopCoinsDataEngine {
   }
 
   private async fetchAndEmit(signal: AbortSignal) {
-    const url = new URL(this.endpoint, window.location.origin);
-    url.searchParams.set('limit', String(this.limit));
-    url.searchParams.set('quote', this.quote);
-
-    const response = await fetch(url.toString(), {
+    const response = await fetch(this.endpoint, {
       method: 'GET',
       headers: {
         Accept: 'application/json'
       },
+      cache: 'no-store',
       signal
     });
 
     if (!response.ok) {
-      const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
-      if (response.status === 404 || contentType.includes('text/html')) {
-        throw new Error(`proxy-unavailable:${response.status}`);
-      }
-
-      const message = await response.text();
-      throw new Error(`proxy ${response.status}: ${message.slice(0, 180)}`);
+      throw new Error(`snapshot-http-${response.status}`);
     }
 
-    const payload = (await response.json()) as TopCoinsApiResponse;
-    const items = (payload.items ?? []).slice(0, this.limit);
+    let json: unknown;
+    try {
+      json = await response.json();
+    } catch {
+      throw new Error('snapshot-invalid-json');
+    }
+
+    const payload = parsePayload(json, this.limit);
+    const items = payload.items;
 
     const topGainer = topBy(items, (item) => item.priceChangePercent) ?? items[0] ?? null;
     const topLoser = topBy(items, (item) => -item.priceChangePercent) ?? items[0] ?? null;
@@ -201,20 +315,12 @@ export class TopCoinsDataEngine {
       this.sessionMaxQuoteVolume,
       ...items.map((item) => item.quoteVolume)
     );
-    this.sessionMaxAbsPct = Math.max(
-      this.sessionMaxAbsPct,
-      ...items.map((item) => Math.abs(item.priceChangePercent))
-    );
+    this.sessionMaxAbsPct = Math.max(this.sessionMaxAbsPct, ...items.map((item) => Math.abs(item.priceChangePercent)));
 
-    this.sequence += 1;
-    this.lastError = null;
-
-    const snapshot: TopCoinsSnapshot = {
+    const next: TopCoinsSnapshotSeed = {
       kind: 'top-coins-snapshot',
-      sequence: this.sequence,
-      emittedAt: Date.now(),
       asOf: payload.asOf,
-      ttlMs: payload.cache?.ttlMs ?? this.pollMs,
+      ttlMs: this.pollMs,
       items,
       stats: {
         topGainer: {
@@ -238,19 +344,16 @@ export class TopCoinsDataEngine {
       },
       debug: {
         symbols: items.length,
-        cacheHit: payload.cache?.hit ?? false,
-        cacheAgeMs: payload.cache?.ageMs ?? 0,
-        cacheSource: payload.cache?.source ?? 'binance',
         fetchedAt: Date.now(),
         pollMs: this.pollMs,
-        lastError: this.lastError,
-        quote: payload.universe?.quote ?? this.quote
+        endpoint: this.endpoint,
+        lastError: null,
+        lastFetchOk: true
       }
     };
-    this.lastSnapshot = snapshot;
 
-    for (const listener of this.listeners) {
-      listener(snapshot);
+    if (this.shouldEmit(next)) {
+      this.emit(next);
     }
   }
 }

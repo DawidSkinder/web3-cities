@@ -2,7 +2,7 @@
 Personal website
 
 ## City Modes
-- `top200` (default): **Top Coins Skyline (Binance Spot REST via server proxy)**
+- `top200` (default): **Top Coins Skyline (Binance Spot REST)**
 - `btc`: **Bitcoin Spot Buys (Binance WS)**
 
 Mode can be selected from the SANDBOX panel or via query param:
@@ -12,63 +12,44 @@ Mode can be selected from the SANDBOX panel or via query param:
 Fallback env:
 - `VITE_CITY_MODE=top200|btc`
 
-## Top Coins Proxy (`/api/top-coins`)
-The frontend never calls Binance REST directly. It calls:
+## Top Coins Snapshot (GitHub Pages Only)
+Top Coins mode uses a static snapshot file served by GitHub Pages:
+- `public/data/top-coins.json`
 
-`GET /api/top-coins?limit=200&quote=USDT`
+The frontend polls:
+- `${BASE_URL}data/top-coins.json`
 
-Implemented in `server/binanceProxy.ts` with:
-- In-memory TTL cache (default `60s`)
-- Request coalescing (concurrent clients share one upstream fetch)
-- Binance 429/418 backoff + retry
-- Stale fallback (`maxStale` default `10m`) when Binance is temporarily unavailable
-- HTTP cache headers:
-  - `Cache-Control: public, max-age=10, s-maxage=60, stale-while-revalidate=300`
+No Cloudflare Worker, no `/api/top-coins` backend route, and no third-party proxy is required.
 
-## Run Locally
+## Snapshot Generation Workflow
+Workflow:
+- `.github/workflows/generate-top-coins-snapshot.yml`
+
+It runs on:
+- `schedule` every 5 minutes
+- `workflow_dispatch`
+
+What it does:
+1. Fetches Binance Spot REST data (`/api/v3/ticker/24hr` + `/api/v3/exchangeInfo`).
+2. Filters to `TRADING` symbols with quote asset `USDT`.
+3. Ranks by `quoteVolume` descending (symbol tiebreak ascending).
+4. Writes deterministic JSON to `public/data/top-coins.json`.
+5. Commits only when the file content changed.
+
+This gives cache/rate safety for viral traffic because all clients read one shared static snapshot from Pages.
+
+## Local Development
 1. Install dependencies:
    - `npm install`
-2. Start dev:
+2. Start dev server:
    - `npm run dev`
 
-The Vite dev server mounts `/api/top-coins` through middleware and uses the same cache logic as production.
+Optional:
+- Generate a fresh snapshot locally:
+  - `npm run generate:top-coins-snapshot`
 
-Optional envs:
-- `VITE_TOP_COINS_POLL_MS` (default 60000, floor 30000)
-- `VITE_TOP_COINS_LIMIT` (default 200)
-- `VITE_TOP_COINS_QUOTE` (default `USDT`)
-- `VITE_TOP_COINS_API_URL` (default `/api/top-coins`; set to worker URL on static hosting)
-- `TOP_COINS_CACHE_TTL_MS` (default 60000)
-- `TOP_COINS_CACHE_MAX_STALE_MS` (default 600000)
+## Deploy
+- GitHub Pages deploy workflow: `.github/workflows/deploy.yml`
+- Data snapshot workflow: `.github/workflows/generate-top-coins-snapshot.yml`
 
-## Production Proxy Deployment
-Two production options are included:
-
-1. Node/serverless handler:
-- `api/top-coins.ts`
-
-2. Cloudflare Worker proxy (recommended for GitHub Pages):
-- `workers/top-coins/src/index.ts`
-- `workers/top-coins/wrangler.toml`
-
-### GitHub Pages + Worker (full working setup)
-1. Create Cloudflare API credentials in GitHub secrets:
-- `CF_API_TOKEN`
-- `CF_ACCOUNT_ID`
-
-2. Deploy worker:
-- Run workflow: `.github/workflows/deploy-top-coins-proxy.yml`
-
-3. Set repository variable for frontend build:
-- `VITE_TOP_COINS_API_URL=https://<your-worker-subdomain>.workers.dev/api/top-coins`
-  - Required for GitHub Pages workflow; deploy fails fast if missing.
-
-4. (Optional) Restrict CORS origins in worker env:
-- `ALLOWED_ORIGINS=https://dawidskinder.github.io`
-
-5. Deploy site via existing Pages workflow:
-- `.github/workflows/deploy.yml`
-
-The Pages build now injects:
-- `VITE_TOP_COINS_API_URL` from repository variables
-- `VITE_CITY_MODE` from repository variables
+No Cloudflare secrets or worker deployment is needed.
