@@ -11,6 +11,7 @@ import {
   DoubleSide,
   EdgesGeometry,
   LinearFilter,
+  LinearMipmapLinearFilter,
   LineBasicMaterial,
   Matrix4,
   MathUtils,
@@ -2240,15 +2241,12 @@ const TOP_COINS_DISTRICT_TINTS = [
   '#cfb09d',
   '#caa997'
 ];
-const TOP_HEIGHT_SEA_LEVEL = 14;
-const TOP_HEIGHT_POSITIVE_RANGE = 42;
-const TOP_HEIGHT_NEGATIVE_RANGE = 9.4;
-const TOP_LAYOUT_PADDING = 1.55;
+const TOP_LAYOUT_PADDING = 2.35;
 const TOP_LAYOUT_INITIAL_ITERS = 64;
 const TOP_LAYOUT_REFRESH_ITERS = 20;
 const TOP_LAYOUT_INNER_RADIUS = 8;
-const TOP_LAYOUT_RING_STEP = 4.25;
-const TOP_LAYOUT_EDGE_PAD = 5.2;
+const TOP_LAYOUT_RING_STEP = 5.05;
+const TOP_LAYOUT_EDGE_PAD = 6.6;
 
 type TopCoinsLayoutNode = {
   symbol: string;
@@ -2306,22 +2304,23 @@ function clampNodeToCity(node: TopCoinsLayoutNode, cityRadius: number) {
   node.z = Math.sin(angle) * radius;
 }
 
-function estimateTopCoinFootprintRadius(symbol: string, baseTarget: number) {
-  const baseAspect = MathUtils.lerp(0.82, 1.24, hashUnitString(symbol, 13));
-  const sqrtAspect = Math.sqrt(baseAspect);
-  const baseW = MathUtils.clamp(baseTarget * sqrtAspect, 0.82, 6.2);
-  const baseD = MathUtils.clamp(baseTarget / sqrtAspect, 0.82, 6.2);
+function estimateTopCoinFootprintRadius(symbol: string, sizeScore: number, isTopVolume: boolean) {
+  const sequence = (hashString32(symbol) % 1_000_000) + 1;
+  const shape = buildTowerShapeParams(sequence, MathUtils.clamp(sizeScore, 0, 1));
+  const topVolumeBoost = isTopVolume ? 1.16 : 1;
+  const baseW = MathUtils.clamp(shape.baseW * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.46);
+  const baseD = MathUtils.clamp(shape.baseD * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.46);
   return 0.5 * Math.hypot(baseW, baseD);
 }
 
 function buildTopCoinsLayoutTargets({
   items,
   states,
-  baseBySymbol
+  sizeScoreBySymbol
 }: {
-  items: Array<{ symbol: string; rank: number }>;
+  items: Array<{ symbol: string; rank: number; isTopVolume: boolean }>;
   states: Map<string, TopCoinSymbolState>;
-  baseBySymbol: Map<string, number>;
+  sizeScoreBySymbol: Map<string, number>;
 }): TopCoinsLayoutResult {
   const ordered = [...items].sort((a, b) => a.rank - b.rank || a.symbol.localeCompare(b.symbol));
   const nodes: TopCoinsLayoutNode[] = [];
@@ -2338,8 +2337,8 @@ function buildTopCoinsLayoutTargets({
       (hashUnitString(item.symbol, 47) - 0.5) * 1.8;
     const xNominal = Math.cos(angle) * radius;
     const zNominal = Math.sin(angle) * radius;
-    const baseTarget = baseBySymbol.get(item.symbol) ?? 1.2;
-    const footprintRadius = estimateTopCoinFootprintRadius(item.symbol, baseTarget);
+    const sizeScore = sizeScoreBySymbol.get(item.symbol) ?? 0.4;
+    const footprintRadius = estimateTopCoinFootprintRadius(item.symbol, sizeScore, item.isTopVolume);
     const prev = states.get(item.symbol);
     nodes.push({
       symbol: item.symbol,
@@ -2351,7 +2350,7 @@ function buildTopCoinsLayoutTargets({
   }
 
   const maxNominalRadius = nodes.reduce((acc, node) => Math.max(acc, Math.hypot(node.x, node.z) + node.radius), 0);
-  let cityRadius = Math.max(62, maxNominalRadius + 12 + Math.sqrt(Math.max(1, nodes.length)) * 0.46);
+  let cityRadius = Math.max(86, maxNominalRadius + 18 + Math.sqrt(Math.max(1, nodes.length)) * 0.92);
 
   const dispX = new Array(nodes.length).fill(0);
   const dispZ = new Array(nodes.length).fill(0);
@@ -2685,15 +2684,53 @@ function easeTowards(current: number, target: number, lambda: number, dtSec: num
   return current + (target - current) * t;
 }
 
-function mapPctToHeight(pct: number, isTopGainer: boolean, isTopLoser: boolean) {
-  // Signed tanh keeps movers symmetric around a neutral skyline level while preventing outlier spikes.
-  const signedCurve = Math.sign(pct) * Math.tanh(Math.abs(pct) / 12);
-  let height =
-    TOP_HEIGHT_SEA_LEVEL +
-    (signedCurve >= 0 ? signedCurve * TOP_HEIGHT_POSITIVE_RANGE : signedCurve * TOP_HEIGHT_NEGATIVE_RANGE);
-  if (isTopGainer) height *= 1.18;
+function mapTopCoinTowerMetrics({
+  pct,
+  quoteVolume,
+  maxQuoteVolume,
+  rank,
+  isTopGainer,
+  isTopLoser,
+  isTopVolume
+}: {
+  pct: number;
+  quoteVolume: number;
+  maxQuoteVolume: number;
+  rank: number;
+  isTopGainer: boolean;
+  isTopLoser: boolean;
+  isTopVolume: boolean;
+}) {
+  const volumeNorm = MathUtils.clamp(Math.log10(quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
+  const moveNorm = MathUtils.clamp(Math.abs(pct) / 26, 0, 1);
+  const rankNorm = MathUtils.clamp(1 - (rank - 1) / 199, 0, 1);
+
+  // Reuse BTC skyline curve feel: score -> pow(gamma) -> physical height.
+  let heightScore = MathUtils.clamp(volumeNorm * 0.52 + moveNorm * 0.38 + rankNorm * 0.1, 0, 1);
+  if (isTopGainer || isTopLoser) heightScore = Math.max(heightScore, 0.84);
+  if (isTopVolume) heightScore = Math.max(heightScore, 0.9);
+
+  let height = MIN_HEIGHT + (MAX_HEIGHT - MIN_HEIGHT) * Math.pow(heightScore, HEIGHT_GAMMA);
+  const pctBias = MathUtils.clamp(Math.abs(pct) / 30, 0, 1);
+  if (pct < 0) {
+    height *= MathUtils.lerp(0.62, 0.84, volumeNorm);
+  } else if (pct > 0) {
+    height *= MathUtils.lerp(1, 1.08, pctBias);
+  }
+  if (isTopGainer) height *= 1.22;
+  if (isTopVolume) height *= 1.12;
   if (isTopLoser) height *= 0.9;
-  return MathUtils.clamp(height, TOWER_VISUAL_MIN_HEIGHT, HERO_MAX_HEIGHT);
+
+  let sizeScore = MathUtils.clamp(volumeNorm * 0.78 + heightScore * 0.18 + rankNorm * 0.04, 0, 1);
+  if (isTopVolume) sizeScore = Math.max(sizeScore, 0.95);
+  if (rank <= 3) sizeScore = Math.max(sizeScore, 0.86);
+
+  return {
+    height: MathUtils.clamp(height, TOWER_VISUAL_MIN_HEIGHT, HERO_MAX_HEIGHT),
+    sizeScore,
+    heightScore,
+    volumeNorm
+  };
 }
 
 function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
@@ -2786,28 +2823,34 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     const topVolumeSymbol = snapshot.stats.topVolume.symbol;
     const maxQuoteVolume = Math.max(snapshot.stats.sessionMaxQuoteVolume, 1);
     const now = snapshot.emittedAt;
-    const baseBySymbol = new Map<string, number>();
+    const sizeScoreBySymbol = new Map<string, number>();
+    const metricsBySymbol = new Map<string, { height: number; sizeScore: number; heightScore: number; volumeNorm: number }>();
 
     for (let i = 0; i < snapshot.items.length; i++) {
       const item = snapshot.items[i];
       if (!item) continue;
-      const volumeNorm = MathUtils.clamp(Math.log10(item.quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
-      const moveNorm = MathUtils.clamp(Math.abs(item.priceChangePercent) / 24, 0, 1);
-      let baseTarget = MathUtils.lerp(0.86, 4.8, Math.pow(volumeNorm, 0.74)) + moveNorm * 0.55;
-      if (item.symbol === topVolumeSymbol) {
-        baseTarget *= 1.2;
-      }
-      if ((item.rank || i + 1) <= 5) baseTarget *= 1.08;
-      baseBySymbol.set(item.symbol, MathUtils.clamp(baseTarget, 0.86, 5.9));
+      const rank = item.rank || i + 1;
+      const metrics = mapTopCoinTowerMetrics({
+        pct: item.priceChangePercent,
+        quoteVolume: item.quoteVolume,
+        maxQuoteVolume,
+        rank,
+        isTopGainer: item.symbol === topGainerSymbol,
+        isTopLoser: item.symbol === topLoserSymbol,
+        isTopVolume: item.symbol === topVolumeSymbol
+      });
+      metricsBySymbol.set(item.symbol, metrics);
+      sizeScoreBySymbol.set(item.symbol, metrics.sizeScore);
     }
 
     const layout = buildTopCoinsLayoutTargets({
       items: snapshot.items.map((item, index) => ({
         symbol: item.symbol,
-        rank: item.rank || index + 1
+        rank: item.rank || index + 1,
+        isTopVolume: item.symbol === topVolumeSymbol
       })),
       states,
-      baseBySymbol
+      sizeScoreBySymbol
     });
 
     let absPctSum = 0;
@@ -2825,9 +2868,10 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       const sequence = (hashString32(item.symbol) % 1_000_000) + 1;
       const prev = states.get(item.symbol);
 
-      const volumeNorm = MathUtils.clamp(Math.log10(item.quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
-      const nextHeight = mapPctToHeight(item.priceChangePercent, isTopGainer, isTopLoser);
-      const nextBase = baseBySymbol.get(item.symbol) ?? MathUtils.lerp(0.86, 4.8, Math.pow(volumeNorm, 0.74));
+      const metrics = metricsBySymbol.get(item.symbol);
+      const volumeNorm = metrics?.volumeNorm ?? MathUtils.clamp(Math.log10(item.quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
+      const nextHeight = metrics?.height ?? TOWER_VISUAL_MIN_HEIGHT;
+      const nextBase = metrics?.sizeScore ?? 0.5;
       let nextGlowStrength = MathUtils.clamp(
         0.72 + volumeNorm * 0.78 + Math.min(0.42, Math.abs(item.priceChangePercent) * 0.012),
         0.72,
@@ -3079,7 +3123,12 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       ...snapshot.items
         .map((item) => states.get(item.symbol))
         .filter((state): state is TopCoinSymbolState => Boolean(state))
-        .map((state) => Math.hypot(state.xTarget, state.zTarget) + state.baseTarget * 2.8)
+        .map((state) => {
+          const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.baseTarget, 0, 1));
+          const topVolumeBoost = state.isTopVolume ? 1.16 : 1;
+          const radius = 0.5 * Math.hypot(shape.baseW * topVolumeBoost, shape.baseD * topVolumeBoost);
+          return Math.hypot(state.xTarget, state.zTarget) + radius * 3.8;
+        })
     );
     const maxHeight = Math.max(
       24,
@@ -3097,11 +3146,10 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     for (const item of snapshot.items) {
       const state = states.get(item.symbol);
       if (!state) continue;
-      const baseAspect = MathUtils.lerp(0.82, 1.24, hashUnitString(state.symbol, 13));
-      const sqrtAspect = Math.sqrt(baseAspect);
+      const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.baseTarget, 0, 1));
       const topVolumeBoost = state.isTopVolume ? 1.18 : 1;
-      const baseW = MathUtils.clamp(state.baseTarget * sqrtAspect * topVolumeBoost, 0.82, 6.1);
-      const baseD = MathUtils.clamp(state.baseTarget / sqrtAspect * topVolumeBoost, 0.82, 6.1);
+      const baseW = MathUtils.clamp(shape.baseW * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.5);
+      const baseD = MathUtils.clamp(shape.baseD * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.5);
       parkTowerTargets.push({
         sequence: state.sequence,
         x: state.xTarget,
@@ -3238,29 +3286,28 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         core.lerp(new Color('#8da5bb'), 0.18);
       }
       const districtTint = TOP_COINS_DISTRICT_TINTS[state.districtId % TOP_COINS_DISTRICT_TINTS.length] ?? '#ead8bb';
-      const baseAspect = MathUtils.lerp(0.82, 1.24, hashUnitString(state.symbol, 13));
-      const sqrtAspect = Math.sqrt(baseAspect);
+      const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.base, 0, 1));
       const topVolumeBoost = state.isTopVolume ? 1.18 : 1;
-      const baseW = MathUtils.clamp(state.base * sqrtAspect * topVolumeBoost, 0.82, 6.1);
-      const baseD = MathUtils.clamp(state.base / sqrtAspect * topVolumeBoost, 0.82, 6.1);
+      const baseW = MathUtils.clamp(shape.baseW * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.5);
+      const baseD = MathUtils.clamp(shape.baseD * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.5);
       out.push({
         sequence: state.sequence,
         x: state.x,
         z: state.z,
         height: state.height,
-        archetypeId: (state.sequence % 6) as TowerArchetypeId,
+        archetypeId: shape.archetypeId,
         baseW,
         baseD,
-        footprintX: MathUtils.clamp(baseW * 0.98, 0.8, 5.7),
-        footprintZ: MathUtils.clamp(baseD * 0.98, 0.8, 5.7),
-        taper: MathUtils.lerp(0.03, 0.16, hashUnitString(state.symbol, 29)),
-        podiumRatio: MathUtils.lerp(0.12, 0.24, hashUnitString(state.symbol, 37)),
-        crownRatio: MathUtils.lerp(0.08, 0.16, hashUnitString(state.symbol, 41)),
+        footprintX: MathUtils.clamp(shape.footprintX * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.35),
+        footprintZ: MathUtils.clamp(shape.footprintZ * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.35),
+        taper: shape.taper,
+        podiumRatio: shape.podiumRatio,
+        crownRatio: shape.crownRatio,
         coreColor: `#${core.getHexString()}`,
         glowColor: `#${glow.getHexString()}`,
         glowStrength: state.glowStrength * MathUtils.clamp(state.opacity, 0, 1),
         bandCount: state.isTopGainer || state.isTopVolume || state.rank <= 3 ? 4 : state.rank <= 16 ? 3 : 2,
-        heightScore: MathUtils.clamp(Math.abs(state.pct) / Math.max(1, Math.abs(debugRef.current.topGainer.pct) || 1), 0, 1),
+        heightScore: MathUtils.clamp(state.base, 0, 1),
         isHero: state.isTopGainer || state.isTopLoser || state.isTopVolume || state.rank <= 3,
         heroMult: state.isTopGainer ? 1.24 : state.isTopLoser ? 1.1 : state.isTopVolume ? 1.14 : state.rank <= 3 ? 1.08 : 1,
         capGlowBoost: state.isTopGainer ? 1.58 : state.isTopLoser ? 1.28 : state.isTopVolume ? 1.34 : 1.06,
@@ -4066,14 +4113,19 @@ function getTopCoinTickerTexture(ticker: string) {
   if (existing) return existing;
 
   const canvas = document.createElement('canvas');
-  canvas.width = 384;
-  canvas.height = 384;
+  canvas.width = 1024;
+  canvas.height = 1024;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
     const fallback = finalizeCanvasTexture(new CanvasTexture(canvas));
     topCoinTickerTextureCache.set(key, fallback);
     return fallback;
   }
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
 
   const center = canvas.width * 0.5;
   const radius = canvas.width * 0.45;
@@ -4098,14 +4150,22 @@ function getTopCoinTickerTexture(ticker: string) {
   ctx.fillStyle = '#fff7ea';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const label = key.length > 8 ? `${key.slice(0, 7)}…` : key;
-  ctx.lineWidth = 10;
+  const label = key.length > 6 ? key.slice(0, 6) : key;
+  ctx.lineWidth = 20;
   ctx.strokeStyle = 'rgba(7,9,12,0.86)';
-  ctx.font = `800 ${Math.max(46, Math.floor(118 - Math.max(0, label.length - 3) * 7))}px ui-sans-serif, system-ui, sans-serif`;
+  ctx.font = `900 ${Math.max(150, Math.floor(290 - Math.max(0, label.length - 3) * 26))}px ui-sans-serif, system-ui, sans-serif`;
+  ctx.shadowColor = 'rgba(247,147,26,0.25)';
+  ctx.shadowBlur = 16;
   ctx.strokeText(label, center, center);
+  ctx.shadowBlur = 0;
   ctx.fillText(label, center, center);
 
-  const texture = finalizeCanvasTexture(new CanvasTexture(canvas));
+  const texture = new CanvasTexture(canvas);
+  texture.colorSpace = SRGBColorSpace;
+  texture.minFilter = LinearMipmapLinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.generateMipmaps = true;
+  texture.needsUpdate = true;
   topCoinTickerTextureCache.set(key, texture);
   return texture;
 }
