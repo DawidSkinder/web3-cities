@@ -2314,13 +2314,21 @@ function estimateTopCoinFootprintRadius(
   symbol: string,
   sizeScore: number,
   pct: number,
+  rank: number,
   isTopVolume: boolean,
   isTopGainer: boolean,
   isTopLoser: boolean
 ) {
   const sequence = (hashString32(symbol) % 1_000_000) + 1;
   const shape = buildTowerShapeParams(sequence, MathUtils.clamp(sizeScore, 0, 1));
-  const baseScale = topCoinBaseScale({ pct, isTopGainer, isTopLoser, isTopVolume });
+  const baseScale = topCoinBaseScale({
+    pct,
+    rank,
+    sizeScore,
+    isTopGainer,
+    isTopLoser,
+    isTopVolume
+  });
   const baseW = MathUtils.clamp(shape.baseW * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.9);
   const baseD = MathUtils.clamp(shape.baseD * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.9);
   return 0.5 * Math.hypot(baseW, baseD);
@@ -2355,6 +2363,7 @@ function buildTopCoinsLayoutTargets({
       item.symbol,
       sizeScore,
       item.pct,
+      item.rank,
       item.isTopVolume,
       item.isTopGainer,
       item.isTopLoser
@@ -2775,24 +2784,35 @@ function mapTopCoinTowerMetrics({
 
 function topCoinBaseScale({
   pct,
+  rank,
+  sizeScore,
   isTopGainer,
   isTopLoser,
   isTopVolume
 }: {
   pct: number;
+  rank: number;
+  sizeScore: number;
   isTopGainer: boolean;
   isTopLoser: boolean;
   isTopVolume: boolean;
 }) {
   const gain = Math.max(0, pct);
-  const gainBoost = smoothstep01(remapClamped(gain, 10, 60));
-  let scale = MathUtils.lerp(0.92, 1.62, gainBoost);
-  if (isTopGainer) scale *= 1.12;
-  if (isTopVolume) scale *= 1.08;
+  const gainBoost = smoothstep01(remapClamped(gain, 8, 42));
+  const sizeBoost = smoothstep01(remapClamped(sizeScore, 0.62, 1));
+  const rankBoost = smoothstep01(remapClamped(30 - rank, 0, 28));
+
+  let scale = MathUtils.lerp(0.92, 1.9, gainBoost);
+  scale *= MathUtils.lerp(1, 1.28, sizeBoost);
+  scale *= MathUtils.lerp(1, 1.13, rankBoost);
+
+  if (isTopGainer) scale *= 1.15;
+  if (isTopVolume) scale *= 1.1;
+  if (rank <= 3) scale *= 1.1;
   if (isTopLoser || pct < 0) {
     scale = Math.min(scale, 1.02);
   }
-  return MathUtils.clamp(scale, 0.85, 1.95);
+  return MathUtils.clamp(scale, 0.85, 2.35);
 }
 
 function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
@@ -3241,6 +3261,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
           const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.baseTarget, 0, 1));
           const baseScale = topCoinBaseScale({
             pct: state.pctTarget,
+            rank: state.rank,
+            sizeScore: state.baseTarget,
             isTopGainer: state.isTopGainer,
             isTopLoser: state.isTopLoser,
             isTopVolume: state.isTopVolume
@@ -3268,6 +3290,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.baseTarget, 0, 1));
       const baseScale = topCoinBaseScale({
         pct: state.pctTarget,
+        rank: state.rank,
+        sizeScore: state.baseTarget,
         isTopGainer: state.isTopGainer,
         isTopLoser: state.isTopLoser,
         isTopVolume: state.isTopVolume
@@ -3420,6 +3444,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.base, 0, 1));
       const baseScale = topCoinBaseScale({
         pct: state.pct,
+        rank: state.rank,
+        sizeScore: state.base,
         isTopGainer: state.isTopGainer,
         isTopLoser: state.isTopLoser,
         isTopVolume: state.isTopVolume
@@ -4405,14 +4431,16 @@ function TopCoinLogoDisc({
     const t = clock.getElapsedTime() + tower.sequence * 0.015;
     // Keep bobbing positive-only so discs never dip into rooftops.
     const bob = (Math.sin(t * 1.14) * 0.5 + 0.5) * 0.16;
-    // Local coordinates: parent tower group is already at [tower.x, *, tower.z].
-    g.position.set(0, tower.height + 2.45 + bob, 0);
     g.quaternion.copy(camera.quaternion);
+    g.position.set(0, tower.height + 2.7 + bob, 0);
 
     g.getWorldPosition(worldPosRef.current);
     const distance = camera.position.distanceTo(worldPosRef.current);
-    const scale = MathUtils.clamp(1.16 + distance * 0.0104, 1.35, 4.35);
-    const clearance = 2.45 + scale * 0.22;
+    const baseScale = MathUtils.clamp(1.16 + distance * 0.0104, 1.35, 4.35);
+    // One-way boost: large/tall towers get larger discs; baseline towers never get smaller.
+    const towerBoostT = smoothstep01(remapClamped(tower.height, 30, 90));
+    const scale = baseScale * MathUtils.lerp(1, 1.26, towerBoostT);
+    const clearance = 2.45 + scale * 0.24;
     g.position.set(0, tower.height + clearance + bob, 0);
     g.scale.set(scale, scale, scale);
 
