@@ -12,9 +12,6 @@ Mode can be selected from the SANDBOX panel or via query param:
 Fallback env:
 - `VITE_CITY_MODE=top200|btc`
 
-Note:
-- On `*.github.io` static hosting (no server functions), app falls back to `btc` by default unless `?mode=` or `VITE_CITY_MODE` explicitly selects another mode.
-
 ## Top Coins Proxy (`/api/top-coins`)
 The frontend never calls Binance REST directly. It calls:
 
@@ -40,11 +37,37 @@ Optional envs:
 - `VITE_TOP_COINS_POLL_MS` (default 60000, floor 30000)
 - `VITE_TOP_COINS_LIMIT` (default 200)
 - `VITE_TOP_COINS_QUOTE` (default `USDT`)
+- `VITE_TOP_COINS_API_URL` (default `/api/top-coins`; set to worker URL on static hosting)
 - `TOP_COINS_CACHE_TTL_MS` (default 60000)
 - `TOP_COINS_CACHE_MAX_STALE_MS` (default 600000)
 
 ## Production Proxy Deployment
-Production serverless handler:
+Two production options are included:
+
+1. Node/serverless handler:
 - `api/top-coins.ts`
 
-Deploy on a platform that supports serverless functions (e.g. Vercel/Netlify-compatible adapters) so `/api/top-coins` is served server-side with cache + stale safety.
+2. Cloudflare Worker proxy (recommended for GitHub Pages):
+- `workers/top-coins/src/index.ts`
+- `workers/top-coins/wrangler.toml`
+
+### GitHub Pages + Worker (full working setup)
+1. Create Cloudflare API credentials in GitHub secrets:
+- `CF_API_TOKEN`
+- `CF_ACCOUNT_ID`
+
+2. Deploy worker:
+- Run workflow: `.github/workflows/deploy-top-coins-proxy.yml`
+
+3. Set repository variable for frontend build:
+- `VITE_TOP_COINS_API_URL=https://<your-worker-subdomain>.workers.dev/api/top-coins`
+
+4. (Optional) Restrict CORS origins in worker env:
+- `ALLOWED_ORIGINS=https://dawidskinder.github.io`
+
+5. Deploy site via existing Pages workflow:
+- `.github/workflows/deploy.yml`
+
+The Pages build now injects:
+- `VITE_TOP_COINS_API_URL` from repository variables
+- `VITE_CITY_MODE` from repository variables

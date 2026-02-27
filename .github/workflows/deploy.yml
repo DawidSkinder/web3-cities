@@ -33,6 +33,9 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          VITE_TOP_COINS_API_URL: ${{ vars.VITE_TOP_COINS_API_URL }}
+          VITE_CITY_MODE: ${{ vars.VITE_CITY_MODE }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

@@ -8,8 +8,6 @@ type TopCoinsDataEngineConfig = {
 };
 
 type TopCoinsSnapshotListener = (snapshot: TopCoinsSnapshot) => void;
-type TopCoinsFatalReason = 'proxy-unavailable';
-type TopCoinsFatalListener = (reason: TopCoinsFatalReason) => void;
 
 const DEFAULT_ENDPOINT = '/api/top-coins';
 
@@ -45,15 +43,13 @@ export class TopCoinsDataEngine {
   private activeAbort: AbortController | null = null;
   private sequence = 0;
   private lastSnapshot: TopCoinsSnapshot | null = null;
-  private fatalEmitted = false;
 
   private sessionMaxQuoteVolume = 0;
   private sessionMaxAbsPct = 0;
   private lastError: string | null = null;
-  private readonly fatalListeners = new Set<TopCoinsFatalListener>();
 
   constructor(config: TopCoinsDataEngineConfig = {}) {
-    this.endpoint = config.endpoint ?? DEFAULT_ENDPOINT;
+    this.endpoint = config.endpoint ?? (import.meta.env.VITE_TOP_COINS_API_URL?.trim() || DEFAULT_ENDPOINT);
     this.limit = Math.max(1, Math.min(500, Math.floor(config.limit ?? 200)));
     this.quote = (config.quote ?? 'USDT').trim().toUpperCase() || 'USDT';
     this.pollMs = parsePollMs(config.pollMs ?? import.meta.env.VITE_TOP_COINS_POLL_MS);
@@ -68,7 +64,6 @@ export class TopCoinsDataEngine {
     this.sessionMaxAbsPct = 0;
     this.lastError = null;
     this.lastSnapshot = null;
-    this.fatalEmitted = false;
 
     void this.pollNow();
     this.timer = window.setInterval(() => {
@@ -93,13 +88,6 @@ export class TopCoinsDataEngine {
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
-    };
-  }
-
-  onFatal(listener: TopCoinsFatalListener) {
-    this.fatalListeners.add(listener);
-    return () => {
-      this.fatalListeners.delete(listener);
     };
   }
 
@@ -165,17 +153,6 @@ export class TopCoinsDataEngine {
           this.lastSnapshot = emptyErrorSnapshot;
           for (const listener of this.listeners) {
             listener(emptyErrorSnapshot);
-          }
-        }
-
-        if (isProxyUnavailable && !this.fatalEmitted) {
-          this.fatalEmitted = true;
-          if (this.timer != null) {
-            window.clearInterval(this.timer);
-            this.timer = null;
-          }
-          for (const listener of this.fatalListeners) {
-            listener('proxy-unavailable');
           }
         }
       })

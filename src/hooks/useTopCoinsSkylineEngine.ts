@@ -2,11 +2,8 @@ import { useEffect } from 'react';
 import { clearTopCoinsStore, publishTopCoinsSnapshot } from '../data/topCoins/topCoinsStore';
 import { TopCoinsDataEngine } from '../data/topCoins/TopCoinsDataEngine';
 
-export function useTopCoinsSkylineEngine(options: {
-  enabled: boolean;
-  onProxyUnavailable?: () => void;
-}) {
-  const { enabled, onProxyUnavailable } = options;
+export function useTopCoinsSkylineEngine(options: { enabled: boolean }) {
+  const { enabled } = options;
 
   useEffect(() => {
     if (!enabled) {
@@ -25,17 +22,13 @@ export function useTopCoinsSkylineEngine(options: {
     const unsubscribe = engine.subscribe((snapshot) => {
       publishTopCoinsSnapshot(snapshot);
     });
-    const unsubscribeFatal = engine.onFatal(() => {
-      onProxyUnavailable?.();
-    });
 
     engine.start();
 
     return () => {
       unsubscribe();
-      unsubscribeFatal();
       engine.stop();
       clearTopCoinsStore();
     };
-  }, [enabled, onProxyUnavailable]);
+  }, [enabled]);
 }
