@@ -270,7 +270,14 @@ type AccumState = {
   lastParkSkipReason: string;
 };
 
-type CameraMode = 'auto' | 'user' | 'returning';
+type CameraMode = 'auto' | 'user' | 'focus';
+
+type CameraFocusTarget = {
+  sequence: number;
+  x: number;
+  z: number;
+  height: number;
+};
 
 type OrbitState = {
   angle: number;
@@ -287,7 +294,6 @@ const MAX_HEIGHT = 46;
 const HERO_MAX_HEIGHT = 92;
 const HEIGHT_GAMMA = 0.84;
 const TOWER_FOOTPRINT = 1.1;
-const IDLE_DELAY_MS = 6000;
 const BIRTH_RISE_MS = 900;
 const BIRTH_GLOW_DELAY_MS = 150;
 const BIRTH_GLOW_RAMP_MS = 700;
@@ -2044,20 +2050,35 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
 
 function MinimalOrbitRig({
   bounds,
+  focusTarget,
+  onClearFocusTarget,
   onCameraDebug
 }: {
   bounds: SandboxBounds;
+  focusTarget?: CameraFocusTarget | null;
+  onClearFocusTarget?: () => void;
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
 }) {
   const { camera, gl } = useThree();
   const initializedRef = useRef(false);
   const modeRef = useRef<CameraMode>('auto');
-  const lastInteractionRef = useRef(0);
 
   const actualRef = useRef<OrbitState>({ angle: 0, distance: 28, elevation: 12, lookY: 4 });
   const controlRef = useRef<OrbitState>({ angle: 0, distance: 28, elevation: 12, lookY: 4 });
   const autoRef = useRef<OrbitState>({ angle: 0, distance: 28, elevation: 12, lookY: 4 });
 
+  const centerActualRef = useRef({ x: 0, z: 0 });
+  const centerTargetRef = useRef({ x: 0, z: 0 });
+  const focusOrbitRef = useRef({
+    sequence: null as number | null,
+    centerX: 0,
+    centerZ: 0,
+    topY: 0,
+    radius: 14,
+    elevation: 16,
+    lookY: 6,
+    angularSpeed: 0.18
+  });
   const keysRef = useRef<Record<string, boolean>>({});
   const dragRef = useRef({ dragging: false, pointerId: -1, lastX: 0, lastY: 0 });
   const debugEmitAtRef = useRef(0);
@@ -2065,9 +2086,22 @@ function MinimalOrbitRig({
   useEffect(() => {
     const canvas = gl.domElement;
 
-    const markInteraction = () => {
-      lastInteractionRef.current = performance.now();
-      if (modeRef.current !== 'user') modeRef.current = 'user';
+    const syncControlFromCurrentView = () => {
+      const control = controlRef.current;
+      const px = smoothPosition.lengthSq() > 0 ? smoothPosition.x : camera.position.x;
+      const pz = smoothPosition.lengthSq() > 0 ? smoothPosition.z : camera.position.z;
+      control.angle = Math.atan2(px, pz);
+      control.distance = Math.max(0.001, Math.hypot(px, pz));
+      control.elevation = smoothPosition.lengthSq() > 0 ? smoothPosition.y : camera.position.y;
+      control.lookY = smoothTarget.lengthSq() > 0 ? smoothTarget.y : 4;
+    };
+
+    const markUserInteraction = () => {
+      if (modeRef.current === 'focus') {
+        onClearFocusTarget?.();
+        syncControlFromCurrentView();
+      }
+      modeRef.current = 'user';
     };
 
     const onPointerDown = (event: PointerEvent) => {
@@ -2077,12 +2111,14 @@ function MinimalOrbitRig({
       dragRef.current.lastX = event.clientX;
       dragRef.current.lastY = event.clientY;
       canvas.setPointerCapture?.(event.pointerId);
-      markInteraction();
     };
 
     const onPointerMove = (event: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag.dragging || drag.pointerId !== event.pointerId) return;
+      if (modeRef.current === 'focus') {
+        markUserInteraction();
+      }
       const dx = event.clientX - drag.lastX;
       const dy = event.clientY - drag.lastY;
       drag.lastX = event.clientX;
@@ -2092,7 +2128,7 @@ function MinimalOrbitRig({
       control.angle = control.angle - dx * 0.0042 * precision;
       control.elevation += dy * -0.035 * precision;
       control.lookY += dy * -0.016 * precision;
-      markInteraction();
+      markUserInteraction();
       event.preventDefault();
     };
 
@@ -2101,27 +2137,29 @@ function MinimalOrbitRig({
       dragRef.current.dragging = false;
       dragRef.current.pointerId = -1;
       canvas.releasePointerCapture?.(event.pointerId);
-      markInteraction();
     };
 
     const onWheel = (event: WheelEvent) => {
+      if (modeRef.current === 'focus') {
+        markUserInteraction();
+      }
       const control = controlRef.current;
       const precision = keysRef.current.ShiftLeft || keysRef.current.ShiftRight ? 0.55 : 1;
       control.distance += event.deltaY * 0.016 * precision;
-      markInteraction();
+      markUserInteraction();
       event.preventDefault();
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
       keysRef.current[event.code] = true;
       if (event.code === 'KeyR') {
-        modeRef.current = 'returning';
-        lastInteractionRef.current = performance.now();
+        modeRef.current = 'auto';
+        onClearFocusTarget?.();
         event.preventDefault();
         return;
       }
       if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE'].includes(event.code)) {
-        markInteraction();
+        markUserInteraction();
         event.preventDefault();
       }
     };
@@ -2149,7 +2187,36 @@ function MinimalOrbitRig({
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [gl]);
+  }, [camera, gl, onClearFocusTarget]);
+
+  useEffect(() => {
+    if (!focusTarget) return;
+    const focus = focusOrbitRef.current;
+    focus.sequence = focusTarget.sequence;
+    focus.centerX = focusTarget.x;
+    focus.centerZ = focusTarget.z;
+    focus.topY = focusTarget.height;
+    focus.radius = MathUtils.clamp(6.5 + focusTarget.height * 0.34 + bounds.radius * 0.018, 7.5, 42);
+    focus.elevation = MathUtils.clamp(focusTarget.height + Math.max(6, focusTarget.height * 0.38), 9, 86);
+    focus.lookY = Math.max(1.2, focusTarget.height * 0.5 + 0.2);
+    focus.angularSpeed =
+      (RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.11 : 0.18) * Math.max(0.65, RUNTIME_QUALITY_CONFIG.cameraOrbitSpeedScale);
+
+    const px = smoothPosition.lengthSq() > 0 ? smoothPosition.x : camera.position.x;
+    const pz = smoothPosition.lengthSq() > 0 ? smoothPosition.z : camera.position.z;
+    const dx = px - focus.centerX;
+    const dz = pz - focus.centerZ;
+
+    const control = controlRef.current;
+    control.angle = Math.atan2(dx, dz);
+    control.distance = Math.max(8, Math.hypot(dx, dz));
+    control.elevation = smoothPosition.lengthSq() > 0 ? smoothPosition.y : camera.position.y;
+    control.lookY = smoothTarget.lengthSq() > 0 ? smoothTarget.y : focus.lookY;
+
+    centerTargetRef.current.x = focus.centerX;
+    centerTargetRef.current.z = focus.centerZ;
+    modeRef.current = 'focus';
+  }, [bounds.radius, camera, focusTarget]);
 
   useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime();
@@ -2168,19 +2235,13 @@ function MinimalOrbitRig({
     const anyMovementKey = keys.KeyW || keys.KeyA || keys.KeyS || keys.KeyD || keys.KeyQ || keys.KeyE;
     if (anyMovementKey) {
       modeRef.current = 'user';
-      lastInteractionRef.current = performance.now();
-    }
-
-    if (modeRef.current === 'user') {
-      const idleMs = performance.now() - lastInteractionRef.current;
-      if (!dragRef.current.dragging && idleMs > IDLE_DELAY_MS) modeRef.current = 'returning';
+      if (focusTarget) onClearFocusTarget?.();
     }
 
     const control = controlRef.current;
     const actual = actualRef.current;
     if (!initializedRef.current) {
       initializedRef.current = true;
-      lastInteractionRef.current = performance.now();
       control.angle = auto.angle;
       control.distance = auto.distance;
       control.elevation = auto.elevation;
@@ -2194,13 +2255,27 @@ function MinimalOrbitRig({
     }
 
     if (modeRef.current === 'auto') {
+      centerTargetRef.current.x = 0;
+      centerTargetRef.current.z = 0;
       control.angle = auto.angle;
       control.distance = auto.distance;
       control.elevation = auto.elevation;
       control.lookY = auto.lookY;
     }
 
-    if (modeRef.current === 'user' || modeRef.current === 'returning') {
+    if (modeRef.current === 'focus') {
+      const focus = focusOrbitRef.current;
+      centerTargetRef.current.x = focus.centerX;
+      centerTargetRef.current.z = focus.centerZ;
+      control.angle += delta * focus.angularSpeed;
+      control.distance = MathUtils.damp(control.distance, focus.radius, 2.2, delta);
+      control.elevation = MathUtils.damp(control.elevation, focus.elevation, 2.3, delta);
+      control.lookY = MathUtils.damp(control.lookY, focus.lookY, 2.3, delta);
+    }
+
+    if (modeRef.current === 'user') {
+      centerTargetRef.current.x = 0;
+      centerTargetRef.current.z = 0;
       const precision = keys.ShiftLeft || keys.ShiftRight ? 0.45 : 1;
       const orbitSpeed = 0.95 * precision * Math.max(0.7, orbitScale);
       const tiltSpeed = 7 * precision;
@@ -2219,31 +2294,35 @@ function MinimalOrbitRig({
       if (keys.KeyE) control.distance += delta * zoomSpeed;
     }
 
-    if (modeRef.current === 'returning') {
-      control.angle = MathUtils.damp(control.angle, auto.angle, 1.15, delta);
-      control.distance = MathUtils.damp(control.distance, auto.distance, 1.15, delta);
-      control.elevation = MathUtils.damp(control.elevation, auto.elevation, 1.1, delta);
-      control.lookY = MathUtils.damp(control.lookY, auto.lookY, 1.1, delta);
-      const d =
-        Math.abs(control.angle - auto.angle) +
-        Math.abs(control.distance - auto.distance) +
-        Math.abs(control.elevation - auto.elevation) +
-        Math.abs(control.lookY - auto.lookY);
-      if (d < 0.9 && !dragRef.current.dragging) modeRef.current = 'auto';
+    if (modeRef.current === 'focus') {
+      const focus = focusOrbitRef.current;
+      control.distance = MathUtils.clamp(control.distance, 6, 72);
+      control.elevation = MathUtils.clamp(control.elevation, focus.topY + 3.5, focus.topY + 96);
+      control.lookY = MathUtils.clamp(control.lookY, Math.max(1, focus.topY * 0.25), focus.topY + 26);
+    } else {
+      control.distance = MathUtils.clamp(control.distance, 8, Math.max(34, radius * 3 + 24));
+      control.elevation = MathUtils.clamp(control.elevation, 4, Math.max(18, maxY + radius * 0.45 + 10));
+      control.lookY = MathUtils.clamp(control.lookY, 0.8, Math.max(26, maxY + 8));
     }
 
-    control.distance = MathUtils.clamp(control.distance, 8, Math.max(34, radius * 3 + 24));
-    control.elevation = MathUtils.clamp(control.elevation, 4, Math.max(18, maxY + radius * 0.45 + 10));
-    control.lookY = MathUtils.clamp(control.lookY, 0.8, Math.max(26, maxY + 8));
+    const orbitDamp = modeRef.current === 'auto' ? 1.6 : modeRef.current === 'focus' ? 2.4 : 2.2;
+    const radiusDamp = modeRef.current === 'auto' ? 1.5 : modeRef.current === 'focus' ? 2.3 : 2.1;
+    const verticalDamp = modeRef.current === 'auto' ? 1.45 : modeRef.current === 'focus' ? 2.2 : 2.0;
+    const lookDamp = modeRef.current === 'auto' ? 1.4 : modeRef.current === 'focus' ? 2.25 : 1.9;
+    actual.angle = MathUtils.damp(actual.angle, control.angle, orbitDamp, delta);
+    actual.distance = MathUtils.damp(actual.distance, control.distance, radiusDamp, delta);
+    actual.elevation = MathUtils.damp(actual.elevation, control.elevation, verticalDamp, delta);
+    actual.lookY = MathUtils.damp(actual.lookY, control.lookY, lookDamp, delta);
 
-    actual.angle = MathUtils.damp(actual.angle, control.angle, modeRef.current === 'auto' ? 1.6 : 2.2, delta);
-    actual.distance = MathUtils.damp(actual.distance, control.distance, modeRef.current === 'auto' ? 1.5 : 2.1, delta);
-    actual.elevation = MathUtils.damp(actual.elevation, control.elevation, modeRef.current === 'auto' ? 1.45 : 2.0, delta);
-    actual.lookY = MathUtils.damp(actual.lookY, control.lookY, modeRef.current === 'auto' ? 1.4 : 1.9, delta);
+    centerActualRef.current.x = MathUtils.damp(centerActualRef.current.x, centerTargetRef.current.x, 2.4, delta);
+    centerActualRef.current.z = MathUtils.damp(centerActualRef.current.z, centerTargetRef.current.z, 2.4, delta);
 
     tempDir.set(Math.sin(actual.angle), 0, Math.cos(actual.angle));
-    desiredPosition.copy(tempDir).multiplyScalar(actual.distance).setY(actual.elevation);
-    desiredTarget.set(0, actual.lookY, 0);
+    desiredPosition.copy(tempDir).multiplyScalar(actual.distance);
+    desiredPosition.x += centerActualRef.current.x;
+    desiredPosition.z += centerActualRef.current.z;
+    desiredPosition.y = actual.elevation;
+    desiredTarget.set(centerActualRef.current.x, actual.lookY, centerActualRef.current.z);
 
     if (smoothPosition.lengthSq() === 0 && smoothTarget.lengthSq() === 0) {
       smoothPosition.copy(desiredPosition);
@@ -2254,9 +2333,9 @@ function MinimalOrbitRig({
     smoothPosition.y = MathUtils.damp(smoothPosition.y, desiredPosition.y, modeRef.current === 'auto' ? 1.8 : 2.4, delta);
     smoothPosition.z = MathUtils.damp(smoothPosition.z, desiredPosition.z, modeRef.current === 'auto' ? 1.8 : 2.4, delta);
 
+    smoothTarget.x = MathUtils.damp(smoothTarget.x, desiredTarget.x, modeRef.current === 'auto' ? 1.75 : 2.2, delta);
     smoothTarget.y = MathUtils.damp(smoothTarget.y, desiredTarget.y, modeRef.current === 'auto' ? 1.75 : 2.2, delta);
-    smoothTarget.x = 0;
-    smoothTarget.z = 0;
+    smoothTarget.z = MathUtils.damp(smoothTarget.z, desiredTarget.z, modeRef.current === 'auto' ? 1.75 : 2.2, delta);
 
     camera.position.copy(smoothPosition);
     camera.lookAt(smoothTarget);
@@ -2918,12 +2997,14 @@ function AnimatedHoloTower({
   tower,
   hoveredTowerSequence,
   isTallest,
-  onHoverTower
+  onHoverTower,
+  onSelectTower
 }: {
   tower: TowerDatum;
   hoveredTowerSequence: number | null;
   isTallest: boolean;
   onHoverTower?: (sequence: number | null) => void;
+  onSelectTower?: (sequence: number) => void;
 }) {
   const groupRef = useRef<Group>(null);
   const coreRefs = useRef<Array<Mesh | null>>([]);
@@ -3185,6 +3266,10 @@ function AnimatedHoloTower({
                 (hit.object as { userData?: { towerSequence?: number } }).userData?.towerSequence === tower.sequence
             ) ?? false;
           if (!stillSameTower) onHoverTower?.(null);
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelectTower?.(tower.sequence);
         }}
       >
         <boxGeometry
@@ -5208,8 +5293,10 @@ function SandboxScene({
   bounds,
   marketMoodTarget,
   hoveredTowerSequence,
+  selectedTowerSequence,
   tallestTowerSequence,
   onHoverTowerChange,
+  onSelectTowerChange,
   onHoverHudUpdate,
   onCameraDebug
 }: {
@@ -5226,8 +5313,10 @@ function SandboxScene({
   bounds: SandboxBounds;
   marketMoodTarget: number;
   hoveredTowerSequence: number | null;
+  selectedTowerSequence: number | null;
   tallestTowerSequence: number | null;
   onHoverTowerChange?: (sequence: number | null) => void;
+  onSelectTowerChange?: (sequence: number | null) => void;
   onHoverHudUpdate?: (snapshot: HoverHudSnapshot) => void;
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
 }) {
@@ -5238,6 +5327,22 @@ function SandboxScene({
   const tallestTower = useMemo(
     () => (tallestTowerSequence == null ? null : towers.find((tower) => tower.sequence === tallestTowerSequence) ?? null),
     [tallestTowerSequence, towers]
+  );
+  const selectedTower = useMemo(
+    () => (selectedTowerSequence == null ? null : towers.find((tower) => tower.sequence === selectedTowerSequence) ?? null),
+    [selectedTowerSequence, towers]
+  );
+  const focusTarget = useMemo<CameraFocusTarget | null>(
+    () =>
+      selectedTower
+        ? {
+            sequence: selectedTower.sequence,
+            x: selectedTower.x,
+            z: selectedTower.z,
+            height: selectedTower.height
+          }
+        : null,
+    [selectedTower]
   );
   const focusMode = hoveredTowerSequence != null;
   const hoverStableRef = useRef<number | null>(hoveredTowerSequence);
@@ -5262,6 +5367,9 @@ function SandboxScene({
     }
     hoverIntentRef.current = sequence;
     hoverLastSeenAtRef.current = performance.now();
+  };
+  const requestSelectTower = (sequence: number) => {
+    onSelectTowerChange?.(sequence);
   };
 
   useEffect(() => {
@@ -5340,7 +5448,12 @@ function SandboxScene({
       <hemisphereLight args={['#9cc4ee', '#090b10', 0.34]} />
       <directionalLight position={[10, 18, 8]} intensity={0.72} color="#d6e8ff" castShadow={RUNTIME_QUALITY_CONFIG.shadows} />
       <directionalLight position={[-14, 20, -10]} intensity={0.34} color="#7fd3ff" />
-      <MinimalOrbitRig bounds={bounds} onCameraDebug={onCameraDebug} />
+      <MinimalOrbitRig
+        bounds={bounds}
+        focusTarget={focusTarget}
+        onClearFocusTarget={() => onSelectTowerChange?.(null)}
+        onCameraDebug={onCameraDebug}
+      />
 
       <CircuitBoardGround bounds={bounds} focusMode={focusMode} marketPulse={marketMoodTarget} />
       <DistrictBoundariesLayer districts={districts} focusMode={focusMode} />
@@ -5360,6 +5473,7 @@ function SandboxScene({
             hoveredTowerSequence={hoveredTowerSequence}
             isTallest={tallestTowerSequence === tower.sequence}
             onHoverTower={requestHoverTower}
+            onSelectTower={requestSelectTower}
           />
         ))}
       </group>
@@ -5402,6 +5516,7 @@ export function MinimalVizSandbox() {
   } = useAppendOnlyTowers(events);
   const [cameraDebug, setCameraDebug] = useState<CameraDebugSnapshot>({ camDist: 0, visCurve: 0 });
   const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
+  const [selectedTowerSequence, setSelectedTowerSequence] = useState<number | null>(null);
   const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
 
   useEffect(() => {
@@ -5410,6 +5525,12 @@ export function MinimalVizSandbox() {
       setHoveredTowerSequence(null);
     }
   }, [hoveredTowerSequence, towers]);
+  useEffect(() => {
+    if (selectedTowerSequence == null) return;
+    if (!towers.some((tower) => tower.sequence === selectedTowerSequence)) {
+      setSelectedTowerSequence(null);
+    }
+  }, [selectedTowerSequence, towers]);
 
   useEffect(() => {
     if (hoveredTowerSequence == null && hoverHud.visible) {
@@ -5482,8 +5603,10 @@ export function MinimalVizSandbox() {
         bounds={bounds}
         marketMoodTarget={marketMoodTarget}
         hoveredTowerSequence={hoveredTowerSequence}
+        selectedTowerSequence={selectedTowerSequence}
         tallestTowerSequence={tallestTowerSequence}
         onHoverTowerChange={setHoveredTowerSequence}
+        onSelectTowerChange={setSelectedTowerSequence}
         onHoverHudUpdate={setHoverHud}
         onCameraDebug={setCameraDebug}
       />
