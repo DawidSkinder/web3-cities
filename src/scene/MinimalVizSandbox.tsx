@@ -1154,6 +1154,22 @@ function parkConflictsPark(x: number, z: number, w: number, d: number, park: Par
   return dx < w * 0.5 + park.w * 0.5 + 1.2 && dz < d * 0.5 + park.d * 0.5 + 1.2;
 }
 
+function parkConflictsTopCoinTower(x: number, z: number, w: number, d: number, tower: ParkTowerCollisionTarget) {
+  const dx = Math.abs(x - tower.x);
+  const dz = Math.abs(z - tower.z);
+  const towerHalfX = Math.max(tower.baseW, tower.footprintX) * 0.6;
+  const towerHalfZ = Math.max(tower.baseD, tower.footprintZ) * 0.6;
+  const topClearance = 0.68;
+  return dx < w * 0.5 + towerHalfX + topClearance && dz < d * 0.5 + towerHalfZ + topClearance;
+}
+
+function parkConflictsTopCoinPark(x: number, z: number, w: number, d: number, park: ParkDatum) {
+  const dx = Math.abs(x - park.x);
+  const dz = Math.abs(z - park.z);
+  const topClearance = 0.6;
+  return dx < w * 0.5 + park.w * 0.5 + topClearance && dz < d * 0.5 + park.d * 0.5 + topClearance;
+}
+
 function pointSegmentDistanceXZ(px: number, pz: number, ax: number, az: number, bx: number, bz: number) {
   const abx = bx - ax;
   const abz = bz - az;
@@ -2322,15 +2338,21 @@ function buildTopCoinsLayoutTargets({
   const nodes: TopCoinsLayoutNode[] = [];
   for (let districtId = 0; districtId < TOP_COINS_DISTRICT_COUNT; districtId++) {
     const list = (groups.get(districtId) ?? []).sort((a, b) => a.rank - b.rank || a.symbol.localeCompare(b.symbol));
-    const { wedge, center } = districtAngles(districtId);
+    const { wedge, start } = districtAngles(districtId);
     for (let idx = 0; idx < list.length; idx++) {
       const item = list[idx];
-      const ring = Math.floor(idx / TOP_LAYOUT_SLOT_RING);
-      const slot = idx % TOP_LAYOUT_SLOT_RING;
-      const laneSlots = Math.max(TOP_LAYOUT_SLOT_RING, TOP_LAYOUT_SLOT_RING + ring * 2);
-      const localU = ((slot + 0.5) / laneSlots - 0.5) * 2;
-      const angle = center + localU * (wedge * Math.max(0.36, 0.78 - ring * 0.03));
-      const radius = TOP_LAYOUT_INNER_RADIUS + ring * TOP_LAYOUT_RING_STEP + (hashUnitString(item.symbol, 41) - 0.5) * 1.4;
+      const idx1 = idx + 1;
+      // Golden-angle based local sampling avoids rigid rows while staying deterministic per symbol/rank.
+      const angleU = ((idx1 * 0.61803398875 + hashUnitString(item.symbol, 43) * 0.27) % 1 + 1) % 1;
+      const angle =
+        start +
+        angleU * wedge * 0.92 +
+        (hashUnitString(item.symbol, 41) - 0.5) * wedge * 0.08;
+      const radialBand = Math.sqrt(idx1);
+      const radius =
+        TOP_LAYOUT_INNER_RADIUS +
+        radialBand * TOP_LAYOUT_RING_STEP +
+        (hashUnitString(item.symbol, 47) - 0.5) * 2.2;
       const xNominal = Math.cos(angle) * radius;
       const zNominal = Math.sin(angle) * radius;
       const baseTarget = baseBySymbol.get(item.symbol) ?? 1.2;
@@ -2456,20 +2478,20 @@ function buildTopCoinsDecorativeParks({
     return { parks, trees };
   }
 
-  const desiredParks = Math.min(MAX_PARKS_VISIBLE, Math.max(2, Math.round(towers.length / 44)));
-  const attemptsMax = desiredParks * 40;
+  const desiredParks = Math.min(MAX_PARKS_VISIBLE, Math.max(8, Math.round(towers.length / 20)));
+  const attemptsMax = desiredParks * 72;
   const now = Date.now();
 
   for (let attempt = 0; attempt < attemptsMax && parks.length < desiredParks; attempt++) {
     const seed = 81_001 + attempt * 137;
     const angle = hash01(seed, 1) * Math.PI * 2;
-    const radialN = MathUtils.lerp(0.34, 0.9, hash01(seed, 3));
-    const radialJitter = (hash01(seed, 5) - 0.5) * MathUtils.lerp(6, 14, radialN);
+    const radialN = MathUtils.lerp(0.24, 0.96, hash01(seed, 3));
+    const radialJitter = (hash01(seed, 5) - 0.5) * MathUtils.lerp(8, 20, radialN);
     const radial = Math.max(9, cityRadius * radialN + radialJitter);
     const x = Math.cos(angle) * radial;
     const z = Math.sin(angle) * radial;
-    const w = MathUtils.lerp(4.8, 8.6, hash01(seed, 7));
-    const d = MathUtils.lerp(4.4, 7.8, hash01(seed, 9));
+    const w = MathUtils.lerp(4.2, 7.2, hash01(seed, 7));
+    const d = MathUtils.lerp(3.8, 6.8, hash01(seed, 9));
     const yaw = hash01(seed, 11) * Math.PI;
     const radius = Math.max(w, d) * 0.58;
 
@@ -2477,14 +2499,14 @@ function buildTopCoinsDecorativeParks({
 
     let blocked = false;
     for (let i = 0; i < towers.length; i++) {
-      if (parkConflictsTower(x, z, w, d, towers[i])) {
+      if (parkConflictsTopCoinTower(x, z, w, d, towers[i])) {
         blocked = true;
         break;
       }
     }
     if (blocked) continue;
     for (let i = 0; i < parks.length; i++) {
-      if (parkConflictsPark(x, z, w, d, parks[i])) {
+      if (parkConflictsTopCoinPark(x, z, w, d, parks[i])) {
         blocked = true;
         break;
       }
