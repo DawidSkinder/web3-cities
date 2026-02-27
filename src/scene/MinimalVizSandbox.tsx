@@ -344,6 +344,11 @@ const HERO_HEIGHT_MULT_MIN = 1.6;
 const HERO_HEIGHT_MULT_MAX = 2.2;
 const HERO_BASE_MULT_MIN = 1.25;
 const HERO_BASE_MULT_MAX = 1.6;
+const HERO_USD_SCALE_START = 350_000;
+const HERO_USD_SCALE_FULL = 2_000_000;
+const HERO_HEIGHT_SCALE_MIN = 0.2;
+const HERO_BASE_SCALE_MIN = 0.25;
+const HERO_USD_CAP_MIN = 64;
 const HERO_GUARANTEE_GAP = 56;
 const HERO_GUARANTEE_MIN_ELIGIBLE = 2;
 const LANDMARK_Z_THRESHOLD = 2.6;
@@ -1692,11 +1697,23 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     state.heroEligibleSinceLast >= HERO_GUARANTEE_MIN_ELIGIBLE;
   const isHero = heroRollHit || heroGuarantee;
   const heroMode: 'none' | 'roll' | 'guarantee' = heroRollHit ? 'roll' : heroGuarantee ? 'guarantee' : 'none';
-  const heroMult = isHero
+  const heroUsdT = smoothstep01(
+    remapClamped(
+      logUsd,
+      Math.log10(HERO_USD_SCALE_START),
+      Math.log10(HERO_USD_SCALE_FULL)
+    )
+  );
+  const heroHeightScale = MathUtils.lerp(HERO_HEIGHT_SCALE_MIN, 1, heroUsdT);
+  const heroBaseScale = MathUtils.lerp(HERO_BASE_SCALE_MIN, 1, heroUsdT);
+  const heroMultRaw = isHero
     ? MathUtils.lerp(HERO_HEIGHT_MULT_MIN, HERO_HEIGHT_MULT_MAX, hash01(event.sequence, 1907))
     : 1;
-  const heroBaseMult = isHero ? MathUtils.lerp(HERO_BASE_MULT_MIN, HERO_BASE_MULT_MAX, hash01(event.sequence, 1913)) : 1;
-  height = MathUtils.clamp(height * heroMult, MIN_HEIGHT, HERO_MAX_HEIGHT);
+  const heroBaseMultRaw = isHero ? MathUtils.lerp(HERO_BASE_MULT_MIN, HERO_BASE_MULT_MAX, hash01(event.sequence, 1913)) : 1;
+  const heroMult = isHero ? 1 + (heroMultRaw - 1) * heroHeightScale : 1;
+  const heroBaseMult = isHero ? 1 + (heroBaseMultRaw - 1) * heroBaseScale : 1;
+  const heroUsdCap = MathUtils.lerp(HERO_USD_CAP_MIN, HERO_MAX_HEIGHT, heroUsdT);
+  height = MathUtils.clamp(height * heroMult, MIN_HEIGHT, isHero ? heroUsdCap : HERO_MAX_HEIGHT);
 
   // Keep million+ towers USD-monotonic despite hero randomness:
   // higher USD gets deterministic minimum prominence and lower USD cannot exceed its USD cap.
