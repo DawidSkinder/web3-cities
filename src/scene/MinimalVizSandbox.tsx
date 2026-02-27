@@ -4403,14 +4403,17 @@ function TopCoinLogoDisc({
     const g = groupRef.current;
     if (!g) return;
     const t = clock.getElapsedTime() + tower.sequence * 0.015;
-    const bob = Math.sin(t * 1.14) * 0.11;
+    // Keep bobbing positive-only so discs never dip into rooftops.
+    const bob = (Math.sin(t * 1.14) * 0.5 + 0.5) * 0.16;
     // Local coordinates: parent tower group is already at [tower.x, *, tower.z].
-    g.position.set(0, tower.height + 2.28 + bob, 0);
+    g.position.set(0, tower.height + 2.45 + bob, 0);
     g.quaternion.copy(camera.quaternion);
 
     g.getWorldPosition(worldPosRef.current);
     const distance = camera.position.distanceTo(worldPosRef.current);
     const scale = MathUtils.clamp(1.16 + distance * 0.0104, 1.35, 4.35);
+    const clearance = 2.45 + scale * 0.22;
+    g.position.set(0, tower.height + clearance + bob, 0);
     g.scale.set(scale, scale, scale);
 
     const dimFactor = focusMode && !isHovered ? FOCUS_NON_HOVER_DIM : 1;
@@ -4426,7 +4429,7 @@ function TopCoinLogoDisc({
   if (tower.mode !== 'top200') return null;
 
   return (
-    <group ref={groupRef} position={[0, tower.height + 2.28, 0]} renderOrder={6.95}>
+    <group ref={groupRef} position={[0, tower.height + 2.8, 0]} renderOrder={6.95}>
       <mesh ref={bodyRef} position={[0, 0, -0.016]} renderOrder={6.951}>
         <circleGeometry args={[0.72, 40]} />
         <meshBasicMaterial
