@@ -2,8 +2,21 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const BINANCE_TICKER_24H_URL = 'https://api.binance.com/api/v3/ticker/24hr';
-const BINANCE_EXCHANGE_INFO_URL = 'https://api.binance.com/api/v3/exchangeInfo';
+const BINANCE_DATA_PATHS = {
+  ticker24h: '/api/v3/ticker/24hr',
+  exchangeInfo: '/api/v3/exchangeInfo'
+};
+const BINANCE_BASE_CANDIDATES = [
+  process.env.BINANCE_DATA_BASE,
+  'https://data-api.binance.vision',
+  'https://api.binance.com',
+  'https://api-gcp.binance.com',
+  'https://api1.binance.com',
+  'https://api2.binance.com',
+  'https://api3.binance.com'
+]
+  .map((raw) => String(raw ?? '').trim())
+  .filter(Boolean);
 const QUOTE_ASSET = 'USDT';
 const LIMIT = 200;
 const LOGO_CONCURRENCY = 8;
@@ -50,7 +63,8 @@ async function fetchJsonWithRetry(url, label, maxAttempts = 2) {
       response = await fetch(url, {
         method: 'GET',
         headers: {
-          Accept: 'application/json'
+          Accept: 'application/json',
+          'User-Agent': 'top-coins-snapshot-bot/1.0'
         }
       });
     } catch (error) {
@@ -76,6 +90,27 @@ async function fetchJsonWithRetry(url, label, maxAttempts = 2) {
   }
 
   throw new Error(`${label} request failed after retries`);
+}
+
+async function fetchBinanceJson(path, label) {
+  const errors = [];
+  for (const base of BINANCE_BASE_CANDIDATES) {
+    const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;
+    const url = `${normalizedBase}${path}`;
+    try {
+      return await fetchJsonWithRetry(url, `${label} @ ${normalizedBase}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(message);
+      // 451 is geolocation block. Move to next Binance endpoint immediately.
+      if (message.includes(' 451:') || message.includes(' 451 ')) {
+        continue;
+      }
+      // For non-451 errors we still continue to next endpoint for resilience.
+      continue;
+    }
+  }
+  throw new Error(`${label} failed on all Binance endpoints: ${errors.join(' | ')}`);
 }
 
 async function fileExists(filePath) {
@@ -190,8 +225,8 @@ function deepEqual(a, b) {
 
 async function generateSnapshot() {
   const [ticker24hr, exchangeInfo] = await Promise.all([
-    fetchJsonWithRetry(BINANCE_TICKER_24H_URL, 'ticker/24hr'),
-    fetchJsonWithRetry(BINANCE_EXCHANGE_INFO_URL, 'exchangeInfo')
+    fetchBinanceJson(BINANCE_DATA_PATHS.ticker24h, 'ticker/24hr'),
+    fetchBinanceJson(BINANCE_DATA_PATHS.exchangeInfo, 'exchangeInfo')
   ]);
 
   if (!Array.isArray(ticker24hr)) {

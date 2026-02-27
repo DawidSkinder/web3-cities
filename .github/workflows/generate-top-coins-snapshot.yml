@@ -26,6 +26,8 @@ jobs:
           node-version: 20
 
       - name: Generate snapshot
+        env:
+          BINANCE_DATA_BASE: https://data-api.binance.vision
         run: node scripts/generate-top-coins-snapshot.mjs
 
       - name: Commit snapshot if changed

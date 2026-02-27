@@ -2216,13 +2216,13 @@ const TOP_COINS_DISTRICT_TINTS = [
 const TOP_HEIGHT_SEA_LEVEL = 14;
 const TOP_HEIGHT_POSITIVE_RANGE = 42;
 const TOP_HEIGHT_NEGATIVE_RANGE = 9.4;
-const TOP_LAYOUT_PADDING = 0.52;
-const TOP_LAYOUT_INITIAL_ITERS = 36;
-const TOP_LAYOUT_REFRESH_ITERS = 9;
+const TOP_LAYOUT_PADDING = 1.15;
+const TOP_LAYOUT_INITIAL_ITERS = 56;
+const TOP_LAYOUT_REFRESH_ITERS = 18;
 const TOP_LAYOUT_SLOT_RING = 8;
-const TOP_LAYOUT_INNER_RADIUS = 12;
-const TOP_LAYOUT_RING_STEP = 5.7;
-const TOP_LAYOUT_EDGE_PAD = 3.8;
+const TOP_LAYOUT_INNER_RADIUS = 18;
+const TOP_LAYOUT_RING_STEP = 7.6;
+const TOP_LAYOUT_EDGE_PAD = 5.2;
 
 type TopCoinsLayoutNode = {
   symbol: string;
@@ -2335,7 +2335,7 @@ function buildTopCoinsLayoutTargets({
   }
 
   const maxNominalRadius = nodes.reduce((acc, node) => Math.max(acc, Math.hypot(node.x, node.z) + node.radius), 0);
-  let cityRadius = Math.max(52, maxNominalRadius + 10 + Math.sqrt(Math.max(1, nodes.length)) * 0.42);
+  let cityRadius = Math.max(72, maxNominalRadius + 16 + Math.sqrt(Math.max(1, nodes.length)) * 0.55);
 
   const dispX = new Array(nodes.length).fill(0);
   const dispZ = new Array(nodes.length).fill(0);
@@ -2345,12 +2345,12 @@ function buildTopCoinsLayoutTargets({
   let overlapFix: 'ok' | 'iterating' = 'iterating';
   let layoutIters = 0;
 
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 6; attempt++) {
     for (const node of nodes) {
       clampNodeToDistrict(node, cityRadius);
     }
 
-    const iterations = baseIterations + attempt * 4;
+    const iterations = baseIterations + attempt * 8;
     for (let iter = 0; iter < iterations; iter++) {
       dispX.fill(0);
       dispZ.fill(0);
@@ -2408,7 +2408,7 @@ function buildTopCoinsLayoutTargets({
       break;
     }
 
-    cityRadius *= 1.08;
+    cityRadius *= 1.12;
   }
 
   if (!Number.isFinite(minSeparation)) minSeparation = 0;
@@ -3940,6 +3940,7 @@ function TopCoinLogoDisc({
   const discRef = useRef<Mesh>(null);
   const ringRef = useRef<Mesh>(null);
   const bodyRef = useRef<Mesh>(null);
+  const worldPosRef = useRef(new Vector3());
   const texture = useTopCoinDiscTexture(tower.logoPath, tower.symbol);
 
   useFrame(({ clock }, delta) => {
@@ -3947,12 +3948,14 @@ function TopCoinLogoDisc({
     if (!g) return;
     const t = clock.getElapsedTime() + tower.sequence * 0.015;
     const bob = Math.sin(t * 1.14) * 0.11;
-    g.position.set(tower.x, tower.height + 1.2 + bob, tower.z);
-    g.rotation.y += delta * 0.28;
+    // Local coordinates: parent tower group is already at [tower.x, *, tower.z].
+    g.position.set(0, tower.height + 1.24 + bob, 0);
+    g.quaternion.copy(camera.quaternion);
 
-    const distance = camera.position.distanceTo(g.position);
+    g.getWorldPosition(worldPosRef.current);
+    const distance = camera.position.distanceTo(worldPosRef.current);
     const rankScale = tower.rank ? MathUtils.clamp(1.08 - tower.rank / 360, 0.78, 1.1) : 1;
-    const scale = MathUtils.clamp((0.82 + distance * 0.0056) * rankScale, 0.76, 2.35);
+    const scale = MathUtils.clamp((0.95 + distance * 0.0084) * rankScale, 0.92, 4.2);
     g.scale.set(scale, scale, scale);
 
     const dimFactor = focusMode && !isHovered ? FOCUS_NON_HOVER_DIM : 1;
@@ -3968,9 +3971,9 @@ function TopCoinLogoDisc({
   if (tower.mode !== 'top200') return null;
 
   return (
-    <group ref={groupRef} position={[tower.x, tower.height + 1.2, tower.z]} renderOrder={6.95}>
-      <mesh ref={bodyRef} rotation={[-Math.PI / 2, 0, 0]} renderOrder={6.951}>
-        <cylinderGeometry args={[0.62, 0.62, 0.08, 24]} />
+    <group ref={groupRef} position={[0, tower.height + 1.24, 0]} renderOrder={6.95}>
+      <mesh ref={bodyRef} position={[0, 0, -0.016]} renderOrder={6.951}>
+        <circleGeometry args={[0.62, 32]} />
         <meshBasicMaterial
           color={tower.isTopLoser ? '#6f8fb5' : tower.isTopGainer ? '#f3bf74' : '#d8b07c'}
           transparent
@@ -3981,7 +3984,7 @@ function TopCoinLogoDisc({
           blending={AdditiveBlending}
         />
       </mesh>
-      <mesh ref={discRef} position={[0, 0.045, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={6.952}>
+      <mesh ref={discRef} position={[0, 0, -0.008]} renderOrder={6.952}>
         <circleGeometry args={[0.48, 32]} />
         <meshBasicMaterial
           map={texture}
@@ -3992,7 +3995,7 @@ function TopCoinLogoDisc({
           depthWrite={false}
         />
       </mesh>
-      <mesh ref={ringRef} position={[0, 0.055, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={6.953}>
+      <mesh ref={ringRef} position={[0, 0, -0.004]} renderOrder={6.953}>
         <torusGeometry args={[0.56, 0.03, 8, 42]} />
         <meshBasicMaterial
           color={tower.isTopGainer ? '#f9c786' : tower.isTopLoser ? '#7ca5d8' : '#f1d2a4'}
