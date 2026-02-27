@@ -11,7 +11,6 @@ import {
   DoubleSide,
   EdgesGeometry,
   LinearFilter,
-  LinearMipmapLinearFilter,
   LineBasicMaterial,
   Matrix4,
   MathUtils,
@@ -2175,10 +2174,17 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
 }
 
 type TopCoinsDebugOverlay = {
+  snapshotSeq: number;
+  applyCount: number;
+  changedTowers: number;
+  heightDeltaSum: number;
+  baseDeltaSum: number;
+  lastAppliedAt: number;
   asOfMs: number;
   asOfIso: string;
   symbols: number;
   fetchedAt: number;
+  pollSec: number;
   lastHash: string;
   refreshAgeSec: number;
   lastError: string | null;
@@ -2304,12 +2310,19 @@ function clampNodeToCity(node: TopCoinsLayoutNode, cityRadius: number) {
   node.z = Math.sin(angle) * radius;
 }
 
-function estimateTopCoinFootprintRadius(symbol: string, sizeScore: number, isTopVolume: boolean) {
+function estimateTopCoinFootprintRadius(
+  symbol: string,
+  sizeScore: number,
+  pct: number,
+  isTopVolume: boolean,
+  isTopGainer: boolean,
+  isTopLoser: boolean
+) {
   const sequence = (hashString32(symbol) % 1_000_000) + 1;
   const shape = buildTowerShapeParams(sequence, MathUtils.clamp(sizeScore, 0, 1));
-  const topVolumeBoost = isTopVolume ? 1.16 : 1;
-  const baseW = MathUtils.clamp(shape.baseW * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.46);
-  const baseD = MathUtils.clamp(shape.baseD * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.46);
+  const baseScale = topCoinBaseScale({ pct, isTopGainer, isTopLoser, isTopVolume });
+  const baseW = MathUtils.clamp(shape.baseW * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.9);
+  const baseD = MathUtils.clamp(shape.baseD * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.9);
   return 0.5 * Math.hypot(baseW, baseD);
 }
 
@@ -2318,7 +2331,7 @@ function buildTopCoinsLayoutTargets({
   states,
   sizeScoreBySymbol
 }: {
-  items: Array<{ symbol: string; rank: number; isTopVolume: boolean }>;
+  items: Array<{ symbol: string; rank: number; pct: number; isTopVolume: boolean; isTopGainer: boolean; isTopLoser: boolean }>;
   states: Map<string, TopCoinSymbolState>;
   sizeScoreBySymbol: Map<string, number>;
 }): TopCoinsLayoutResult {
@@ -2338,7 +2351,14 @@ function buildTopCoinsLayoutTargets({
     const xNominal = Math.cos(angle) * radius;
     const zNominal = Math.sin(angle) * radius;
     const sizeScore = sizeScoreBySymbol.get(item.symbol) ?? 0.4;
-    const footprintRadius = estimateTopCoinFootprintRadius(item.symbol, sizeScore, item.isTopVolume);
+    const footprintRadius = estimateTopCoinFootprintRadius(
+      item.symbol,
+      sizeScore,
+      item.pct,
+      item.isTopVolume,
+      item.isTopGainer,
+      item.isTopLoser
+    );
     const prev = states.get(item.symbol);
     nodes.push({
       symbol: item.symbol,
@@ -2753,6 +2773,28 @@ function mapTopCoinTowerMetrics({
   };
 }
 
+function topCoinBaseScale({
+  pct,
+  isTopGainer,
+  isTopLoser,
+  isTopVolume
+}: {
+  pct: number;
+  isTopGainer: boolean;
+  isTopLoser: boolean;
+  isTopVolume: boolean;
+}) {
+  const gain = Math.max(0, pct);
+  const gainBoost = smoothstep01(remapClamped(gain, 10, 60));
+  let scale = MathUtils.lerp(0.92, 1.62, gainBoost);
+  if (isTopGainer) scale *= 1.12;
+  if (isTopVolume) scale *= 1.08;
+  if (isTopLoser || pct < 0) {
+    scale = Math.min(scale, 1.02);
+  }
+  return MathUtils.clamp(scale, 0.85, 1.95);
+}
+
 function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
   const statesRef = useRef<Map<string, TopCoinSymbolState>>(new Map());
   const tracesRef = useRef<TraceDatum[]>([]);
@@ -2767,10 +2809,17 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
   const moodTargetRef = useRef(0.5);
   const volatilityRef = useRef(0.25);
   const debugRef = useRef<TopCoinsDebugOverlay>({
+    snapshotSeq: 0,
+    applyCount: 0,
+    changedTowers: 0,
+    heightDeltaSum: 0,
+    baseDeltaSum: 0,
+    lastAppliedAt: 0,
     asOfMs: 0,
     asOfIso: '',
     symbols: 0,
     fetchedAt: 0,
+    pollSec: 30,
     lastHash: 'none',
     refreshAgeSec: 0,
     lastError: null,
@@ -2845,6 +2894,9 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     const now = snapshot.emittedAt;
     const sizeScoreBySymbol = new Map<string, number>();
     const metricsBySymbol = new Map<string, { height: number; sizeScore: number; heightScore: number; volumeNorm: number }>();
+    let changedTowers = 0;
+    let heightDeltaSum = 0;
+    let baseDeltaSum = 0;
 
     for (let i = 0; i < snapshot.items.length; i++) {
       const item = snapshot.items[i];
@@ -2867,7 +2919,10 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       items: snapshot.items.map((item, index) => ({
         symbol: item.symbol,
         rank: item.rank || index + 1,
-        isTopVolume: item.symbol === topVolumeSymbol
+        pct: item.priceChangePercent,
+        isTopVolume: item.symbol === topVolumeSymbol,
+        isTopGainer: item.symbol === topGainerSymbol,
+        isTopLoser: item.symbol === topLoserSymbol
       })),
       states,
       sizeScoreBySymbol
@@ -2906,6 +2961,9 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       const districtId = placement?.districtId ?? prev?.districtId ?? (hashString32(item.symbol) % TOP_COINS_DISTRICT_COUNT);
 
       if (!prev) {
+        changedTowers += 1;
+        heightDeltaSum += nextHeight;
+        baseDeltaSum += nextBase;
         states.set(item.symbol, {
           symbol: item.symbol,
           baseAsset: item.baseAsset,
@@ -2943,6 +3001,14 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       }
 
       const prevRank = prev.rank;
+      const heightDelta = Math.abs(prev.heightTarget - nextHeight);
+      const baseDelta = Math.abs(prev.baseTarget - nextBase);
+      const pctDelta = Math.abs(prev.pctTarget - item.priceChangePercent);
+      if (heightDelta > 0.06 || baseDelta > 0.012 || pctDelta > 0.02 || prevRank !== rank) {
+        changedTowers += 1;
+        heightDeltaSum += heightDelta;
+        baseDeltaSum += baseDelta;
+      }
       if ((prevRank > 10 && rank <= 10) || (Math.abs(prevRank - rank) >= 28 && rank <= 24)) {
         const slot = shockwavesRef.current[shockwaveCursorRef.current % shockwavesRef.current.length];
         shockwaveCursorRef.current += 1;
@@ -3105,6 +3171,10 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       }
     };
 
+    const maxLinkDistance = MathUtils.clamp(layout.cityRadius * 0.44, 28, 54);
+    const desiredLinksBase =
+      RUNTIME_QUALITY_CONFIG.tier === 'low' ? 2 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 3 : 5;
+
     for (let i = 0; i < activeStates.length; i++) {
       const origin = activeStates[i];
       const neighbors = activeStates
@@ -3116,20 +3186,44 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         .sort((a, b) => a.dist - b.dist);
       if (neighbors.length === 0) continue;
 
-      // Force the nearest connection so outer towers are never isolated.
+      // Always connect each tower at least once so outskirts are not isolated.
       pushLink(origin, neighbors[0].other, false, i + 1, true);
+      let added = 1;
 
-      const extraLinks = origin.rank <= 20 ? 3 : origin.rank <= 80 ? 2 : 1;
-      for (let n = 1; n <= extraLinks && n < neighbors.length; n++) {
-        pushLink(origin, neighbors[n].other, false, i * 7 + n);
+      const desiredLinks = origin.rank <= 24 ? desiredLinksBase + 1 : desiredLinksBase;
+      for (let n = 1; n < neighbors.length && added < desiredLinks; n++) {
+        if (neighbors[n].dist > maxLinkDistance) continue;
+        pushLink(origin, neighbors[n].other, false, i * 11 + n);
+        added += 1;
+      }
+
+      // If the distance gate filtered too much, still keep at least 2 links for natural road mesh.
+      for (let n = 1; n < neighbors.length && added < 2; n++) {
+        pushLink(origin, neighbors[n].other, false, i * 17 + n, true);
+        added += 1;
       }
     }
 
     const globalLeader = activeStates[0] ?? null;
-    if (globalLeader) {
-      const arterialTargets = activeStates.slice(1, 11);
-      for (let i = 0; i < arterialTargets.length; i++) {
-        pushLink(globalLeader, arterialTargets[i], true, i + 1, true);
+    const topGainerHub = activeStates.find((state) => state.symbol === topGainerSymbol) ?? null;
+    const topLoserHub = activeStates.find((state) => state.symbol === topLoserSymbol) ?? null;
+    const topVolumeHub = activeStates.find((state) => state.symbol === topVolumeSymbol) ?? null;
+    const arterialHubs = [globalLeader, topGainerHub, topVolumeHub, topLoserHub].filter(
+      (state, idx, arr): state is TopCoinSymbolState => Boolean(state) && arr.findIndex((s) => s?.sequence === state?.sequence) === idx
+    );
+    const arterialTargetPool = activeStates.slice(0, Math.min(40, activeStates.length));
+    for (let h = 0; h < arterialHubs.length; h++) {
+      const hub = arterialHubs[h];
+      const candidates = arterialTargetPool
+        .filter((candidate) => candidate.sequence !== hub.sequence)
+        .map((candidate) => ({
+          candidate,
+          dist: Math.hypot(candidate.xTarget - hub.xTarget, candidate.zTarget - hub.zTarget)
+        }))
+        .sort((a, b) => a.dist - b.dist);
+      const arterialLinks = Math.min(6, candidates.length);
+      for (let i = 0; i < arterialLinks; i++) {
+        pushLink(hub, candidates[i]!.candidate, true, h * 19 + i + 1, true);
       }
     }
 
@@ -3145,8 +3239,13 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         .filter((state): state is TopCoinSymbolState => Boolean(state))
         .map((state) => {
           const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.baseTarget, 0, 1));
-          const topVolumeBoost = state.isTopVolume ? 1.16 : 1;
-          const radius = 0.5 * Math.hypot(shape.baseW * topVolumeBoost, shape.baseD * topVolumeBoost);
+          const baseScale = topCoinBaseScale({
+            pct: state.pctTarget,
+            isTopGainer: state.isTopGainer,
+            isTopLoser: state.isTopLoser,
+            isTopVolume: state.isTopVolume
+          });
+          const radius = 0.5 * Math.hypot(shape.baseW * baseScale, shape.baseD * baseScale);
           return Math.hypot(state.xTarget, state.zTarget) + radius * 3.8;
         })
     );
@@ -3167,9 +3266,14 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       const state = states.get(item.symbol);
       if (!state) continue;
       const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.baseTarget, 0, 1));
-      const topVolumeBoost = state.isTopVolume ? 1.18 : 1;
-      const baseW = MathUtils.clamp(shape.baseW * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.5);
-      const baseD = MathUtils.clamp(shape.baseD * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.5);
+      const baseScale = topCoinBaseScale({
+        pct: state.pctTarget,
+        isTopGainer: state.isTopGainer,
+        isTopLoser: state.isTopLoser,
+        isTopVolume: state.isTopVolume
+      });
+      const baseW = MathUtils.clamp(shape.baseW * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
+      const baseD = MathUtils.clamp(shape.baseD * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
       parkTowerTargets.push({
         sequence: state.sequence,
         x: state.xTarget,
@@ -3194,10 +3298,17 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     moodTargetRef.current = totalBreadth > 0 ? snapshot.stats.marketBreadth.positive / totalBreadth : 0.5;
 
     debugRef.current = {
+      snapshotSeq: snapshot.sequence,
+      applyCount: debugRef.current.applyCount + 1,
+      changedTowers,
+      heightDeltaSum,
+      baseDeltaSum,
+      lastAppliedAt: Date.now(),
       asOfMs: snapshot.asOf,
       asOfIso: snapshot.asOf > 0 ? new Date(snapshot.asOf).toISOString() : '',
       symbols: snapshot.debug.symbols,
       fetchedAt: snapshot.debug.fetchedAt,
+      pollSec: Math.max(1, Math.floor((snapshot.debug.pollMs || 30000) / 1000)),
       lastHash: snapshot.debug.lastHash,
       refreshAgeSec: snapshot.debug.refreshAgeSec,
       lastError: snapshot.debug.lastError,
@@ -3307,9 +3418,14 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       }
       const districtTint = TOP_COINS_DISTRICT_TINTS[state.districtId % TOP_COINS_DISTRICT_TINTS.length] ?? '#ead8bb';
       const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.base, 0, 1));
-      const topVolumeBoost = state.isTopVolume ? 1.18 : 1;
-      const baseW = MathUtils.clamp(shape.baseW * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.5);
-      const baseD = MathUtils.clamp(shape.baseD * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.5);
+      const baseScale = topCoinBaseScale({
+        pct: state.pct,
+        isTopGainer: state.isTopGainer,
+        isTopLoser: state.isTopLoser,
+        isTopVolume: state.isTopVolume
+      });
+      const baseW = MathUtils.clamp(shape.baseW * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
+      const baseD = MathUtils.clamp(shape.baseD * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
       out.push({
         sequence: state.sequence,
         x: state.x,
@@ -3318,8 +3434,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         archetypeId: shape.archetypeId,
         baseW,
         baseD,
-        footprintX: MathUtils.clamp(shape.footprintX * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.35),
-        footprintZ: MathUtils.clamp(shape.footprintZ * topVolumeBoost, MIN_BASE * 0.95, MAX_BASE * 1.35),
+        footprintX: MathUtils.clamp(shape.footprintX * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.7),
+        footprintZ: MathUtils.clamp(shape.footprintZ * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.7),
         taper: shape.taper,
         podiumRatio: shape.podiumRatio,
         crownRatio: shape.crownRatio,
@@ -4170,22 +4286,18 @@ function getTopCoinTickerTexture(ticker: string) {
   ctx.fillStyle = '#fff7ea';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const label = key.length > 6 ? key.slice(0, 6) : key;
+  const label = key.length > 5 ? key.slice(0, 5) : key;
   ctx.lineWidth = 20;
   ctx.strokeStyle = 'rgba(7,9,12,0.86)';
-  ctx.font = `900 ${Math.max(150, Math.floor(290 - Math.max(0, label.length - 3) * 26))}px ui-sans-serif, system-ui, sans-serif`;
+  ctx.font = `900 ${Math.max(176, Math.floor(318 - Math.max(0, label.length - 3) * 28))}px ui-sans-serif, system-ui, sans-serif`;
   ctx.shadowColor = 'rgba(247,147,26,0.25)';
   ctx.shadowBlur = 16;
   ctx.strokeText(label, center, center);
   ctx.shadowBlur = 0;
   ctx.fillText(label, center, center);
 
-  const texture = new CanvasTexture(canvas);
-  texture.colorSpace = SRGBColorSpace;
-  texture.minFilter = LinearMipmapLinearFilter;
-  texture.magFilter = LinearFilter;
-  texture.generateMipmaps = true;
-  texture.needsUpdate = true;
+  const texture = finalizeCanvasTexture(new CanvasTexture(canvas));
+  texture.generateMipmaps = false;
   topCoinTickerTextureCache.set(key, texture);
   return texture;
 }
@@ -4293,13 +4405,12 @@ function TopCoinLogoDisc({
     const t = clock.getElapsedTime() + tower.sequence * 0.015;
     const bob = Math.sin(t * 1.14) * 0.11;
     // Local coordinates: parent tower group is already at [tower.x, *, tower.z].
-    g.position.set(0, tower.height + 1.24 + bob, 0);
+    g.position.set(0, tower.height + 1.95 + bob, 0);
     g.quaternion.copy(camera.quaternion);
 
     g.getWorldPosition(worldPosRef.current);
     const distance = camera.position.distanceTo(worldPosRef.current);
-    const rankScale = tower.rank ? MathUtils.clamp(1.08 - tower.rank / 360, 0.78, 1.1) : 1;
-    const scale = MathUtils.clamp((1.18 + distance * 0.0108) * rankScale, 1.2, 5.2);
+    const scale = MathUtils.clamp(1.48 + distance * 0.0128, 1.75, 5.4);
     g.scale.set(scale, scale, scale);
 
     const dimFactor = focusMode && !isHovered ? FOCUS_NON_HOVER_DIM : 1;
@@ -4315,7 +4426,7 @@ function TopCoinLogoDisc({
   if (tower.mode !== 'top200') return null;
 
   return (
-    <group ref={groupRef} position={[0, tower.height + 1.24, 0]} renderOrder={6.95}>
+    <group ref={groupRef} position={[0, tower.height + 1.95, 0]} renderOrder={6.95}>
       <mesh ref={bodyRef} position={[0, 0, -0.016]} renderOrder={6.951}>
         <circleGeometry args={[0.72, 40]} />
         <meshBasicMaterial
@@ -7435,6 +7546,29 @@ export function MinimalVizSandbox({
                 <span>{overlay.topDebug.symbols}</span>
               </div>
               <div className="minimal-viz__row">
+                <span>SnapSeq</span>
+                <span>{overlay.topDebug.snapshotSeq}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>Apply#</span>
+                <span>{overlay.topDebug.applyCount}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>ApplyAge</span>
+                <span>
+                  {overlay.topDebug.lastAppliedAt > 0
+                    ? `${fmtFixed(Math.max(0, nowTick - overlay.topDebug.lastAppliedAt) / 1000, 1)}s`
+                    : 'n/a'}
+                </span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>Changed</span>
+                <span>
+                  {overlay.topDebug.changedTowers} | dH {fmtFixed(overlay.topDebug.heightDeltaSum, 2)} | dB{' '}
+                  {fmtFixed(overlay.topDebug.baseDeltaSum, 2)}
+                </span>
+              </div>
+              <div className="minimal-viz__row">
                 <span>AsOf</span>
                 <span>{overlay.topDebug.asOfIso || 'n/a'}</span>
               </div>
@@ -7453,6 +7587,10 @@ export function MinimalVizSandbox({
               <div className="minimal-viz__row">
                 <span>FetchAge</span>
                 <span>{fmtFixed(Math.max(0, nowTick - overlay.topDebug.fetchedAt) / 1000, 1)}s</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>Poll</span>
+                <span>{overlay.topDebug.pollSec}s</span>
               </div>
               <div className="minimal-viz__row">
                 <span>LastHash</span>
