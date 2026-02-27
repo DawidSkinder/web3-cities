@@ -118,6 +118,39 @@ export class TopCoinsDataEngine {
           for (const listener of this.listeners) {
             listener(erroredSnapshot);
           }
+          return;
+        }
+
+        this.sequence += 1;
+        const emptyErrorSnapshot: TopCoinsSnapshot = {
+          kind: 'top-coins-snapshot',
+          sequence: this.sequence,
+          emittedAt: Date.now(),
+          asOf: new Date().toISOString(),
+          ttlMs: this.pollMs,
+          items: [],
+          stats: {
+            topGainer: { symbol: 'N/A', pct: 0 },
+            topLoser: { symbol: 'N/A', pct: 0 },
+            topVolume: { symbol: 'N/A', quoteVolume: 0 },
+            sessionMaxQuoteVolume: this.sessionMaxQuoteVolume,
+            sessionMaxAbsPct: this.sessionMaxAbsPct,
+            marketBreadth: { positive: 0, negative: 0 }
+          },
+          debug: {
+            symbols: 0,
+            cacheHit: false,
+            cacheAgeMs: 0,
+            cacheSource: 'stale',
+            fetchedAt: Date.now(),
+            pollMs: this.pollMs,
+            lastError: this.lastError,
+            quote: this.quote
+          }
+        };
+        this.lastSnapshot = emptyErrorSnapshot;
+        for (const listener of this.listeners) {
+          listener(emptyErrorSnapshot);
         }
       })
       .finally(() => {

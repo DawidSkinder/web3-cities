@@ -12,6 +12,10 @@ class TopCoinsStore {
   private latest: TopCoinsSnapshot | null = null;
   private previous: TopCoinsSnapshot | null = null;
   private listeners = new Set<Listener>();
+  private snapshot: TopCoinsStoreSnapshot = {
+    latest: null,
+    previous: null
+  };
 
   subscribe = (listener: Listener) => {
     this.listeners.add(listener);
@@ -20,14 +24,15 @@ class TopCoinsStore {
     };
   };
 
-  getSnapshot = (): TopCoinsStoreSnapshot => ({
-    latest: this.latest,
-    previous: this.previous
-  });
+  getSnapshot = (): TopCoinsStoreSnapshot => this.snapshot;
 
   publish(snapshot: TopCoinsSnapshot) {
     this.previous = this.latest;
     this.latest = snapshot;
+    this.snapshot = {
+      latest: this.latest,
+      previous: this.previous
+    };
     for (const listener of this.listeners) {
       listener();
     }
@@ -36,6 +41,10 @@ class TopCoinsStore {
   clear() {
     this.latest = null;
     this.previous = null;
+    this.snapshot = {
+      latest: null,
+      previous: null
+    };
     for (const listener of this.listeners) {
       listener();
     }
