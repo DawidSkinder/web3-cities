@@ -2596,9 +2596,17 @@ function buildTopCoinsDecorativeParks({
   const attemptsMax = desiredParks * 180;
   const now = Date.now();
   const tracePool = [...traces, ...arterialTraces];
+  const towerMaxRadius = towers.reduce((acc, tower) => {
+    if (!tower) return acc;
+    const footprint = Math.max(tower.baseW, tower.baseD, tower.footprintX, tower.footprintZ) * 0.5;
+    return Math.max(acc, Math.hypot(tower.x, tower.z) + footprint);
+  }, 12);
+  const parkFootprintRadius = Math.min(cityRadius * 0.94, towerMaxRadius + 4.6);
+  const parkCoreMinRadius = Math.max(8.5, Math.min(parkFootprintRadius * 0.45, towerMaxRadius * 0.58));
+  const parkCoreMaxRadius = Math.max(parkCoreMinRadius + 3, parkFootprintRadius);
   const gridCellSize = 1.35;
-  const gridMin = -cityRadius * 1.05;
-  const gridMax = cityRadius * 1.05;
+  const gridMin = -parkFootprintRadius * 1.08;
+  const gridMax = parkFootprintRadius * 1.08;
   const occupiedCells = new Set<string>();
 
   const toCell = (value: number) => Math.floor((value - gridMin) / gridCellSize);
@@ -2620,7 +2628,7 @@ function buildTopCoinsDecorativeParks({
   };
   const rectIsFree = (x: number, z: number, w: number, d: number, padding: number) => {
     const edge = Math.max(w, d) * 0.5 + padding;
-    if (Math.hypot(x, z) + edge > cityRadius * 0.98) return false;
+    if (Math.hypot(x, z) + edge > parkFootprintRadius) return false;
     const minX = x - (w * 0.5 + padding);
     const maxX = x + (w * 0.5 + padding);
     const minZ = z - (d * 0.5 + padding);
@@ -2679,10 +2687,14 @@ function buildTopCoinsDecorativeParks({
     const edgeBias = hash01(seed, 2);
     const radialN =
       edgeBias > 0.78
-        ? MathUtils.lerp(0.78, 0.92, hash01(seed, 3))
-        : MathUtils.lerp(0.2, 0.78, hash01(seed, 3));
+        ? MathUtils.lerp(0.8, 0.98, hash01(seed, 3))
+        : MathUtils.lerp(0.25, 0.78, hash01(seed, 3));
     const radialJitter = (hash01(seed, 5) - 0.5) * MathUtils.lerp(9, 22, radialN);
-    const radial = Math.max(9, cityRadius * radialN + radialJitter);
+    const radial = MathUtils.clamp(
+      MathUtils.lerp(parkCoreMinRadius, parkCoreMaxRadius, radialN) + radialJitter * 0.35,
+      parkCoreMinRadius,
+      parkCoreMaxRadius
+    );
     const x = Math.cos(angle) * radial;
     const z = Math.sin(angle) * radial;
     const w = MathUtils.lerp(3.2, 5.8, hash01(seed, 7));
@@ -2737,7 +2749,7 @@ function buildTopCoinsDecorativeParks({
       const sn = Math.sin(yaw);
       const worldX = x + localX * cs - localZ * sn;
       const worldZ = z + localX * sn + localZ * cs;
-      if (Math.hypot(worldX, worldZ) > cityRadius * 0.98) continue;
+      if (Math.hypot(worldX, worldZ) > parkFootprintRadius * 0.99) continue;
       if (treeTouchesTower(worldX, worldZ)) continue;
 
       trees.push({
@@ -2801,7 +2813,7 @@ function buildTopCoinsDecorativeParks({
     for (let i = parks.length; i < desiredParks; i++) {
       const seed = 93_001 + i * 131;
       const angle = ((i + 1) / (desiredParks + 1)) * Math.PI * 2 + (hash01(seed, 1) - 0.5) * 0.18;
-      const radius = cityRadius * MathUtils.lerp(0.28, 0.9, hash01(seed, 3));
+      const radius = MathUtils.lerp(parkCoreMinRadius, parkCoreMaxRadius, MathUtils.lerp(0.25, 0.96, hash01(seed, 3)));
       const x = Math.cos(angle) * radius;
       const z = Math.sin(angle) * radius;
       const w = MathUtils.lerp(2.9, 4.2, hash01(seed, 5));
@@ -2837,7 +2849,7 @@ function buildTopCoinsDecorativeParks({
         const sn = Math.sin(yaw);
         const worldX = x + lx * cs - lz * sn;
         const worldZ = z + lx * sn + lz * cs;
-        if (Math.hypot(worldX, worldZ) > cityRadius * 0.98) continue;
+        if (Math.hypot(worldX, worldZ) > parkFootprintRadius * 0.99) continue;
         if (treeTouchesTower(worldX, worldZ)) continue;
         trees.push({
           x: worldX,
