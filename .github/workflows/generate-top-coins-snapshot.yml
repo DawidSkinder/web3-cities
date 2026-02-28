@@ -2,7 +2,7 @@ name: Generate Top Coins Snapshot
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '* * * * *'
   workflow_dispatch:
 
 permissions:
@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: top-coins-snapshot
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   generate:
@@ -33,32 +33,41 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Generate minute snapshots (5x per run)
+      - name: Generate and push snapshot (retry on race)
         env:
           BINANCE_DATA_BASE: https://data-api.binance.vision
         run: |
           set -euo pipefail
+          BRANCH="${GITHUB_REF_NAME}"
+          ATTEMPTS=4
 
-          ITERATIONS=5
-          for i in $(seq 1 "$ITERATIONS"); do
-            echo "[top-coins] tick $i/$ITERATIONS @ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            echo "[top-coins] attempt ${attempt}/${ATTEMPTS} @ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+            git fetch origin "${BRANCH}"
+            git reset --hard "origin/${BRANCH}"
+
             node scripts/generate-top-coins-snapshot.mjs
 
             if git diff --quiet -- public/data/top-coins.json public/data/logos; then
               echo "[top-coins] no changes"
-            else
-              git add public/data/top-coins.json public/data/logos
-              git commit -m "chore(data): update top coins snapshot"
-              git push origin "HEAD:${GITHUB_REF_NAME}"
+              exit 0
             fi
 
-            if [ "$i" -lt "$ITERATIONS" ]; then
-              now_epoch="$(date +%s)"
-              sleep_for=$((60 - (now_epoch % 60)))
-              if [ "$sleep_for" -le 0 ]; then
-                sleep_for=60
-              fi
-              echo "[top-coins] sleeping ${sleep_for}s until next minute boundary"
-              sleep "$sleep_for"
+            git add public/data/top-coins.json public/data/logos
+            if ! git commit -m "chore(data): update top coins snapshot"; then
+              echo "[top-coins] nothing to commit after add"
+              exit 0
             fi
+
+            if git push origin "HEAD:${BRANCH}"; then
+              echo "[top-coins] push ok"
+              exit 0
+            fi
+
+            echo "[top-coins] push race, retrying..."
+            sleep $((attempt * 2))
           done
+
+          echo "[top-coins] failed to push after ${ATTEMPTS} attempts"
+          exit 1
