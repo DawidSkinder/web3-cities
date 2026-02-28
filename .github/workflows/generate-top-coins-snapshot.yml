@@ -2,7 +2,7 @@ name: Generate Top Coins Snapshot
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '* * * * *'
   workflow_dispatch:
 
 permissions:

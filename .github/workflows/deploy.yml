@@ -3,6 +3,9 @@ name: Deploy Vite site to GitHub Pages
 on:
   push:
     branches: ["main"]
+    paths-ignore:
+      - "public/data/top-coins.json"
+      - "public/data/logos/**"
   workflow_dispatch:
 
 permissions:
@@ -35,6 +38,7 @@ jobs:
         run: npm run build
         env:
           VITE_CITY_MODE: ${{ vars.VITE_CITY_MODE }}
+          VITE_TOP_COINS_RAW_URL: https://raw.githubusercontent.com/${{ github.repository }}/main/public/data/top-coins.json
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

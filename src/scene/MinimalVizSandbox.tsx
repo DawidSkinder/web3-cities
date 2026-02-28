@@ -7,6 +7,7 @@ import {
   BackSide,
   BoxGeometry,
   CanvasTexture,
+  CircleGeometry,
   Color,
   DoubleSide,
   EdgesGeometry,
@@ -19,6 +20,7 @@ import {
   ShaderMaterial,
   SRGBColorSpace,
   TextureLoader,
+  TorusGeometry,
   Vector3
 } from 'three';
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
@@ -82,6 +84,10 @@ type TowerDatum = {
   isTopGainer?: boolean;
   isTopLoser?: boolean;
   isTopVolume?: boolean;
+  discRevealAt?: number;
+  discOcclusion?: number;
+  isDiscPriority?: boolean;
+  sparkUntilMs?: number;
 };
 
 type TraceDatum = {
@@ -421,6 +427,17 @@ const PARK_BASE_CLEARANCE = 1.2;
 const DISTRICT_SIZE = 28;
 const MAX_VISIBLE_DISTRICT_LOOPS = 12;
 const MAX_PARKS_VISIBLE = 24;
+const TOP_REPLAY_HISTORY_MAX = 30;
+const TOP_INTRO_BOOT_MS = 1500;
+const TOP_INTRO_WAVE_A_START_MS = 1500;
+const TOP_INTRO_WAVE_B_START_MS = 4300;
+const TOP_INTRO_WAVE_C_START_MS = 7000;
+const TOP_INTRO_LIFE_START_MS = 10_200;
+const TOP_INTRO_TOTAL_MS = 13_200;
+const TOP_INTRO_CAMERA_BEAT_MS = 8_500;
+const TOP_UPDATE_THRESHOLD_PCT = 0.1;
+const TOP_UPDATE_THRESHOLD_VOLUME = 0.05;
+const TOP_REPLAY_SCRUB_MS = 1200;
 
 const ENABLE_SPECTACLE_LAYER = true;
 const ENABLE_MARKET_PULSE = true;
@@ -563,6 +580,13 @@ const tempColorB = new Color();
 const tempColorC = new Color();
 const hoverProjectWorld = new Vector3();
 const hoverProjectNdc = new Vector3();
+const TOP_DISC_BODY_GEOMETRY = new CircleGeometry(0.72, 40);
+const TOP_DISC_FACE_GEOMETRY = new CircleGeometry(0.58, 40);
+const TOP_DISC_RING_GEOMETRY = new TorusGeometry(0.68, 0.04, 10, 48);
+const topCoinDiscScreenRegistry = new Map<
+  number,
+  { x: number; y: number; rank: number; updatedAt: number }
+>();
 const HOVER_HUD_HIDDEN: HoverHudSnapshot = {
   visible: false,
   towerSequence: null,
@@ -669,6 +693,23 @@ function fmtSignedPct(v: number, digits = 2) {
   return `${sign}${v.toFixed(digits)}%`;
 }
 
+function fmtMmSs(seconds: number) {
+  const safe = Math.max(0, Math.floor(seconds));
+  const mm = Math.floor(safe / 60)
+    .toString()
+    .padStart(2, '0');
+  const ss = (safe % 60).toString().padStart(2, '0');
+  return `${mm}:${ss}`;
+}
+
+function fmtAgeFriendly(seconds: number) {
+  const safe = Math.max(0, Math.floor(seconds));
+  const mm = Math.floor(safe / 60);
+  const ss = safe % 60;
+  if (mm <= 0) return `${ss}s`;
+  return `${mm}m ${ss}s`;
+}
+
 function fmtTopCoinsError(error: string | null) {
   if (!error) return 'none';
   if (error.startsWith('snapshot-http-')) {
@@ -680,6 +721,9 @@ function fmtTopCoinsError(error: string | null) {
   }
   if (error === 'snapshot-invalid-payload' || error === 'snapshot-invalid-asof') {
     return 'snapshot invalid data';
+  }
+  if (error === 'snapshot-invalid-count') {
+    return 'snapshot missing symbols';
   }
   return error;
 }
@@ -2177,15 +2221,25 @@ type TopCoinsDebugOverlay = {
   snapshotSeq: number;
   applyCount: number;
   changedTowers: number;
+  changedCount: number;
   heightDeltaSum: number;
   baseDeltaSum: number;
   lastAppliedAt: number;
   asOfMs: number;
   asOfIso: string;
+  asOfAgeSec: number;
+  asOfAgeLabel: string;
+  staleData: boolean;
   symbols: number;
   fetchedAt: number;
+  lastFetchAt: number;
+  lastSuccessAt: number;
   pollSec: number;
+  nextUpdateAtMs: number;
+  nextUpdateInSec: number;
+  nextUpdateInLabel: string;
   lastHash: string;
+  hashChanged: boolean;
   refreshAgeSec: number;
   lastError: string | null;
   lastFetchOk: boolean;
@@ -2195,6 +2249,17 @@ type TopCoinsDebugOverlay = {
   layoutIters: number;
   minSeparation: number;
   overlapFix: 'ok' | 'iterating';
+  introActive: boolean;
+  introBootAlpha: number;
+  introLifeAlpha: number;
+  introProgress: number;
+  clutter: number;
+  discVisible: number;
+  discMode: string;
+  replayEnabled: boolean;
+  replayOffset: number;
+  replayMax: number;
+  replayAsOfIso: string;
   topGainer: { symbol: string; pct: number };
   topLoser: { symbol: string; pct: number };
   topVolume: { symbol: string; quoteVolume: number };
@@ -2232,20 +2297,18 @@ type TopCoinSymbolState = {
   isTopLoser: boolean;
   isTopVolume: boolean;
   logoPath: string | null;
+  discRevealAt: number;
+  discOcclusion: number;
+  sparkUntilMs: number;
 };
 
-const TOP_COINS_DISTRICT_COUNT = 10;
+const TOP_COINS_DISTRICT_COUNT = 5;
 const TOP_COINS_DISTRICT_TINTS = [
   '#f2dfbf',
-  '#efd8b8',
-  '#ead1b2',
-  '#e6c9ab',
-  '#e2c2a5',
-  '#dec3b0',
-  '#d9bcaa',
-  '#d4b7a4',
-  '#cfb09d',
-  '#caa997'
+  '#ebd1a7',
+  '#d8c2a1',
+  '#c9b29f',
+  '#bda89f'
 ];
 const TOP_LAYOUT_PADDING = 2.35;
 const TOP_LAYOUT_INITIAL_ITERS = 64;
@@ -2260,6 +2323,8 @@ type TopCoinsLayoutNode = {
   radius: number;
   x: number;
   z: number;
+  homeX: number;
+  homeZ: number;
 };
 
 type TopCoinsLayoutResult = {
@@ -2343,21 +2408,37 @@ function buildTopCoinsLayoutTargets({
   states: Map<string, TopCoinSymbolState>;
   sizeScoreBySymbol: Map<string, number>;
 }): TopCoinsLayoutResult {
+  const rankTier = (rank: number) => {
+    if (rank <= 10) return 0;
+    if (rank <= 50) return 1;
+    if (rank <= 100) return 2;
+    if (rank <= 150) return 3;
+    return 4;
+  };
   const ordered = [...items].sort((a, b) => a.rank - b.rank || a.symbol.localeCompare(b.symbol));
   const nodes: TopCoinsLayoutNode[] = [];
+  const tierCounts = [0, 0, 0, 0, 0];
+  const tierIndex = [0, 0, 0, 0, 0];
+  for (const item of ordered) {
+    tierCounts[rankTier(item.rank)] += 1;
+  }
+
+  const tierRadii = [10, 24, 38, 52, 66];
   for (let idx = 0; idx < ordered.length; idx++) {
     const item = ordered[idx];
-    const idx1 = idx + 1;
-    const districtId = hashString32(item.symbol) % TOP_COINS_DISTRICT_COUNT;
-    const districtCenter = ((districtId + 0.5) / TOP_COINS_DISTRICT_COUNT) * Math.PI * 2;
-    const baseAngle = idx * GOLDEN_ANGLE + (hashUnitString(item.symbol, 41) - 0.5) * 0.24;
-    // Keep district identity subtle while preserving organic city-like spiral.
-    const angle = baseAngle + shortestAngleDelta(baseAngle, districtCenter) * 0.14;
-    const radius =
-      Math.max(0, TOP_LAYOUT_INNER_RADIUS * 0.35 + Math.sqrt(idx1) * TOP_LAYOUT_RING_STEP) +
-      (hashUnitString(item.symbol, 47) - 0.5) * 1.8;
+    const districtId = rankTier(item.rank);
+    const tierTotal = Math.max(1, tierCounts[districtId] ?? 1);
+    const tierIdx = tierIndex[districtId] ?? 0;
+    tierIndex[districtId] = tierIdx + 1;
+
+    const spin = hashUnitString(item.symbol, 41);
+    const baseAngle = ((tierIdx + 0.2 + spin * 0.6) / tierTotal) * Math.PI * 2;
+    const angle = baseAngle + (hashUnitString(item.symbol, 43) - 0.5) * 0.18 + districtId * 0.11;
+    const radialSpread = tierTotal <= 1 ? 0 : tierIdx / Math.max(1, tierTotal - 1);
+    const radius = tierRadii[districtId] + (hashUnitString(item.symbol, 47) - 0.5) * 2.2 + radialSpread * 2.6;
     const xNominal = Math.cos(angle) * radius;
     const zNominal = Math.sin(angle) * radius;
+
     const sizeScore = sizeScoreBySymbol.get(item.symbol) ?? 0.4;
     const footprintRadius = estimateTopCoinFootprintRadius(
       item.symbol,
@@ -2369,17 +2450,22 @@ function buildTopCoinsLayoutTargets({
       item.isTopLoser
     );
     const prev = states.get(item.symbol);
+    const anchorBlend = prev ? 0.78 : 1;
+    const x0 = prev ? MathUtils.lerp(prev.xTarget ?? prev.x, xNominal, 0.36) : xNominal;
+    const z0 = prev ? MathUtils.lerp(prev.zTarget ?? prev.z, zNominal, 0.36) : zNominal;
     nodes.push({
       symbol: item.symbol,
       districtId,
       radius: footprintRadius,
-      x: prev ? MathUtils.lerp(prev.xTarget ?? prev.x, xNominal, 0.44) : xNominal,
-      z: prev ? MathUtils.lerp(prev.zTarget ?? prev.z, zNominal, 0.44) : zNominal
+      x: x0,
+      z: z0,
+      homeX: MathUtils.lerp(x0, xNominal, anchorBlend),
+      homeZ: MathUtils.lerp(z0, zNominal, anchorBlend)
     });
   }
 
-  const maxNominalRadius = nodes.reduce((acc, node) => Math.max(acc, Math.hypot(node.x, node.z) + node.radius), 0);
-  let cityRadius = Math.max(86, maxNominalRadius + 18 + Math.sqrt(Math.max(1, nodes.length)) * 0.92);
+  const maxNominalRadius = nodes.reduce((acc, node) => Math.max(acc, Math.hypot(node.homeX, node.homeZ) + node.radius), 0);
+  let cityRadius = Math.max(86, maxNominalRadius + 20 + Math.sqrt(Math.max(1, nodes.length)) * 0.8);
 
   const dispX = new Array(nodes.length).fill(0);
   const dispZ = new Array(nodes.length).fill(0);
@@ -2435,8 +2521,9 @@ function buildTopCoinsLayoutTargets({
       minSeparation = minSepIter;
       for (let i = 0; i < nodes.length; i++) {
         const node = nodes[i];
-        node.x += dispX[i] * 0.85;
-        node.z += dispZ[i] * 0.85;
+        const homePull = hasExisting ? 0.08 : 0.05;
+        node.x += dispX[i] * 0.82 + (node.homeX - node.x) * homePull;
+        node.z += dispZ[i] * 0.82 + (node.homeZ - node.z) * homePull;
         clampNodeToCity(node, cityRadius);
       }
 
@@ -2734,24 +2821,21 @@ function mapTopCoinTowerMetrics({
   const gainPct = Math.max(0, pct);
   const lossPct = Math.max(0, -pct);
 
-  // Dedicated Top Coins skyline scale:
-  // - Any losses quickly collapse toward micro towers.
-  // - Positive movers follow a steep nonlinear ramp so +20/+40/+60 become clear landmarks.
-  const minCityTower = 3.0;
-  const neutralTower = 4.4;
+  // Sea-level encoding: winners rise above baseline, losers sink toward it (never below ground).
+  const minCityTower = 2.9;
+  const seaLevelTower = 5.6;
   let height = minCityTower;
   let sizeScore = 0.04;
 
   if (gainPct > 0) {
-    const gainCurve = Math.pow(Math.tanh(gainPct / 24), 1.35);
-    height = neutralTower + gainCurve * 77;
-    sizeScore = 0.12 + gainCurve * 0.74 + volumeNorm * 0.14;
+    const gainCurve = Math.pow(Math.tanh(gainPct / 26), 1.12);
+    height = seaLevelTower + gainCurve * 74;
+    sizeScore = 0.14 + gainCurve * 0.7 + volumeNorm * 0.15;
     if (rank <= 3) sizeScore += 0.05;
   } else {
-    const lossQuick = MathUtils.clamp(lossPct / 1.0, 0, 1);
-    const residual = 1 - lossQuick;
-    height = minCityTower + residual * 1.35;
-    sizeScore = 0.04 + residual * 0.08 + volumeNorm * 0.04;
+    const sink = Math.pow(Math.tanh(lossPct / 18), 0.92);
+    height = seaLevelTower - sink * 2.1 + volumeNorm * 0.55;
+    sizeScore = 0.08 + (1 - sink) * 0.12 + volumeNorm * 0.08;
   }
 
   if (isTopGainer) {
@@ -2759,8 +2843,8 @@ function mapTopCoinTowerMetrics({
     sizeScore += 0.08;
   }
   if (isTopLoser) {
-    height = Math.min(height, 3.2);
-    sizeScore = Math.min(sizeScore, 0.14);
+    height = Math.min(height, seaLevelTower - 0.5);
+    sizeScore = Math.min(sizeScore, 0.24);
   }
   if (isTopVolume) {
     if (gainPct > 0) {
@@ -2828,19 +2912,43 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
   const moodRef = useRef(0.5);
   const moodTargetRef = useRef(0.5);
   const volatilityRef = useRef(0.25);
+  const clutterRef = useRef(0.1);
+  const historyRef = useRef<TopCoinsSnapshot[]>([]);
+  const liveSnapshotRef = useRef<TopCoinsSnapshot | null>(null);
+  const lastAppliedKeyRef = useRef('');
+  const lastTopGainerSymbolRef = useRef('N/A');
+  const introRef = useRef({
+    hasRun: false,
+    active: false,
+    startedAtMs: 0,
+    progress: 1,
+    bootAlpha: 1,
+    lifeAlpha: 1,
+    storyBeatUntilMs: 0
+  });
   const debugRef = useRef<TopCoinsDebugOverlay>({
     snapshotSeq: 0,
     applyCount: 0,
     changedTowers: 0,
+    changedCount: 0,
     heightDeltaSum: 0,
     baseDeltaSum: 0,
     lastAppliedAt: 0,
     asOfMs: 0,
     asOfIso: '',
+    asOfAgeSec: 0,
+    asOfAgeLabel: '0s',
+    staleData: false,
     symbols: 0,
     fetchedAt: 0,
-    pollSec: 30,
+    lastFetchAt: 0,
+    lastSuccessAt: 0,
+    pollSec: 60,
+    nextUpdateAtMs: 0,
+    nextUpdateInSec: 0,
+    nextUpdateInLabel: '00:00',
     lastHash: 'none',
+    hashChanged: false,
     refreshAgeSec: 0,
     lastError: null,
     lastFetchOk: false,
@@ -2850,6 +2958,17 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     layoutIters: 0,
     minSeparation: 0,
     overlapFix: 'ok',
+    introActive: false,
+    introBootAlpha: 1,
+    introLifeAlpha: 1,
+    introProgress: 1,
+    clutter: 0.1,
+    discVisible: 0,
+    discMode: 'live',
+    replayEnabled: false,
+    replayOffset: 0,
+    replayMax: 0,
+    replayAsOfIso: '',
     topGainer: { symbol: 'N/A', pct: 0 },
     topLoser: { symbol: 'N/A', pct: 0 },
     topVolume: { symbol: 'N/A', quoteVolume: 0 }
@@ -2880,17 +2999,89 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       z: 0,
       towerHeight: 0,
       startTimeMs: 0,
-      durationMs: 1300
+      durationMs: 1200
     }))
   );
   const recordCeremonyCursorRef = useRef(0);
   const recordCeremonySerialRef = useRef(0);
   const [version, setVersion] = useState(0);
+  const [replayEnabled, setReplayEnabled] = useState(false);
+  const [replayIndex, setReplayIndex] = useState(-1);
+  const [historyVersion, setHistoryVersion] = useState(0);
+
+  const pushShockwave = (
+    x: number,
+    z: number,
+    color: string,
+    durationMs: number,
+    maxRadius: number,
+    peakOpacity: number
+  ) => {
+    const slot = shockwavesRef.current[shockwaveCursorRef.current % shockwavesRef.current.length];
+    shockwaveCursorRef.current += 1;
+    shockwaveSerialRef.current += 1;
+    slot.serial = shockwaveSerialRef.current;
+    slot.active = true;
+    slot.originX = x;
+    slot.originZ = z;
+    slot.startTimeMs = performance.now();
+    slot.durationMs = durationMs;
+    slot.startRadius = 0.42;
+    slot.maxRadius = maxRadius;
+    slot.thickness = 0.055;
+    slot.color = color;
+    slot.peakOpacity = peakOpacity;
+  };
+
+  useEffect(() => {
+    if (!snapshot) return;
+    liveSnapshotRef.current = snapshot;
+
+    if (snapshot.hashChanged) {
+      const history = historyRef.current;
+      const last = history[history.length - 1];
+      if (!last || last.hash !== snapshot.hash) {
+        history.push(snapshot);
+        while (history.length > TOP_REPLAY_HISTORY_MAX) {
+          history.shift();
+        }
+        if (!replayEnabled) {
+          setReplayIndex(history.length - 1);
+        }
+        setHistoryVersion((v) => v + 1);
+      }
+    }
+  }, [replayEnabled, snapshot]);
+
+  const replayMax = Math.max(0, historyRef.current.length - 1);
+  const replayOffset = replayEnabled && replayMax >= 0 ? Math.max(0, replayMax - Math.max(0, replayIndex)) : 0;
+
+  const activeSnapshot = useMemo(() => {
+    if (!replayEnabled) return snapshot;
+    const history = historyRef.current;
+    if (history.length === 0) return null;
+    const clamped = MathUtils.clamp(replayIndex < 0 ? history.length - 1 : replayIndex, 0, history.length - 1);
+    return history[clamped] ?? history[history.length - 1] ?? null;
+  }, [historyVersion, replayEnabled, replayIndex, snapshot]);
+
+  useEffect(() => {
+    if (!replayEnabled) return;
+    const history = historyRef.current;
+    if (history.length === 0) {
+      setReplayIndex(-1);
+      return;
+    }
+    if (replayIndex < 0 || replayIndex >= history.length) {
+      setReplayIndex(history.length - 1);
+    }
+  }, [historyVersion, replayEnabled, replayIndex]);
 
   useEffect(() => {
     const states = statesRef.current;
+    const live = liveSnapshotRef.current ?? snapshot;
+    const selected = activeSnapshot ?? live;
 
-    if (!snapshot) {
+    if (!selected) {
       if (states.size > 0) {
         states.clear();
         tracesRef.current = [];
@@ -2903,25 +3094,40 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         boundsRef.current = { radius: 36, maxY: 42 };
         setVersion((v) => v + 1);
       }
+      introRef.current.hasRun = false;
+      introRef.current.active = false;
+      introRef.current.progress = 1;
+      introRef.current.bootAlpha = 1;
+      introRef.current.lifeAlpha = 1;
+      introRef.current.storyBeatUntilMs = 0;
       return;
     }
 
+    const metadataOnly = !replayEnabled && states.size > 0 && !selected.hashChanged;
+    const applyKey = replayEnabled ? `replay:${replayIndex}:${selected.hash}` : `live:${selected.hash}:${selected.hashChanged ? 1 : 0}`;
+    if (!metadataOnly && lastAppliedKeyRef.current === applyKey) {
+      return;
+    }
+    if (!metadataOnly) {
+      lastAppliedKeyRef.current = applyKey;
+    }
+
     const nextSymbols = new Set<string>();
-    const topGainerSymbol = snapshot.stats.topGainer.symbol;
-    const topLoserSymbol = snapshot.stats.topLoser.symbol;
-    const topVolumeSymbol = snapshot.stats.topVolume.symbol;
-    const maxQuoteVolume = Math.max(snapshot.stats.sessionMaxQuoteVolume, 1);
-    const now = snapshot.emittedAt;
+    const topGainerSymbol = selected.stats.topGainer.symbol;
+    const topLoserSymbol = selected.stats.topLoser.symbol;
+    const topVolumeSymbol = selected.stats.topVolume.symbol;
+    const maxQuoteVolume = Math.max(selected.stats.sessionMaxQuoteVolume, 1);
+    const nowMs = Date.now();
     const sizeScoreBySymbol = new Map<string, number>();
     const metricsBySymbol = new Map<string, { height: number; sizeScore: number; heightScore: number; volumeNorm: number }>();
     let changedTowers = 0;
     let heightDeltaSum = 0;
     let baseDeltaSum = 0;
 
-    for (let i = 0; i < snapshot.items.length; i++) {
-      const item = snapshot.items[i];
+    for (let i = 0; i < selected.items.length; i++) {
+      const item = selected.items[i];
       if (!item) continue;
-      const rank = item.rank || i + 1;
+      const rank = item.rankByQuoteVolume || i + 1;
       const metrics = mapTopCoinTowerMetrics({
         pct: item.priceChangePercent,
         quoteVolume: item.quoteVolume,
@@ -2936,9 +3142,9 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     }
 
     const layout = buildTopCoinsLayoutTargets({
-      items: snapshot.items.map((item, index) => ({
+      items: selected.items.map((item, index) => ({
         symbol: item.symbol,
-        rank: item.rank || index + 1,
+        rank: item.rankByQuoteVolume || index + 1,
         pct: item.priceChangePercent,
         isTopVolume: item.symbol === topVolumeSymbol,
         isTopGainer: item.symbol === topGainerSymbol,
@@ -2948,407 +3154,492 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       sizeScoreBySymbol
     });
 
-    let absPctSum = 0;
-    for (let i = 0; i < snapshot.items.length; i++) {
-      const item = snapshot.items[i];
-      if (!item) continue;
-      nextSymbols.add(item.symbol);
-      absPctSum += Math.abs(item.priceChangePercent);
-
-      const rank = item.rank || i + 1;
-      const isTopGainer = item.symbol === topGainerSymbol;
-      const isTopLoser = item.symbol === topLoserSymbol;
-      const isTopVolume = item.symbol === topVolumeSymbol;
-      const placement = layout.targets.get(item.symbol);
-      const sequence = (hashString32(item.symbol) % 1_000_000) + 1;
-      const prev = states.get(item.symbol);
-
-      const metrics = metricsBySymbol.get(item.symbol);
-      const volumeNorm = metrics?.volumeNorm ?? MathUtils.clamp(Math.log10(item.quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
-      const nextHeight = metrics?.height ?? TOWER_VISUAL_MIN_HEIGHT;
-      const nextBase = metrics?.sizeScore ?? 0.5;
-      let nextGlowStrength = MathUtils.clamp(
-        0.72 + volumeNorm * 0.78 + Math.min(0.42, Math.abs(item.priceChangePercent) * 0.012),
-        0.72,
-        1.95
-      );
-      if (isTopGainer) nextGlowStrength *= 1.16;
-      if (isTopLoser) nextGlowStrength *= 0.98;
-      if (isTopVolume) nextGlowStrength *= 1.12;
-
-      const targetX = placement?.x ?? prev?.xTarget ?? prev?.x ?? 0;
-      const targetZ = placement?.z ?? prev?.zTarget ?? prev?.z ?? 0;
-      const districtId = placement?.districtId ?? prev?.districtId ?? (hashString32(item.symbol) % TOP_COINS_DISTRICT_COUNT);
-
-      if (!prev) {
-        changedTowers += 1;
-        heightDeltaSum += nextHeight;
-        baseDeltaSum += nextBase;
-        states.set(item.symbol, {
-          symbol: item.symbol,
-          baseAsset: item.baseAsset,
-          quoteAsset: item.quoteAsset,
-          sequence,
-          districtId,
-          x: targetX,
-          z: targetZ,
-          xTarget: targetX,
-          zTarget: targetZ,
-          rank,
-          emittedAt: now,
-          active: true,
-          height: nextHeight,
-          heightTarget: nextHeight,
-          base: nextBase,
-          baseTarget: nextBase,
-          pct: item.priceChangePercent,
-          pctTarget: item.priceChangePercent,
-          quoteVolume: item.quoteVolume,
-          quoteVolumeTarget: item.quoteVolume,
-          lastPrice: item.lastPrice,
-          lastPriceTarget: item.lastPrice,
-          glowStrength: nextGlowStrength,
-          glowStrengthTarget: nextGlowStrength,
-          opacity: 1,
-          opacityTarget: 1,
-          smoothAlpha: MathUtils.lerp(2.8, 5.0, hashUnitString(item.symbol, 933)),
-          isTopGainer,
-          isTopLoser,
-          isTopVolume,
-          logoPath: item.logoPath ?? null
-        });
-        continue;
-      }
-
-      const prevRank = prev.rank;
-      const heightDelta = Math.abs(prev.heightTarget - nextHeight);
-      const baseDelta = Math.abs(prev.baseTarget - nextBase);
-      const pctDelta = Math.abs(prev.pctTarget - item.priceChangePercent);
-      if (heightDelta > 0.06 || baseDelta > 0.012 || pctDelta > 0.02 || prevRank !== rank) {
-        changedTowers += 1;
-        heightDeltaSum += heightDelta;
-        baseDeltaSum += baseDelta;
-      }
-      if ((prevRank > 10 && rank <= 10) || (Math.abs(prevRank - rank) >= 28 && rank <= 24)) {
-        const slot = shockwavesRef.current[shockwaveCursorRef.current % shockwavesRef.current.length];
-        shockwaveCursorRef.current += 1;
-        shockwaveSerialRef.current += 1;
-        slot.serial = shockwaveSerialRef.current;
-        slot.active = true;
-        slot.originX = prev.x;
-        slot.originZ = prev.z;
-        slot.startTimeMs = performance.now();
-        slot.durationMs = 1100;
-        slot.startRadius = 0.46;
-        slot.maxRadius = 13;
-        slot.thickness = 0.06;
-        slot.color = item.priceChangePercent >= 0 ? '#f9b563' : '#7aa6d9';
-        slot.peakOpacity = 0.26;
-      }
-
-      prev.baseAsset = item.baseAsset;
-      prev.quoteAsset = item.quoteAsset;
-      prev.rank = rank;
-      prev.active = true;
-      prev.districtId = districtId;
-      prev.xTarget = targetX;
-      prev.zTarget = targetZ;
-      prev.pctTarget = item.priceChangePercent;
-      prev.quoteVolumeTarget = item.quoteVolume;
-      prev.lastPriceTarget = item.lastPrice;
-      prev.heightTarget = nextHeight;
-      prev.baseTarget = nextBase;
-      prev.glowStrengthTarget = nextGlowStrength;
-      prev.opacityTarget = 1;
-      prev.isTopGainer = isTopGainer;
-      prev.isTopLoser = isTopLoser;
-      prev.isTopVolume = isTopVolume;
-      prev.logoPath = item.logoPath ?? null;
+    if (!replayEnabled && selected.hashChanged && !introRef.current.hasRun) {
+      introRef.current.hasRun = true;
+      introRef.current.active = true;
+      introRef.current.startedAtMs = nowMs;
+      introRef.current.progress = 0;
+      introRef.current.bootAlpha = 0;
+      introRef.current.lifeAlpha = 0;
+      introRef.current.storyBeatUntilMs = 0;
     }
 
-    volatilityRef.current =
-      snapshot.items.length > 0
-        ? MathUtils.clamp((absPctSum / snapshot.items.length) / 6, 0.15, 1.2)
-        : 0.2;
+    const isIntroApply = introRef.current.active && states.size === 0 && !replayEnabled;
+    const introDelayByRank = (rank: number) => {
+      if (!isIntroApply) return 0;
+      if (rank <= 20) return TOP_INTRO_WAVE_A_START_MS + (rank - 1) * 86;
+      if (rank <= 80) return TOP_INTRO_WAVE_B_START_MS + (rank - 21) * 52;
+      return TOP_INTRO_WAVE_C_START_MS + (rank - 81) * 30;
+    };
 
-    for (const [symbol, state] of states) {
-      if (nextSymbols.has(symbol)) continue;
-      state.active = false;
-      state.opacityTarget = 0;
-      state.rank = 999;
-    }
+    if (!metadataOnly) {
+      for (let i = 0; i < selected.items.length; i++) {
+        const item = selected.items[i];
+        if (!item) continue;
+        nextSymbols.add(item.symbol);
+        const rank = item.rankByQuoteVolume || i + 1;
+        const isTopGainer = item.symbol === topGainerSymbol;
+        const isTopLoser = item.symbol === topLoserSymbol;
+        const isTopVolume = item.symbol === topVolumeSymbol;
+        const placement = layout.targets.get(item.symbol);
+        const sequence = (hashString32(item.symbol) % 1_000_000) + 1;
+        const prev = states.get(item.symbol);
+        const metrics = metricsBySymbol.get(item.symbol);
+        const volumeNorm = metrics?.volumeNorm ?? MathUtils.clamp(Math.log10(item.quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
+        const nextHeight = metrics?.height ?? TOWER_VISUAL_MIN_HEIGHT;
+        const nextBase = metrics?.sizeScore ?? 0.5;
+        const targetX = placement?.x ?? prev?.xTarget ?? prev?.x ?? 0;
+        const targetZ = placement?.z ?? prev?.zTarget ?? prev?.z ?? 0;
+        const districtId = placement?.districtId ?? prev?.districtId ?? 0;
 
-    const topGainerState = states.get(topGainerSymbol);
-    if (topGainerState) {
-      const slot = recordCeremoniesRef.current[recordCeremonyCursorRef.current % recordCeremoniesRef.current.length];
-      recordCeremonyCursorRef.current += 1;
-      recordCeremonySerialRef.current += 1;
-      slot.serial = recordCeremonySerialRef.current;
-      slot.active = true;
-      slot.towerSequence = topGainerState.sequence;
-      slot.x = topGainerState.xTarget;
-      slot.z = topGainerState.zTarget;
-      slot.towerHeight = topGainerState.heightTarget;
-      slot.startTimeMs = performance.now();
-      slot.durationMs = 1400;
-    }
+        let nextGlowStrength = MathUtils.clamp(
+          0.72 + volumeNorm * 0.78 + Math.min(0.42, Math.abs(item.priceChangePercent) * 0.012),
+          0.72,
+          1.95
+        );
+        if (isTopGainer) nextGlowStrength *= 1.16;
+        if (isTopLoser) nextGlowStrength *= 0.98;
+        if (isTopVolume) nextGlowStrength *= 1.12;
 
-    const activeStates = snapshot.items
-      .map((item) => states.get(item.symbol))
-      .filter((state): state is TopCoinSymbolState => Boolean(state))
-      .sort((a, b) => a.rank - b.rank);
-    districtsRef.current = [];
+        if (!prev) {
+          const delay = introDelayByRank(rank);
+          const emittedAt = nowMs + delay;
+          const discRevealAt = nowMs + (isIntroApply ? TOP_INTRO_LIFE_START_MS + rank * 18 : 220 + rank * 5);
+          changedTowers += 1;
+          heightDeltaSum += nextHeight;
+          baseDeltaSum += nextBase;
+          states.set(item.symbol, {
+            symbol: item.symbol,
+            baseAsset: item.base,
+            quoteAsset: item.quote,
+            sequence,
+            districtId,
+            x: targetX,
+            z: targetZ,
+            xTarget: targetX,
+            zTarget: targetZ,
+            rank,
+            emittedAt,
+            active: true,
+            height: nextHeight,
+            heightTarget: nextHeight,
+            base: nextBase,
+            baseTarget: nextBase,
+            pct: item.priceChangePercent,
+            pctTarget: item.priceChangePercent,
+            quoteVolume: item.quoteVolume,
+            quoteVolumeTarget: item.quoteVolume,
+            lastPrice: item.lastPrice,
+            lastPriceTarget: item.lastPrice,
+            glowStrength: nextGlowStrength,
+            glowStrengthTarget: nextGlowStrength,
+            opacity: 1,
+            opacityTarget: 1,
+            smoothAlpha: MathUtils.lerp(2.8, 5.0, hashUnitString(item.symbol, 933)),
+            isTopGainer,
+            isTopLoser,
+            isTopVolume,
+            logoPath: item.logoPath ?? null,
+            discRevealAt,
+            discOcclusion: 0,
+            sparkUntilMs: 0
+          });
+          continue;
+        }
 
-    const traces: TraceDatum[] = [];
-    const arterialTraces: TraceDatum[] = [];
-    const trafficParticles: TrafficParticleDatum[] = [];
-    const arterialTrafficParticles: TrafficParticleDatum[] = [];
-    const dedupe = new Set<string>();
+        const prevRank = prev.rank;
+        const heightDelta = Math.abs(prev.heightTarget - nextHeight);
+        const baseDelta = Math.abs(prev.baseTarget - nextBase);
+        const pctDelta = Math.abs(prev.pctTarget - item.priceChangePercent);
+        const volumeDeltaRatio = Math.abs(prev.quoteVolumeTarget - item.quoteVolume) / Math.max(1, prev.quoteVolumeTarget);
+        const meaningful =
+          replayEnabled ||
+          pctDelta > TOP_UPDATE_THRESHOLD_PCT ||
+          volumeDeltaRatio > TOP_UPDATE_THRESHOLD_VOLUME ||
+          heightDelta > 0.08 ||
+          baseDelta > 0.014 ||
+          prevRank !== rank;
 
-    const pushLink = (a: TopCoinSymbolState, b: TopCoinSymbolState, arterial: boolean, seed: number, force = false) => {
-      const aSeq = Math.min(a.sequence, b.sequence);
-      const bSeq = Math.max(a.sequence, b.sequence);
-      const key = `${aSeq}:${bSeq}:${arterial ? 'A' : 'T'}`;
-      if (dedupe.has(key)) return;
-      dedupe.add(key);
+        if (meaningful) {
+          changedTowers += 1;
+          heightDeltaSum += heightDelta;
+          baseDeltaSum += baseDelta;
+        }
+        if ((prevRank > 10 && rank <= 10) || (prevRank - rank >= 12 && rank <= 35)) {
+          pushShockwave(prev.x, prev.z, item.priceChangePercent >= 0 ? '#f9b563' : '#7aa6d9', 1100, 13, 0.25);
+        }
 
-      const segment = segmentFromPoints(a.xTarget, a.zTarget, b.xTarget, b.zTarget);
-      if (segment.length < 1.2) return;
-      if (!arterial && !force && segment.length > 34) return;
-
-      const avgPct = (a.pctTarget + b.pctTarget) * 0.5;
-      const avgVolNorm = MathUtils.clamp(
-        (Math.log10(a.quoteVolumeTarget + 1) + Math.log10(b.quoteVolumeTarget + 1)) / (2 * Math.log10(maxQuoteVolume + 1)),
-        0,
-        1
-      );
-
-      const baseWarm = new Color('#f4d8af');
-      const accent = avgPct >= 0 ? new Color('#8dc78b') : new Color('#cc7f77');
-      const glow = avgPct >= 0 ? new Color('#f0bf79') : new Color('#a46f8a');
-      const widthBase = arterial ? 0.12 : 0.08;
-      const width = widthBase + avgVolNorm * (arterial ? 0.08 : 0.05);
-      const trace: TraceDatum = {
-        id: `${arterial ? 'A' : 'T'}-${key}`,
-        aSequence: aSeq,
-        bSequence: bSeq,
-        midX: segment.midX,
-        midZ: segment.midZ,
-        length: Math.max(0.9, segment.length - 0.42),
-        yaw: segment.yaw,
-        y: arterial ? ARTERY_TRACE_BASE_Y + seed * 0.00045 : TRACE_BASE_Y + seed * TRACE_LAYER_STEP_Y,
-        width,
-        glowWidth: width * (arterial ? 3.2 : 2.6),
-        coreColor: `#${baseWarm.clone().lerp(accent, arterial ? 0.42 : 0.3).getHexString()}`,
-        glowColor: `#${TRACE_ORANGE.clone().lerp(glow, arterial ? 0.58 : 0.44).getHexString()}`,
-        isArtery: arterial,
-        scanSeed: hashUnitString(`${a.symbol}:${b.symbol}`, 17)
-      };
-
-      if (arterial) {
-        arterialTraces.push(trace);
-      } else {
-        traces.push(trace);
+        const blend = replayEnabled ? 1 : meaningful ? 0.56 : 0.18;
+        prev.baseAsset = item.base;
+        prev.quoteAsset = item.quote;
+        prev.rank = rank;
+        prev.active = true;
+        prev.districtId = districtId;
+        prev.xTarget = targetX;
+        prev.zTarget = targetZ;
+        prev.pctTarget = MathUtils.lerp(prev.pctTarget, item.priceChangePercent, blend);
+        prev.quoteVolumeTarget = MathUtils.lerp(prev.quoteVolumeTarget, item.quoteVolume, blend);
+        prev.lastPriceTarget = MathUtils.lerp(prev.lastPriceTarget, item.lastPrice, blend);
+        prev.heightTarget = MathUtils.lerp(prev.heightTarget, nextHeight, blend);
+        prev.baseTarget = MathUtils.lerp(prev.baseTarget, nextBase, blend);
+        prev.glowStrengthTarget = MathUtils.lerp(prev.glowStrengthTarget, nextGlowStrength, blend);
+        prev.opacityTarget = 1;
+        prev.isTopGainer = isTopGainer;
+        prev.isTopLoser = isTopLoser;
+        prev.isTopVolume = isTopVolume;
+        prev.logoPath = item.logoPath ?? null;
       }
 
-      const particleCount = Math.min(arterial ? 7 : 5, Math.max(arterial ? 2 : 1, Math.round((1.2 + segment.length / 10) * (0.9 + avgVolNorm * 1.4))));
-      const dirX = Math.sin(segment.yaw);
-      const dirZ = Math.cos(segment.yaw);
-      const travelLen = Math.max(0.5, trace.length - 0.14);
-      const halfLen = travelLen * 0.5;
-      const ax = segment.midX - dirX * halfLen;
-      const az = segment.midZ - dirZ * halfLen;
-      const bx = segment.midX + dirX * halfLen;
-      const bz = segment.midZ + dirZ * halfLen;
+      for (const [symbol, state] of states) {
+        if (nextSymbols.has(symbol)) continue;
+        state.active = false;
+        state.opacityTarget = 0;
+        state.rank = 999;
+      }
 
-      for (let i = 0; i < particleCount; i++) {
-        const phase = hashUnitString(`${trace.id}:${i}`, 61);
-        const speedMood = MathUtils.lerp(0.86, 1.24, volatilityRef.current);
-        const speed = (0.018 + avgVolNorm * 0.05) * (arterial ? 1.16 : 1) * speedMood;
-        const c = avgPct >= 0 ? '#f0d8aa' : '#d8b8b2';
-        const entry: TrafficParticleDatum = {
-          id: `${trace.id}-P-${i}`,
-          traceId: trace.id,
-          ax,
-          az,
-          bx,
-          bz,
-          yaw: segment.yaw,
-          y: (arterial ? ARTERY_TRAFFIC_BASE_Y : TRAFFIC_SOLID_BASE_Y) + seed * 0.00025,
-          speed,
-          phase,
-          color: c,
-          sizeX: arterial ? 0.12 : 0.09,
-          sizeY: 0.027,
-          sizeZ: arterial ? 0.31 : 0.22,
-          isArtery: arterial
-        };
-        if (arterial) {
-          arterialTrafficParticles.push(entry);
-        } else {
-          trafficParticles.push(entry);
+      if (!replayEnabled && selected.hashChanged) {
+        const breadth = selected.stats.breadth ?? 0;
+        pushShockwave(0, 0, breadth >= 0 ? '#f8b46a' : '#8eb1de', 950, Math.max(14, layout.cityRadius * 0.24), 0.2);
+      }
+
+      if (!replayEnabled && selected.hashChanged && lastTopGainerSymbolRef.current !== topGainerSymbol) {
+        const topGainerState = states.get(topGainerSymbol);
+        if (topGainerState) {
+          const slot = recordCeremoniesRef.current[recordCeremonyCursorRef.current % recordCeremoniesRef.current.length];
+          recordCeremonyCursorRef.current += 1;
+          recordCeremonySerialRef.current += 1;
+          slot.serial = recordCeremonySerialRef.current;
+          slot.active = true;
+          slot.towerSequence = topGainerState.sequence;
+          slot.x = topGainerState.xTarget;
+          slot.z = topGainerState.zTarget;
+          slot.towerHeight = topGainerState.heightTarget;
+          slot.startTimeMs = performance.now();
+          slot.durationMs = 980;
+          topGainerState.sparkUntilMs = performance.now() + 900;
         }
       }
-    };
+      lastTopGainerSymbolRef.current = topGainerSymbol;
 
-    const maxLinkDistance = MathUtils.clamp(layout.cityRadius * 0.44, 28, 54);
-    const desiredLinksBase =
-      RUNTIME_QUALITY_CONFIG.tier === 'low' ? 2 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 3 : 5;
-
-    for (let i = 0; i < activeStates.length; i++) {
-      const origin = activeStates[i];
-      const neighbors = activeStates
-        .filter((other) => other.sequence !== origin.sequence)
-        .map((other) => ({
-          other,
-          dist: Math.hypot(other.xTarget - origin.xTarget, other.zTarget - origin.zTarget)
-        }))
-        .sort((a, b) => a.dist - b.dist);
-      if (neighbors.length === 0) continue;
-
-      // Always connect each tower at least once so outskirts are not isolated.
-      pushLink(origin, neighbors[0].other, false, i + 1, true);
-      let added = 1;
-
-      const desiredLinks = origin.rank <= 24 ? desiredLinksBase + 1 : desiredLinksBase;
-      for (let n = 1; n < neighbors.length && added < desiredLinks; n++) {
-        if (neighbors[n].dist > maxLinkDistance) continue;
-        pushLink(origin, neighbors[n].other, false, i * 11 + n);
-        added += 1;
-      }
-
-      // If the distance gate filtered too much, still keep at least 2 links for natural road mesh.
-      for (let n = 1; n < neighbors.length && added < 2; n++) {
-        pushLink(origin, neighbors[n].other, false, i * 17 + n, true);
-        added += 1;
-      }
-    }
-
-    const globalLeader = activeStates[0] ?? null;
-    const topGainerHub = activeStates.find((state) => state.symbol === topGainerSymbol) ?? null;
-    const topLoserHub = activeStates.find((state) => state.symbol === topLoserSymbol) ?? null;
-    const topVolumeHub = activeStates.find((state) => state.symbol === topVolumeSymbol) ?? null;
-    const arterialHubs = [globalLeader, topGainerHub, topVolumeHub, topLoserHub].filter(
-      (state, idx, arr): state is TopCoinSymbolState => Boolean(state) && arr.findIndex((s) => s?.sequence === state?.sequence) === idx
-    );
-    const arterialTargetPool = activeStates.slice(0, Math.min(40, activeStates.length));
-    for (let h = 0; h < arterialHubs.length; h++) {
-      const hub = arterialHubs[h];
-      const candidates = arterialTargetPool
-        .filter((candidate) => candidate.sequence !== hub.sequence)
-        .map((candidate) => ({
-          candidate,
-          dist: Math.hypot(candidate.xTarget - hub.xTarget, candidate.zTarget - hub.zTarget)
-        }))
-        .sort((a, b) => a.dist - b.dist);
-      const arterialLinks = Math.min(6, candidates.length);
-      for (let i = 0; i < arterialLinks; i++) {
-        pushLink(hub, candidates[i]!.candidate, true, h * 19 + i + 1, true);
-      }
-    }
-
-    tracesRef.current = traces;
-    arterialTracesRef.current = arterialTraces;
-    trafficRef.current = trafficParticles;
-    arterialTrafficRef.current = arterialTrafficParticles;
-
-    const maxRadius = Math.max(
-      layout.cityRadius,
-      ...snapshot.items
+      const activeStates = selected.items
         .map((item) => states.get(item.symbol))
         .filter((state): state is TopCoinSymbolState => Boolean(state))
-        .map((state) => {
-          const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.baseTarget, 0, 1));
-          const baseScale = topCoinBaseScale({
-            pct: state.pctTarget,
-            rank: state.rank,
-            sizeScore: state.baseTarget,
-            isTopGainer: state.isTopGainer,
-            isTopLoser: state.isTopLoser,
-            isTopVolume: state.isTopVolume
-          });
-          const radius = 0.5 * Math.hypot(shape.baseW * baseScale, shape.baseD * baseScale);
-          return Math.hypot(state.xTarget, state.zTarget) + radius * 3.8;
-        })
-    );
-    const maxHeight = Math.max(
-      24,
-      ...snapshot.items
-        .map((item) => states.get(item.symbol))
-        .filter((state): state is TopCoinSymbolState => Boolean(state))
-        .map((state) => state.heightTarget + 4.5)
-    );
-    boundsRef.current = {
-      radius: maxRadius,
-      maxY: maxHeight
-    };
+        .sort((a, b) => a.rank - b.rank);
 
-    const parkTowerTargets: TopCoinsParkTower[] = [];
-    for (const item of snapshot.items) {
-      const state = states.get(item.symbol);
-      if (!state) continue;
-      const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.baseTarget, 0, 1));
-      const baseScale = topCoinBaseScale({
-        pct: state.pctTarget,
-        rank: state.rank,
-        sizeScore: state.baseTarget,
-        isTopGainer: state.isTopGainer,
-        isTopLoser: state.isTopLoser,
-        isTopVolume: state.isTopVolume
+      for (const state of activeStates) {
+        state.discOcclusion = 0;
+      }
+      for (let i = 0; i < activeStates.length; i++) {
+        const a = activeStates[i];
+        for (let j = i + 1; j < activeStates.length; j++) {
+          const b = activeStates[j];
+          const dist = Math.hypot(a.xTarget - b.xTarget, a.zTarget - b.zTarget);
+          if (dist > 6.9) continue;
+          const overlap = smoothstep01(remapClamped(6.9 - dist, 0, 6.9));
+          if (a.rank < b.rank) {
+            b.discOcclusion = Math.max(b.discOcclusion, overlap);
+          } else {
+            a.discOcclusion = Math.max(a.discOcclusion, overlap);
+          }
+        }
+      }
+
+      districtsRef.current = [];
+      const traces: TraceDatum[] = [];
+      const arterialTraces: TraceDatum[] = [];
+      const trafficParticles: TrafficParticleDatum[] = [];
+      const arterialTrafficParticles: TrafficParticleDatum[] = [];
+      const dedupe = new Set<string>();
+
+      const pushLink = (a: TopCoinSymbolState, b: TopCoinSymbolState, arterial: boolean, seed: number, force = false) => {
+        const aSeq = Math.min(a.sequence, b.sequence);
+        const bSeq = Math.max(a.sequence, b.sequence);
+        const key = `${aSeq}:${bSeq}:${arterial ? 'A' : 'T'}`;
+        if (dedupe.has(key)) return;
+        dedupe.add(key);
+
+        const segment = segmentFromPoints(a.xTarget, a.zTarget, b.xTarget, b.zTarget);
+        if (segment.length < 1.2) return;
+        if (!arterial && !force && segment.length > 34) return;
+
+        const avgPct = (a.pctTarget + b.pctTarget) * 0.5;
+        const avgVolNorm = MathUtils.clamp(
+          (Math.log10(a.quoteVolumeTarget + 1) + Math.log10(b.quoteVolumeTarget + 1)) / (2 * Math.log10(maxQuoteVolume + 1)),
+          0,
+          1
+        );
+        const rankFactor = MathUtils.lerp(1.22, 0.74, MathUtils.clamp((Math.min(a.rank, b.rank) - 1) / 199, 0, 1));
+
+        const baseWarm = new Color('#f4d8af');
+        const accent = avgPct >= 0 ? new Color('#8dc78b') : new Color('#cc7f77');
+        const glow = avgPct >= 0 ? new Color('#f0bf79') : new Color('#a46f8a');
+        const widthBase = arterial ? 0.12 : 0.08;
+        const width = widthBase + avgVolNorm * (arterial ? 0.08 : 0.05);
+        const trace: TraceDatum = {
+          id: `${arterial ? 'A' : 'T'}-${key}`,
+          aSequence: aSeq,
+          bSequence: bSeq,
+          midX: segment.midX,
+          midZ: segment.midZ,
+          length: Math.max(0.9, segment.length - 0.42),
+          yaw: segment.yaw,
+          y: arterial ? ARTERY_TRACE_BASE_Y + seed * 0.00045 : TRACE_BASE_Y + seed * TRACE_LAYER_STEP_Y,
+          width,
+          glowWidth: width * (arterial ? 3.2 : 2.6),
+          coreColor: `#${baseWarm.clone().lerp(accent, arterial ? 0.42 : 0.3).getHexString()}`,
+          glowColor: `#${TRACE_ORANGE.clone().lerp(glow, arterial ? 0.58 : 0.44).getHexString()}`,
+          isArtery: arterial,
+          scanSeed: hashUnitString(`${a.symbol}:${b.symbol}`, 17)
+        };
+
+        if (arterial) arterialTraces.push(trace);
+        else traces.push(trace);
+
+        const particleCount = Math.min(
+          arterial ? 7 : 5,
+          Math.max(arterial ? 2 : 1, Math.round((1.2 + segment.length / 10) * (0.9 + avgVolNorm * 1.4)))
+        );
+        const dirX = Math.sin(segment.yaw);
+        const dirZ = Math.cos(segment.yaw);
+        const travelLen = Math.max(0.5, trace.length - 0.14);
+        const halfLen = travelLen * 0.5;
+        const ax = segment.midX - dirX * halfLen;
+        const az = segment.midZ - dirZ * halfLen;
+        const bx = segment.midX + dirX * halfLen;
+        const bz = segment.midZ + dirZ * halfLen;
+
+        for (let i = 0; i < particleCount; i++) {
+          const phase = hashUnitString(`${trace.id}:${i}`, 61);
+          const speedMood = MathUtils.lerp(0.86, 1.24, volatilityRef.current);
+          const speed = (0.018 + avgVolNorm * 0.05) * (arterial ? 1.16 : 1) * speedMood * rankFactor;
+          const c = avgPct >= 0 ? '#f0d8aa' : '#d8b8b2';
+          const entry: TrafficParticleDatum = {
+            id: `${trace.id}-P-${i}`,
+            traceId: trace.id,
+            ax,
+            az,
+            bx,
+            bz,
+            yaw: segment.yaw,
+            y: (arterial ? ARTERY_TRAFFIC_BASE_Y : TRAFFIC_SOLID_BASE_Y) + seed * 0.00025,
+            speed,
+            phase,
+            color: c,
+            sizeX: arterial ? 0.12 : 0.09,
+            sizeY: 0.027,
+            sizeZ: arterial ? 0.31 : 0.22,
+            isArtery: arterial
+          };
+          if (arterial) arterialTrafficParticles.push(entry);
+          else trafficParticles.push(entry);
+        }
+      };
+
+      const maxLinkDistance = MathUtils.clamp(layout.cityRadius * 0.44, 28, 54);
+      const desiredLinksBase = RUNTIME_QUALITY_CONFIG.tier === 'low' ? 2 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 3 : 5;
+
+      for (let i = 0; i < activeStates.length; i++) {
+        const origin = activeStates[i];
+        const neighbors = activeStates
+          .filter((other) => other.sequence !== origin.sequence)
+          .map((other) => ({
+            other,
+            dist: Math.hypot(other.xTarget - origin.xTarget, other.zTarget - origin.zTarget)
+          }))
+          .sort((a, b) => a.dist - b.dist);
+        if (neighbors.length === 0) continue;
+        pushLink(origin, neighbors[0].other, false, i + 1, true);
+        let added = 1;
+        const desiredLinks = origin.rank <= 24 ? desiredLinksBase + 1 : desiredLinksBase;
+        for (let n = 1; n < neighbors.length && added < desiredLinks; n++) {
+          if (neighbors[n].dist > maxLinkDistance) continue;
+          pushLink(origin, neighbors[n].other, false, i * 11 + n);
+          added += 1;
+        }
+        for (let n = 1; n < neighbors.length && added < 2; n++) {
+          pushLink(origin, neighbors[n].other, false, i * 17 + n, true);
+          added += 1;
+        }
+      }
+
+      const topTen = activeStates.slice(0, Math.min(10, activeStates.length));
+      for (let i = 0; i < topTen.length; i++) {
+        const a = topTen[i];
+        const b = topTen[(i + 1) % topTen.length];
+        if (a && b && a.sequence !== b.sequence) {
+          pushLink(a, b, true, 8100 + i, true);
+        }
+        const c = topTen[(i + 2) % topTen.length];
+        if (a && c && a.sequence !== c.sequence && i < topTen.length - 2) {
+          pushLink(a, c, true, 8200 + i, true);
+        }
+      }
+
+      const globalLeader = activeStates[0] ?? null;
+      const topGainerHub = activeStates.find((state) => state.symbol === topGainerSymbol) ?? null;
+      const topLoserHub = activeStates.find((state) => state.symbol === topLoserSymbol) ?? null;
+      const topVolumeHub = activeStates.find((state) => state.symbol === topVolumeSymbol) ?? null;
+      const arterialHubs = [globalLeader, topGainerHub, topVolumeHub, topLoserHub].filter(
+        (state, idx, arr): state is TopCoinSymbolState => Boolean(state) && arr.findIndex((s) => s?.sequence === state?.sequence) === idx
+      );
+      const arterialTargetPool = activeStates.slice(0, Math.min(40, activeStates.length));
+      for (let h = 0; h < arterialHubs.length; h++) {
+        const hub = arterialHubs[h];
+        const candidates = arterialTargetPool
+          .filter((candidate) => candidate.sequence !== hub.sequence)
+          .map((candidate) => ({
+            candidate,
+            dist: Math.hypot(candidate.xTarget - hub.xTarget, candidate.zTarget - hub.zTarget)
+          }))
+          .sort((a, b) => a.dist - b.dist);
+        const arterialLinks = Math.min(6, candidates.length);
+        for (let i = 0; i < arterialLinks; i++) {
+          pushLink(hub, candidates[i]!.candidate, true, h * 19 + i + 1, true);
+        }
+      }
+
+      tracesRef.current = traces;
+      arterialTracesRef.current = arterialTraces;
+      trafficRef.current = trafficParticles;
+      arterialTrafficRef.current = arterialTrafficParticles;
+
+      const maxRadius = Math.max(
+        layout.cityRadius,
+        ...selected.items
+          .map((item) => states.get(item.symbol))
+          .filter((state): state is TopCoinSymbolState => Boolean(state))
+          .map((state) => {
+            const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.baseTarget, 0, 1));
+            const baseScale = topCoinBaseScale({
+              pct: state.pctTarget,
+              rank: state.rank,
+              sizeScore: state.baseTarget,
+              isTopGainer: state.isTopGainer,
+              isTopLoser: state.isTopLoser,
+              isTopVolume: state.isTopVolume
+            });
+            const radius = 0.5 * Math.hypot(shape.baseW * baseScale, shape.baseD * baseScale);
+            return Math.hypot(state.xTarget, state.zTarget) + radius * 3.6;
+          })
+      );
+      const maxHeight = Math.max(
+        24,
+        ...selected.items
+          .map((item) => states.get(item.symbol))
+          .filter((state): state is TopCoinSymbolState => Boolean(state))
+          .map((state) => state.heightTarget + 4.5)
+      );
+      boundsRef.current = { radius: maxRadius, maxY: maxHeight };
+
+      const parkTowerTargets: TopCoinsParkTower[] = [];
+      for (const item of selected.items) {
+        const state = states.get(item.symbol);
+        if (!state) continue;
+        const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.baseTarget, 0, 1));
+        const baseScale = topCoinBaseScale({
+          pct: state.pctTarget,
+          rank: state.rank,
+          sizeScore: state.baseTarget,
+          isTopGainer: state.isTopGainer,
+          isTopLoser: state.isTopLoser,
+          isTopVolume: state.isTopVolume
+        });
+        const baseW = MathUtils.clamp(shape.baseW * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
+        const baseD = MathUtils.clamp(shape.baseD * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
+        parkTowerTargets.push({
+          sequence: state.sequence,
+          x: state.xTarget,
+          z: state.zTarget,
+          height: state.heightTarget,
+          baseW,
+          baseD,
+          footprintX: MathUtils.clamp(baseW * 0.98, 0.8, 5.7),
+          footprintZ: MathUtils.clamp(baseD * 0.98, 0.8, 5.7)
+        });
+      }
+      const decorativeParks = buildTopCoinsDecorativeParks({
+        towers: parkTowerTargets,
+        cityRadius: boundsRef.current.radius,
+        traces,
+        arterialTraces
       });
-      const baseW = MathUtils.clamp(shape.baseW * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
-      const baseD = MathUtils.clamp(shape.baseD * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
-      parkTowerTargets.push({
-        sequence: state.sequence,
-        x: state.xTarget,
-        z: state.zTarget,
-        height: state.heightTarget,
-        baseW,
-        baseD,
-        footprintX: MathUtils.clamp(baseW * 0.98, 0.8, 5.7),
-        footprintZ: MathUtils.clamp(baseD * 0.98, 0.8, 5.7)
-      });
+      parksRef.current = decorativeParks.parks;
+      parkTreesRef.current = decorativeParks.trees;
+
+      const totalBreadth = Math.max(1, selected.items.length);
+      const breadthRaw = selected.stats.breadth ?? (selected.stats.marketBreadth.positive - selected.stats.marketBreadth.negative) / totalBreadth;
+      moodTargetRef.current = MathUtils.clamp(0.5 + breadthRaw * 0.5, 0.08, 0.92);
+      volatilityRef.current =
+        selected.items.length > 0
+          ? MathUtils.clamp(
+              selected.items.reduce((acc, item) => acc + Math.abs(item.priceChangePercent), 0) / selected.items.length / 6,
+              0.15,
+              1.2
+            )
+          : 0.2;
+      clutterRef.current = MathUtils.clamp((traces.length * 0.65 + trafficParticles.length * 0.2 + selected.items.length) / 360, 0, 1);
     }
-    const decorativeParks = buildTopCoinsDecorativeParks({
-      towers: parkTowerTargets,
-      cityRadius: boundsRef.current.radius,
-      traces,
-      arterialTraces
-    });
-    parksRef.current = decorativeParks.parks;
-    parkTreesRef.current = decorativeParks.trees;
 
-    const totalBreadth = snapshot.stats.marketBreadth.positive + snapshot.stats.marketBreadth.negative;
-    moodTargetRef.current = totalBreadth > 0 ? snapshot.stats.marketBreadth.positive / totalBreadth : 0.5;
-
+    const meta = liveSnapshotRef.current ?? selected;
+    const asOfMs = meta.asOf;
+    const pollSec = Math.max(1, Math.floor((meta.debug.pollMs || 60_000) / 1000));
+    const nowDebug = Date.now();
+    const asOfAgeSec = asOfMs > 0 ? Math.max(0, (nowDebug - asOfMs) / 1000) : 0;
+    const nextUpdateInSec = Math.max(0, (meta.debug.nextUpdateAt - nowDebug) / 1000);
     debugRef.current = {
-      snapshotSeq: snapshot.sequence,
-      applyCount: debugRef.current.applyCount + 1,
-      changedTowers,
-      heightDeltaSum,
-      baseDeltaSum,
-      lastAppliedAt: Date.now(),
-      asOfMs: snapshot.asOf,
-      asOfIso: snapshot.asOf > 0 ? new Date(snapshot.asOf).toISOString() : '',
-      symbols: snapshot.debug.symbols,
-      fetchedAt: snapshot.debug.fetchedAt,
-      pollSec: Math.max(1, Math.floor((snapshot.debug.pollMs || 30000) / 1000)),
-      lastHash: snapshot.debug.lastHash,
-      refreshAgeSec: snapshot.debug.refreshAgeSec,
-      lastError: snapshot.debug.lastError,
-      lastFetchOk: snapshot.debug.lastFetchOk,
-      logosMissing: snapshot.debug.logosMissing,
-      logosAttempted: snapshot.debug.logosAttempted,
-      logosDownloaded: snapshot.debug.logosDownloaded,
-      layoutIters: layout.layoutIters,
-      minSeparation: layout.minSeparation,
-      overlapFix: layout.overlapFix,
-      topGainer: snapshot.stats.topGainer,
-      topLoser: snapshot.stats.topLoser,
-      topVolume: snapshot.stats.topVolume
+      snapshotSeq: meta.sequence,
+      applyCount: metadataOnly ? debugRef.current.applyCount : debugRef.current.applyCount + 1,
+      changedTowers: metadataOnly ? debugRef.current.changedTowers : changedTowers,
+      changedCount: meta.debug.changedCount,
+      heightDeltaSum: metadataOnly ? debugRef.current.heightDeltaSum : heightDeltaSum,
+      baseDeltaSum: metadataOnly ? debugRef.current.baseDeltaSum : baseDeltaSum,
+      lastAppliedAt: metadataOnly ? debugRef.current.lastAppliedAt : nowMs,
+      asOfMs,
+      asOfIso: meta.asOfIso || (asOfMs > 0 ? new Date(asOfMs).toISOString() : ''),
+      asOfAgeSec,
+      asOfAgeLabel: fmtAgeFriendly(asOfAgeSec),
+      staleData: asOfAgeSec > pollSec * 2,
+      symbols: meta.debug.symbols,
+      fetchedAt: meta.debug.fetchedAt,
+      lastFetchAt: meta.debug.lastFetchAt,
+      lastSuccessAt: meta.debug.lastSuccessAt,
+      pollSec,
+      nextUpdateAtMs: meta.debug.nextUpdateAt,
+      nextUpdateInSec,
+      nextUpdateInLabel: fmtMmSs(nextUpdateInSec),
+      lastHash: meta.debug.lastHash,
+      hashChanged: meta.debug.hashChanged,
+      refreshAgeSec: meta.debug.refreshAgeSec,
+      lastError: meta.debug.lastError,
+      lastFetchOk: meta.debug.lastFetchOk,
+      logosMissing: meta.debug.logosMissing,
+      logosAttempted: meta.debug.logosAttempted,
+      logosDownloaded: meta.debug.logosDownloaded,
+      layoutIters: metadataOnly ? debugRef.current.layoutIters : layout.layoutIters,
+      minSeparation: metadataOnly ? debugRef.current.minSeparation : layout.minSeparation,
+      overlapFix: metadataOnly ? debugRef.current.overlapFix : layout.overlapFix,
+      introActive: introRef.current.active,
+      introBootAlpha: introRef.current.bootAlpha,
+      introLifeAlpha: introRef.current.lifeAlpha,
+      introProgress: introRef.current.progress,
+      clutter: clutterRef.current,
+      discVisible: Array.from(statesRef.current.values()).filter((state) => state.rank <= 60 || state.isTopGainer || state.isTopLoser).length,
+      discMode: replayEnabled ? 'replay' : 'live',
+      replayEnabled,
+      replayOffset,
+      replayMax,
+      replayAsOfIso: replayEnabled && activeSnapshot ? activeSnapshot.asOfIso : '',
+      topGainer: meta.stats.topGainer,
+      topLoser: meta.stats.topLoser,
+      topVolume: meta.stats.topVolume
     };
-    setVersion((v) => v + 1);
-  }, [snapshot]);
+
+    if (!metadataOnly) {
+      setVersion((v) => v + 1);
+    } else {
+      setVersion((v) => v + 1);
+    }
+  }, [activeSnapshot, historyVersion, replayEnabled, replayIndex, replayMax, replayOffset, snapshot]);
 
   useEffect(() => {
     let raf = 0;
@@ -3363,6 +3654,32 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
 
       moodRef.current = easeTowards(moodRef.current, moodTargetRef.current, 2.8, dt);
 
+      if (introRef.current.active) {
+        const elapsed = Date.now() - introRef.current.startedAtMs;
+        const bootAlpha = MathUtils.clamp(elapsed / TOP_INTRO_BOOT_MS, 0, 1);
+        const lifeAlpha = MathUtils.clamp((elapsed - TOP_INTRO_LIFE_START_MS) / 1600, 0, 1);
+        const progress = MathUtils.clamp(elapsed / TOP_INTRO_TOTAL_MS, 0, 1);
+        if (
+          Math.abs(bootAlpha - introRef.current.bootAlpha) > 0.001 ||
+          Math.abs(lifeAlpha - introRef.current.lifeAlpha) > 0.001 ||
+          Math.abs(progress - introRef.current.progress) > 0.001
+        ) {
+          introRef.current.bootAlpha = bootAlpha;
+          introRef.current.lifeAlpha = lifeAlpha;
+          introRef.current.progress = progress;
+          dirty = true;
+        }
+        if (elapsed >= TOP_INTRO_TOTAL_MS) {
+          introRef.current.active = false;
+          introRef.current.bootAlpha = 1;
+          introRef.current.lifeAlpha = 1;
+          introRef.current.progress = 1;
+          introRef.current.storyBeatUntilMs = Date.now() + TOP_INTRO_CAMERA_BEAT_MS;
+          dirty = true;
+        }
+      }
+
+      const nowPerf = performance.now();
       for (const [symbol, state] of statesRef.current) {
         const prevX = state.x;
         const prevZ = state.z;
@@ -3375,20 +3692,33 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         const prevOpacity = state.opacity;
 
         const smoothAlpha = Number.isFinite(state.smoothAlpha) ? state.smoothAlpha : 3.8;
-        state.x = easeTowards(state.x, state.xTarget, smoothAlpha, dt);
-        state.z = easeTowards(state.z, state.zTarget, smoothAlpha, dt);
-        state.height = easeTowards(state.height, state.heightTarget, 4.2, dt);
-        state.base = easeTowards(state.base, state.baseTarget, 3.6, dt);
-        state.pct = easeTowards(state.pct, state.pctTarget, 3.4, dt);
-        state.quoteVolume = easeTowards(state.quoteVolume, state.quoteVolumeTarget, 3.2, dt);
-        state.lastPrice = easeTowards(state.lastPrice, state.lastPriceTarget, 3.2, dt);
-        state.glowStrength = easeTowards(state.glowStrength, state.glowStrengthTarget, 3.8, dt);
-        state.opacity = easeTowards(state.opacity, state.opacityTarget, 4.8, dt);
+        state.x = easeTowards(state.x, state.xTarget, Math.min(2.3, smoothAlpha * 0.55), dt);
+        state.z = easeTowards(state.z, state.zTarget, Math.min(2.3, smoothAlpha * 0.55), dt);
+        state.height = easeTowards(state.height, state.heightTarget, 1.85, dt);
+        state.base = easeTowards(state.base, state.baseTarget, 1.78, dt);
+        state.pct = easeTowards(state.pct, state.pctTarget, 1.7, dt);
+        state.quoteVolume = easeTowards(state.quoteVolume, state.quoteVolumeTarget, 1.62, dt);
+        state.lastPrice = easeTowards(state.lastPrice, state.lastPriceTarget, 1.62, dt);
+        state.glowStrength = easeTowards(state.glowStrength, state.glowStrengthTarget, 1.86, dt);
+        state.opacity = easeTowards(state.opacity, state.opacityTarget, 2.4, dt);
 
         if (state.opacityTarget <= 0.001 && state.opacity < 0.02) {
           statesRef.current.delete(symbol);
           dirty = true;
           continue;
+        }
+        if (state.sparkUntilMs > 0 && nowPerf > state.sparkUntilMs) {
+          state.sparkUntilMs = 0;
+          dirty = true;
+        }
+        if (
+          state.sparkUntilMs <= 0 &&
+          (state.rank <= 12 || state.isTopGainer || state.isTopLoser) &&
+          Math.abs(state.pct) >= 1 &&
+          Math.sin(nowPerf * 0.00013 + state.sequence * 0.17) > 0.9988
+        ) {
+          state.sparkUntilMs = nowPerf + 360;
+          dirty = true;
         }
 
         if (
@@ -3406,9 +3736,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         }
       }
 
-      if (dirty) {
-        setVersion((v) => v + 1);
-      }
+      if (dirty) setVersion((v) => v + 1);
       raf = window.requestAnimationFrame(tick);
     };
 
@@ -3425,21 +3753,16 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       .sort((a, b) => a.rank - b.rank || a.symbol.localeCompare(b.symbol));
 
     const out: TowerDatum[] = [];
+    const now = Date.now();
     for (const state of list) {
       const pctMagnitude = MathUtils.clamp(Math.abs(state.pct) / Math.max(1, Math.abs(debugRef.current.topGainer.pct) || 1), 0, 1);
       const isPositive = state.pct >= 0;
-      const accent = isPositive ? new Color('#91c88f') : new Color('#c67d73');
-      const glow = TRACE_ORANGE.clone().lerp(accent, 0.32 + pctMagnitude * 0.4);
-      if (state.isTopLoser) {
-        glow.lerp(new Color('#7aa6d9'), 0.58);
-      }
-      if (state.isTopGainer) {
-        glow.lerp(new Color('#ffd98f'), 0.34);
-      }
+      const accent = isPositive ? new Color('#87c79a') : new Color('#c17a73');
+      const glow = TRACE_ORANGE.clone().lerp(accent, 0.36 + pctMagnitude * 0.42);
+      if (state.isTopLoser) glow.lerp(new Color('#7aa6d9'), 0.58);
+      if (state.isTopGainer) glow.lerp(new Color('#ffd98f'), 0.4);
       const core = CORE_GRAPHITE.clone().lerp(CORE_GRAPHITE_HI, 0.26 + pctMagnitude * 0.28);
-      if (state.isTopLoser) {
-        core.lerp(new Color('#8da5bb'), 0.18);
-      }
+      if (state.isTopLoser) core.lerp(new Color('#8da5bb'), 0.18);
       const districtTint = TOP_COINS_DISTRICT_TINTS[state.districtId % TOP_COINS_DISTRICT_TINTS.length] ?? '#ead8bb';
       const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.base, 0, 1));
       const baseScale = topCoinBaseScale({
@@ -3452,6 +3775,10 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       });
       const baseW = MathUtils.clamp(shape.baseW * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
       const baseD = MathUtils.clamp(shape.baseD * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
+      const breathe =
+        state.isTopGainer || state.isTopLoser
+          ? 1 + Math.sin((now + state.sequence * 31) * 0.0018) * 0.045
+          : 1;
       out.push({
         sequence: state.sequence,
         x: state.x,
@@ -3467,7 +3794,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         crownRatio: shape.crownRatio,
         coreColor: `#${core.getHexString()}`,
         glowColor: `#${glow.getHexString()}`,
-        glowStrength: state.glowStrength * MathUtils.clamp(state.opacity, 0, 1),
+        glowStrength: state.glowStrength * breathe * (1 - clutterRef.current * 0.14) * MathUtils.clamp(state.opacity, 0, 1),
         bandCount: state.isTopGainer || state.isTopVolume || state.rank <= 3 ? 4 : state.rank <= 16 ? 3 : 2,
         heightScore: MathUtils.clamp(state.base, 0, 1),
         isHero: state.isTopGainer || state.isTopLoser || state.isTopVolume || state.rank <= 3,
@@ -3486,8 +3813,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         usdScoreDist: MathUtils.clamp(Math.abs(state.pct) / 20, 0, 1),
         averagePrice: state.lastPrice,
         tradeCount: 0,
-        windowStart: snapshot?.asOf ?? Date.now(),
-        windowEnd: snapshot?.asOf ?? Date.now(),
+        windowStart: activeSnapshot?.asOf ?? Date.now(),
+        windowEnd: activeSnapshot?.asOf ?? Date.now(),
         emittedAt: state.emittedAt,
         mode: 'top200',
         symbol: state.symbol,
@@ -3500,21 +3827,24 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         logoPath: state.logoPath,
         isTopGainer: state.isTopGainer,
         isTopLoser: state.isTopLoser,
-        isTopVolume: state.isTopVolume
+        isTopVolume: state.isTopVolume,
+        discRevealAt: state.discRevealAt,
+        discOcclusion: state.discOcclusion,
+        isDiscPriority: state.rank <= 60 || state.isTopGainer || state.isTopLoser || state.isTopVolume,
+        sparkUntilMs: state.sparkUntilMs
       });
     }
-
     return out;
-  }, [snapshot, version]);
+  }, [activeSnapshot, version]);
 
   const tallestTowerSequence = useMemo(() => {
+    const topVolume = towers.find((tower) => tower.symbol === debugRef.current.topVolume.symbol);
+    if (topVolume) return topVolume.sequence;
     const topGainer = towers.find((tower) => tower.symbol === debugRef.current.topGainer.symbol);
     if (topGainer) return topGainer.sequence;
     let best: TowerDatum | null = null;
     for (const tower of towers) {
-      if (!best || tower.height > best.height) {
-        best = tower;
-      }
+      if (!best || tower.height > best.height) best = tower;
     }
     return best?.sequence ?? null;
   }, [towers]);
@@ -3544,7 +3874,38 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     parksAttempted: parksRef.current.length,
     parksPlaced: parksRef.current.length,
     lastParkSkipReason: parksRef.current.length > 0 ? 'placed' : 'no-slot',
-    topCoinsDebug: debugRef.current
+    topCoinsDebug: debugRef.current,
+    topReplay: {
+      enabled: replayEnabled,
+      offset: replayOffset,
+      max: replayMax,
+      setEnabled: (next: boolean) => {
+        setReplayEnabled(next);
+        if (next) {
+          const history = historyRef.current;
+          setReplayIndex(history.length > 0 ? history.length - 1 : -1);
+          pushShockwave(0, 0, '#96b8e2', 900, 12, 0.16);
+        } else {
+          setReplayIndex(historyRef.current.length > 0 ? historyRef.current.length - 1 : -1);
+        }
+      },
+      setOffset: (offset: number) => {
+        const history = historyRef.current;
+        if (history.length === 0) return;
+        const clampedOffset = Math.max(0, Math.min(offset, history.length - 1));
+        const index = history.length - 1 - clampedOffset;
+        setReplayIndex(index);
+        pushShockwave(0, 0, '#9ec1e9', TOP_REPLAY_SCRUB_MS, 10, 0.14);
+      }
+    },
+    topFx: {
+      introBootAlpha: introRef.current.bootAlpha,
+      introLifeAlpha: introRef.current.lifeAlpha,
+      introProgress: introRef.current.progress,
+      introActive: introRef.current.active,
+      storyBeatUntilMs: introRef.current.storyBeatUntilMs,
+      clutter: clutterRef.current
+    }
   };
 }
 
@@ -3552,12 +3913,14 @@ function MinimalOrbitRig({
   bounds,
   focusTarget,
   onClearFocusTarget,
-  onCameraDebug
+  onCameraDebug,
+  storyBeatUntilMs = 0
 }: {
   bounds: SandboxBounds;
   focusTarget?: CameraFocusTarget | null;
   onClearFocusTarget?: () => void;
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
+  storyBeatUntilMs?: number;
 }) {
   const { camera, gl } = useThree();
   const initializedRef = useRef(false);
@@ -3720,15 +4083,17 @@ function MinimalOrbitRig({
 
   useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime();
+    const storyBeatActive = storyBeatUntilMs > Date.now();
     const radius = Math.max(18, bounds.radius);
     const maxY = Math.max(8, bounds.maxY);
     const orbitScale = RUNTIME_QUALITY_CONFIG.cameraOrbitSpeedScale;
     const driftScale = RUNTIME_QUALITY_CONFIG.cameraDriftScale;
+    const storyOrbitMul = storyBeatActive ? 0.62 : 1;
 
     const auto = autoRef.current;
-    auto.angle = wrapAngleRad(t * 0.18 * orbitScale + Math.sin(t * 0.1 * orbitScale) * (0.06 * driftScale));
-    auto.distance = MathUtils.clamp(18 + radius * 1.65 + maxY * 0.55, 24, 170);
-    auto.elevation = MathUtils.clamp(8 + maxY * 0.9 + radius * 0.22, 10, 72);
+    auto.angle = wrapAngleRad(t * 0.18 * orbitScale * storyOrbitMul + Math.sin(t * 0.1 * orbitScale) * (0.06 * driftScale));
+    auto.distance = MathUtils.clamp(18 + radius * 1.65 + maxY * 0.55 + (storyBeatActive ? 8 : 0), 24, 170);
+    auto.elevation = MathUtils.clamp(8 + maxY * 0.9 + radius * 0.22 + (storyBeatActive ? 2.2 : 0), 10, 72);
     auto.lookY = MathUtils.clamp(1.5 + maxY * 0.45, 2, 30);
 
     const keys = keysRef.current;
@@ -4368,12 +4733,15 @@ function loadTopCoinLogoTexture(logoPath: string) {
 
 function useTopCoinDiscTexture(logoPath: string | null | undefined, ticker: string) {
   const fallback = useMemo(() => getTopCoinTickerTexture(ticker), [ticker]);
-  const [texture, setTexture] = useState<Texture>(fallback);
+  const [state, setState] = useState<{ texture: Texture; usingFallback: boolean }>({
+    texture: fallback,
+    usingFallback: true
+  });
 
   useEffect(() => {
     let mounted = true;
     if (!logoPath) {
-      setTexture(fallback);
+      setState({ texture: fallback, usingFallback: true });
       return () => {
         mounted = false;
       };
@@ -4381,7 +4749,7 @@ function useTopCoinDiscTexture(logoPath: string | null | undefined, ticker: stri
 
     const cached = topCoinLogoTextureCache.get(logoPath);
     if (cached !== undefined) {
-      setTexture(cached ?? fallback);
+      setState({ texture: cached ?? fallback, usingFallback: !cached });
       return () => {
         mounted = false;
       };
@@ -4389,7 +4757,7 @@ function useTopCoinDiscTexture(logoPath: string | null | undefined, ticker: stri
 
     loadTopCoinLogoTexture(logoPath).then((loaded) => {
       if (!mounted) return;
-      setTexture(loaded ?? fallback);
+      setState({ texture: loaded ?? fallback, usingFallback: !loaded });
     });
 
     return () => {
@@ -4397,26 +4765,32 @@ function useTopCoinDiscTexture(logoPath: string | null | undefined, ticker: stri
     };
   }, [fallback, logoPath]);
 
-  return texture;
+  return state;
 }
 
 function TopCoinLogoDisc({
   tower,
   focusMode,
-  isHovered
+  isHovered,
+  introLifeAlpha = 1,
+  clutter = 0
 }: {
   tower: TowerDatum;
   focusMode: boolean;
   isHovered: boolean;
+  introLifeAlpha?: number;
+  clutter?: number;
 }) {
-  const { camera, gl } = useThree();
+  const { camera, gl, size } = useThree();
   const groupRef = useRef<Group>(null);
   const discRef = useRef<Mesh>(null);
   const ringRef = useRef<Mesh>(null);
   const bodyRef = useRef<Mesh>(null);
+  const fallbackPlateRef = useRef<Mesh>(null);
   const worldPosRef = useRef(new Vector3());
+  const ndcRef = useRef(new Vector3());
   const ticker = useMemo(() => getTopCoinTicker(tower.symbol, tower.baseAsset), [tower.baseAsset, tower.symbol]);
-  const texture = useTopCoinDiscTexture(tower.logoPath, ticker);
+  const { texture, usingFallback } = useTopCoinDiscTexture(tower.logoPath, ticker);
 
   useEffect(() => {
     if (!texture) return;
@@ -4424,6 +4798,12 @@ function TopCoinLogoDisc({
     texture.anisotropy = Math.max(2, Math.min(8, maxAniso || 1));
     texture.needsUpdate = true;
   }, [gl, texture]);
+
+  useEffect(() => {
+    return () => {
+      topCoinDiscScreenRegistry.delete(tower.sequence);
+    };
+  }, [tower.sequence]);
 
   useFrame(({ clock }, delta) => {
     const g = groupRef.current;
@@ -4436,22 +4816,66 @@ function TopCoinLogoDisc({
 
     g.getWorldPosition(worldPosRef.current);
     const distance = camera.position.distanceTo(worldPosRef.current);
+    const camDist = camera.position.length();
     const baseScale = MathUtils.clamp(1.16 + distance * 0.0104, 1.35, 4.35);
     // One-way boost: large/tall towers get larger discs; baseline towers never get smaller.
     const towerBoostT = smoothstep01(remapClamped(tower.height, 30, 90));
     const scale = baseScale * MathUtils.lerp(1, 1.26, towerBoostT);
-    const clearance = 2.45 + scale * 0.24;
+    const clearance = MathUtils.clamp(1.2 + tower.height * 0.12 + scale * 0.1, 1.6, 5.6);
     g.position.set(0, tower.height + clearance + bob, 0);
     g.scale.set(scale, scale, scale);
+
+    const rank = tower.rank ?? 200;
+    const farT = smoothstep01(remapClamped(camDist, 52, 168));
+    const rankCutoff = MathUtils.lerp(200, 46, farT);
+    const rankDelta = rank - rankCutoff;
+    const isPriority = Boolean(tower.isDiscPriority || tower.isTopGainer || tower.isTopLoser || tower.isTopVolume);
+    const rankFade = isPriority ? 1 : 1 - smoothstep01(remapClamped(rankDelta, 0, 28));
+    const introDelay = tower.discRevealAt && tower.discRevealAt > 0 ? MathUtils.clamp((Date.now() - tower.discRevealAt) / 900, 0, 1) : 1;
+    const introFade = MathUtils.clamp(introLifeAlpha, 0, 1) * introDelay;
+    const projected = ndcRef.current.copy(worldPosRef.current).project(camera);
+    const nowPerf = performance.now();
+    topCoinDiscScreenRegistry.set(tower.sequence, {
+      x: projected.x,
+      y: projected.y,
+      rank,
+      updatedAt: nowPerf
+    });
+
+    let screenOcclusion = tower.discOcclusion ?? 0;
+    const screenThresholdX = 0.11 * MathUtils.clamp(1200 / Math.max(320, size.width), 0.78, 1.4);
+    const screenThresholdY = 0.15 * MathUtils.clamp(900 / Math.max(320, size.height), 0.78, 1.4);
+    for (const [sequence, other] of topCoinDiscScreenRegistry) {
+      if (sequence === tower.sequence) continue;
+      if (other.updatedAt < nowPerf - 120) continue;
+      if (other.rank >= rank) continue;
+      const dx = Math.abs(other.x - projected.x);
+      const dy = Math.abs(other.y - projected.y);
+      const ox = 1 - smoothstep01(remapClamped(dx, 0, screenThresholdX));
+      const oy = 1 - smoothstep01(remapClamped(dy, 0, screenThresholdY));
+      const overlap = ox * oy;
+      if (overlap > screenOcclusion) {
+        screenOcclusion = overlap;
+      }
+    }
+
+    const occlusionFade = 1 - MathUtils.clamp(screenOcclusion * 0.8, 0, 0.8);
+    const clutterFade = MathUtils.lerp(1, 0.84, MathUtils.clamp(clutter, 0, 1));
+    const lodAlpha = MathUtils.clamp(rankFade * introFade * occlusionFade * clutterFade, 0, 1);
 
     const dimFactor = focusMode && !isHovered ? FOCUS_NON_HOVER_DIM : 1;
     const hoverBoost = isHovered ? 1.2 : 1;
     const bodyMat = bodyRef.current?.material as { opacity?: number } | undefined;
-    if (bodyMat) bodyMat.opacity = MathUtils.damp(bodyMat.opacity ?? 0.72, 0.72 * dimFactor * hoverBoost, 8, delta);
+    if (bodyMat) bodyMat.opacity = MathUtils.damp(bodyMat.opacity ?? 0.72, 0.72 * dimFactor * hoverBoost * lodAlpha, 8, delta);
+    const plateMat = fallbackPlateRef.current?.material as { opacity?: number } | undefined;
+    if (plateMat) {
+      const plateTarget = usingFallback ? 0.66 * dimFactor * lodAlpha : 0;
+      plateMat.opacity = MathUtils.damp(plateMat.opacity ?? 0, plateTarget, 8, delta);
+    }
     const discMat = discRef.current?.material as { opacity?: number } | undefined;
-    if (discMat) discMat.opacity = MathUtils.damp(discMat.opacity ?? 0.96, 0.96 * dimFactor * hoverBoost, 9, delta);
+    if (discMat) discMat.opacity = MathUtils.damp(discMat.opacity ?? 0.96, 0.96 * dimFactor * hoverBoost * lodAlpha, 9, delta);
     const ringMat = ringRef.current?.material as { opacity?: number } | undefined;
-    if (ringMat) ringMat.opacity = MathUtils.damp(ringMat.opacity ?? 0.34, 0.34 * dimFactor * hoverBoost, 8, delta);
+    if (ringMat) ringMat.opacity = MathUtils.damp(ringMat.opacity ?? 0.34, 0.34 * dimFactor * hoverBoost * lodAlpha, 8, delta);
   });
 
   if (tower.mode !== 'top200') return null;
@@ -4459,7 +4883,7 @@ function TopCoinLogoDisc({
   return (
     <group ref={groupRef} position={[0, tower.height + 2.8, 0]} renderOrder={6.95}>
       <mesh ref={bodyRef} position={[0, 0, -0.016]} renderOrder={6.951}>
-        <circleGeometry args={[0.72, 40]} />
+        <primitive attach="geometry" object={TOP_DISC_BODY_GEOMETRY} />
         <meshBasicMaterial
           color={tower.isTopLoser ? '#6f8fb5' : tower.isTopGainer ? '#f3bf74' : '#d8b07c'}
           transparent
@@ -4470,8 +4894,12 @@ function TopCoinLogoDisc({
           blending={AdditiveBlending}
         />
       </mesh>
+      <mesh ref={fallbackPlateRef} position={[0, 0, -0.012]} renderOrder={6.9515}>
+        <primitive attach="geometry" object={TOP_DISC_FACE_GEOMETRY} />
+        <meshBasicMaterial color="#06080c" transparent opacity={0} toneMapped={false} depthTest depthWrite={false} />
+      </mesh>
       <mesh ref={discRef} position={[0, 0, -0.008]} renderOrder={6.952}>
-        <circleGeometry args={[0.58, 40]} />
+        <primitive attach="geometry" object={TOP_DISC_FACE_GEOMETRY} />
         <meshBasicMaterial
           map={texture}
           transparent
@@ -4482,7 +4910,7 @@ function TopCoinLogoDisc({
         />
       </mesh>
       <mesh ref={ringRef} position={[0, 0, -0.004]} renderOrder={6.953}>
-        <torusGeometry args={[0.68, 0.04, 10, 48]} />
+        <primitive attach="geometry" object={TOP_DISC_RING_GEOMETRY} />
         <meshBasicMaterial
           color={tower.isTopGainer ? '#f9c786' : tower.isTopLoser ? '#7ca5d8' : '#f1d2a4'}
           transparent
@@ -4752,13 +5180,22 @@ function AnimatedHoloTower({
   hoveredTowerSequence,
   isTallest,
   onHoverTower,
-  onSelectTower
+  onSelectTower,
+  topFx
 }: {
   tower: TowerDatum;
   hoveredTowerSequence: number | null;
   isTallest: boolean;
   onHoverTower?: (sequence: number | null) => void;
   onSelectTower?: (sequence: number) => void;
+  topFx?: {
+    introBootAlpha: number;
+    introLifeAlpha: number;
+    introProgress: number;
+    introActive: boolean;
+    storyBeatUntilMs: number;
+    clutter: number;
+  };
 }) {
   const groupRef = useRef<Group>(null);
   const coreRefs = useRef<Array<Mesh | null>>([]);
@@ -4767,6 +5204,9 @@ function AnimatedHoloTower({
   const crownRef = useRef<Mesh>(null);
   const topLoserHazeRef = useRef<Mesh>(null);
   const topVolumeBandRef = useRef<Mesh>(null);
+  const topGainerHaloRef = useRef<Mesh>(null);
+  const sparkleRef = useRef<Mesh>(null);
+  const rainRefs = useRef<Array<Mesh | null>>([]);
   const bandRefs = useRef<Array<Mesh | null>>([]);
   const microBandRefs = useRef<Array<Mesh | null>>([]);
   const antennaTipRefs = useRef<Array<Mesh | null>>([]);
@@ -4831,6 +5271,7 @@ function AnimatedHoloTower({
     bandRefs.current.length = bandFractions.length;
     microBandRefs.current.length = microPanelFractions.length;
     antennaTipRefs.current.length = antennaCount;
+    rainRefs.current.length = 3;
   }, [segments.length, bandFractions.length, microPanelFractions.length, antennaCount]);
 
   useEffect(() => {
@@ -4919,6 +5360,33 @@ function AnimatedHoloTower({
           ? 0.3 * birthGlowAlpha * focusDim * MathUtils.lerp(1, 1.1, hoverMixRef.current)
           : 0;
       volumeBandMat.opacity = MathUtils.damp(volumeBandMat.opacity ?? 0, volumeTarget, 9, delta);
+    }
+    const gainerHaloMat = topGainerHaloRef.current?.material as { opacity?: number; color?: Color } | undefined;
+    if (gainerHaloMat?.color) {
+      gainerHaloMat.color.copy(tempColorA.set('#ffd9a4').lerp(BTC_ORANGE, 0.3 + hoverMixRef.current * 0.5));
+    }
+    if (gainerHaloMat) {
+      const pulse = 0.72 + Math.sin(Date.now() * 0.0022 + tower.sequence * 0.12) * 0.18;
+      const haloTarget =
+        tower.mode === 'top200' && tower.isTopGainer
+          ? 0.24 * pulse * birthGlowAlpha * focusDim * MathUtils.lerp(1, 1.1, hoverMixRef.current)
+          : 0;
+      gainerHaloMat.opacity = MathUtils.damp(gainerHaloMat.opacity ?? 0, haloTarget, 9, delta);
+    }
+    const sparkleMat = sparkleRef.current?.material as { opacity?: number; color?: Color } | undefined;
+    if (sparkleMat?.color) {
+      sparkleMat.color.copy(tempColorA.set('#fff4cc').lerp(BTC_ORANGE, hoverMixRef.current * 0.4));
+    }
+    if (sparkleMat) {
+      const now = performance.now();
+      const left = Math.max(0, (tower.sparkUntilMs ?? 0) - now);
+      const t = MathUtils.clamp(left / 900, 0, 1);
+      const sparkleTarget = t > 0 ? 0.42 * (0.4 + 0.6 * Math.sin(now * 0.03 + tower.sequence * 0.1)) * focusDim : 0;
+      sparkleMat.opacity = MathUtils.damp(sparkleMat.opacity ?? 0, sparkleTarget, 16, delta);
+      if (sparkleRef.current) {
+        const s = 1 + (1 - t) * 0.65;
+        sparkleRef.current.scale.set(s, s, s);
+      }
     }
 
     for (let i = 0; i < segments.length; i++) {
@@ -5018,6 +5486,24 @@ function AnimatedHoloTower({
       }
       if (mat) {
         mat.opacity = MathUtils.damp(mat.opacity ?? 0, 0.24 * blink * focusDim, 7.5, delta);
+      }
+    }
+
+    for (let i = 0; i < rainRefs.current.length; i++) {
+      const rain = rainRefs.current[i];
+      if (!rain) continue;
+      const phase = ((Date.now() * 0.00023 + tower.sequence * 0.13 + i * 0.37) % 1 + 1) % 1;
+      const sparseWindow = phase < 0.28;
+      rain.visible = tower.mode === 'top200' && (tower.rank ?? 999) <= 20 && sparseWindow;
+      const mat = rain.material as { opacity?: number; color?: Color } | undefined;
+      const fallPhase = ((Date.now() * 0.00032 + tower.sequence * 0.043 + i * 0.31) % 1 + 1) % 1;
+      rain.position.y = tower.height + 1.1 + fallPhase * 2.2;
+      if (mat?.color) {
+        mat.color.copy(tempColorA.set('#ffe3bd').lerp(BTC_ORANGE, 0.28 + i * 0.06));
+      }
+      if (mat) {
+        const rainTarget = rain.visible ? (1 - fallPhase) * 0.08 * focusDim : 0;
+        mat.opacity = MathUtils.damp(mat.opacity ?? 0, rainTarget, 8, delta);
       }
     }
   });
@@ -5277,7 +5763,15 @@ function AnimatedHoloTower({
           })
         : null}
 
-      {tower.mode === 'top200' ? <TopCoinLogoDisc tower={tower} focusMode={focusMode} isHovered={isHovered} /> : null}
+      {tower.mode === 'top200' ? (
+        <TopCoinLogoDisc
+          tower={tower}
+          focusMode={focusMode}
+          isHovered={isHovered}
+          introLifeAlpha={topFx?.introLifeAlpha ?? 1}
+          clutter={topFx?.clutter ?? 0}
+        />
+      ) : null}
       {isTallest && tower.mode !== 'top200' ? <TallestBtcDecals tower={tower} focusMode={focusMode} isHovered={isHovered} /> : null}
       <mesh
         ref={topLoserHazeRef}
@@ -5323,6 +5817,58 @@ function AnimatedHoloTower({
           blending={AdditiveBlending}
         />
       </mesh>
+      <mesh ref={sparkleRef} position={[0, tower.height + 0.95, 0]} renderOrder={6.76}>
+        <sphereGeometry args={[0.18, 10, 10]} />
+        <meshBasicMaterial
+          color="#fff4cc"
+          transparent
+          opacity={0}
+          toneMapped={false}
+          depthTest
+          depthWrite={false}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+      <mesh
+        ref={topGainerHaloRef}
+        position={[0, tower.height + 0.24, 0]}
+        rotation={[Math.PI / 2, 0, 0]}
+        renderOrder={6.745}
+        visible={tower.mode === 'top200' && Boolean(tower.isTopGainer)}
+      >
+        <torusGeometry args={[Math.max(0.44, Math.max(tower.baseW, tower.baseD) * 0.64), Math.max(0.026, Math.max(tower.baseW, tower.baseD) * 0.035), 12, 56]} />
+        <meshBasicMaterial
+          color="#ffd9a4"
+          transparent
+          opacity={0}
+          toneMapped={false}
+          depthTest
+          depthWrite={false}
+          blending={AdditiveBlending}
+        />
+      </mesh>
+      {[0, 1, 2].map((i) => (
+        <mesh
+          key={`${tower.sequence}-rain-${i}`}
+          ref={(el) => {
+            rainRefs.current[i] = el;
+          }}
+          position={[((i - 1) * Math.max(0.2, tower.baseW * 0.14)), tower.height + 1.2 + i * 0.2, 0]}
+          renderOrder={6.09}
+          visible={false}
+        >
+          <boxGeometry args={[0.03, 0.45, 0.03]} />
+          <meshBasicMaterial
+            color="#ffe3bd"
+            transparent
+            opacity={0}
+            toneMapped={false}
+            depthWrite={false}
+            depthTest
+            blending={AdditiveBlending}
+          />
+        </mesh>
+      ))}
 
       <mesh ref={crownRef} position={[0, tower.height + 0.08, 0]} renderOrder={6.2}>
         <boxGeometry
@@ -5498,11 +6044,13 @@ function ScreenSpaceGroundLine({
 function CircuitBoardGround({
   bounds,
   focusMode = false,
-  marketPulse = 0
+  marketPulse = 0,
+  introBootAlpha = 1
 }: {
   bounds: SandboxBounds;
   focusMode?: boolean;
   marketPulse?: number;
+  introBootAlpha?: number;
 }) {
   const boardSize = MathUtils.clamp(Math.max(420, bounds.radius * 8 + 180), 420, 1400);
   const targetGlowRadius = clampFinite(Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT), 64, 30, boardSize * 0.48);
@@ -5512,6 +6060,8 @@ function CircuitBoardGround({
   const gridStep = MathUtils.clamp(Math.round(Math.max(10, bounds.radius * 0.16)), 10, 20);
   const windRoseRadius = MathUtils.clamp(Math.max(68, bounds.radius * 2.35), 68, lineExtent * 0.62);
   const glowMeshRef = useRef<Mesh>(null);
+  const slabRef = useRef<Mesh>(null);
+  const deckRef = useRef<Mesh>(null);
   const smoothGlowRadiusRef = useRef(targetGlowRadius);
   const focusMixRef = useRef(0);
   const moodRef = useRef(marketPulse);
@@ -5566,13 +6116,25 @@ function CircuitBoardGround({
       glowMeshRef.current.scale.set(r * 2.2, r * 2.2, 1);
       glowUniforms.uOpacity.value =
         MathUtils.lerp(1.08, 0.8, focusMixRef.current) *
-        MathUtils.lerp(1 - MARKET_PULSE_GROUND_OPACITY_BREATH, 1 + MARKET_PULSE_GROUND_OPACITY_BREATH, mood);
+        MathUtils.lerp(1 - MARKET_PULSE_GROUND_OPACITY_BREATH, 1 + MARKET_PULSE_GROUND_OPACITY_BREATH, mood) *
+        MathUtils.clamp(introBootAlpha, 0, 1);
+    }
+    const introBoot = MathUtils.clamp(introBootAlpha, 0, 1);
+    const slabMat = slabRef.current?.material as { opacity?: number } | undefined;
+    if (slabMat) slabMat.opacity = MathUtils.damp(slabMat.opacity ?? 1, MathUtils.lerp(0.2, 1, introBoot), 7, delta);
+    const deckMat = deckRef.current?.material as { opacity?: number; emissiveIntensity?: number } | undefined;
+    if (deckMat) {
+      deckMat.opacity = MathUtils.damp(deckMat.opacity ?? 1, introBoot, 7, delta);
+      if (typeof deckMat.emissiveIntensity === 'number') {
+        deckMat.emissiveIntensity = MathUtils.damp(deckMat.emissiveIntensity, 0.05 * introBoot, 7, delta);
+      }
     }
     glowUniforms.uCenterColor.value.copy(tempColorA.set('#F0D0A7').lerp(tempColorB.set('#FFD8A1'), mood * 0.35));
     glowUniforms.uRingColor.value.copy(tempColorA.set('#e1891a').lerp(tempColorB.set('#f7931a'), 0.55 + mood * 0.3));
   });
 
   const focusStaticScale = focusMode ? FOCUS_GROUND_DIM : 1;
+  const intro = MathUtils.clamp(introBootAlpha, 0, 1);
 
   return (
     <group>
@@ -5587,26 +6149,30 @@ function CircuitBoardGround({
         material={glowMaterial}
       />
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, GROUND_SLAB_Y, 0]} receiveShadow renderOrder={0}>
+      <mesh ref={slabRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, GROUND_SLAB_Y, 0]} receiveShadow renderOrder={0}>
         <planeGeometry args={[boardSize, boardSize]} />
         <meshStandardMaterial
           color="#05070b"
           roughness={0.97}
           metalness={0.04}
+          transparent
+          opacity={MathUtils.lerp(0.2, 1, intro)}
           polygonOffset
           polygonOffsetFactor={-1}
           polygonOffsetUnits={-1}
         />
       </mesh>
 
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, GROUND_DECK_Y, 0]} renderOrder={0}>
+      <mesh ref={deckRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, GROUND_DECK_Y, 0]} renderOrder={0}>
         <planeGeometry args={[boardSize * 0.99, boardSize * 0.99]} />
         <meshStandardMaterial
           color="#080c11"
           roughness={0.9}
           metalness={0.08}
           emissive="#10161f"
-          emissiveIntensity={0.05}
+          emissiveIntensity={0.05 * intro}
+          transparent
+          opacity={intro}
           polygonOffset
           polygonOffsetFactor={-1}
           polygonOffsetUnits={-1}
@@ -5619,7 +6185,7 @@ function CircuitBoardGround({
           points={points}
           y={groundGraphicY + 0.0005}
           color={i % 2 === 0 ? '#d2b788' : '#bca173'}
-          opacity={i % 4 === 0 ? 0.085 : 0.05}
+          opacity={(i % 4 === 0 ? 0.085 : 0.05) * intro}
           lineWidth={i % 4 === 0 ? 1.25 : 0.95}
           renderOrder={2.02}
           focusMode={focusMode}
@@ -5632,7 +6198,7 @@ function CircuitBoardGround({
           points={points}
           y={groundGraphicY + 0.0007}
           color="#d7c09a"
-          opacity={0.24}
+          opacity={0.24 * intro}
           lineWidth={2.6}
           renderOrder={2.08}
           additive
@@ -5646,7 +6212,7 @@ function CircuitBoardGround({
           points={points}
           y={groundGraphicY + 0.0009}
           color={i % 2 === 0 ? '#F4D3A2' : '#F7931A'}
-          opacity={i % 2 === 0 ? 0.33 : 0.3}
+          opacity={(i % 2 === 0 ? 0.33 : 0.3) * intro}
           lineWidth={3.6}
           renderOrder={2.1}
           additive
@@ -5660,7 +6226,7 @@ function CircuitBoardGround({
           points={points}
           y={groundGraphicY + 0.001}
           color="#f6ead7"
-          opacity={0.2}
+          opacity={0.2 * intro}
           lineWidth={2.4}
           renderOrder={2.12}
           focusMode={focusMode}
@@ -5671,7 +6237,7 @@ function CircuitBoardGround({
         points={outerRingPoints}
         y={groundGraphicY + 0.0011}
         color="#F7931A"
-        opacity={0.24}
+        opacity={0.24 * intro}
         lineWidth={3.0}
         renderOrder={2.16}
         additive
@@ -5682,7 +6248,7 @@ function CircuitBoardGround({
         points={innerRingPoints}
         y={groundGraphicY + 0.00115}
         color="#f2e4cf"
-        opacity={0.14}
+        opacity={0.14 * intro}
         lineWidth={2.0}
         renderOrder={2.14}
         focusMode={focusMode}
@@ -5694,7 +6260,7 @@ function CircuitBoardGround({
         <meshBasicMaterial
           color="#F7931A"
           transparent
-          opacity={0.34 * focusStaticScale}
+          opacity={0.34 * focusStaticScale * intro}
           toneMapped={false}
           depthWrite={false}
           depthTest
@@ -5705,7 +6271,7 @@ function CircuitBoardGround({
         <meshBasicMaterial
           color="#f4e8d6"
           transparent
-          opacity={0.18 * focusStaticScale}
+          opacity={0.18 * focusStaticScale * intro}
           toneMapped={false}
           depthWrite={false}
           depthTest
@@ -5716,7 +6282,7 @@ function CircuitBoardGround({
         <meshBasicMaterial
           color="#F7931A"
           transparent
-          opacity={0.2 * focusStaticScale}
+          opacity={0.2 * focusStaticScale * intro}
           toneMapped={false}
           depthWrite={false}
           depthTest
@@ -5727,7 +6293,7 @@ function CircuitBoardGround({
         <meshBasicMaterial
           color="#ffe7c4"
           transparent
-          opacity={0.15 * focusStaticScale}
+          opacity={0.15 * focusStaticScale * intro}
           toneMapped={false}
           depthWrite={false}
           depthTest
@@ -6308,12 +6874,16 @@ function TraceStrips({
   traces,
   focusMode = false,
   marketPulse = 0,
-  arterial = false
+  arterial = false,
+  introLifeAlpha = 1,
+  clutter = 0
 }: {
   traces: TraceDatum[];
   focusMode?: boolean;
   marketPulse?: number;
   arterial?: boolean;
+  introLifeAlpha?: number;
+  clutter?: number;
 }) {
   const { camera } = useThree();
   const glowRefs = useRef<Array<Mesh | null>>([]);
@@ -6352,6 +6922,10 @@ function TraceStrips({
       0,
       arterial ? 0.98 : 0.9
     );
+    const clutterFade = MathUtils.lerp(1, 0.86, MathUtils.clamp(clutter, 0, 1));
+    const introAlpha = MathUtils.clamp(introLifeAlpha, 0, 1);
+    const finalGlowOpacity = glowOpacity * clutterFade * introAlpha;
+    const finalCoreOpacity = coreOpacity * clutterFade * introAlpha;
     for (let i = 0; i < traces.length; i++) {
       const glow = glowRefs.current[i];
       const core = coreRefs.current[i];
@@ -6359,12 +6933,12 @@ function TraceStrips({
       if (glow) {
         glow.scale.set(glowWidthScale, 1, 1);
         const mat = glow.material as { opacity?: number } | undefined;
-        if (mat) mat.opacity = glowOpacity;
+        if (mat) mat.opacity = finalGlowOpacity;
       }
       if (core) {
         core.scale.set(coreWidthScale, 1, 1);
         const mat = core.material as { opacity?: number } | undefined;
-        if (mat) mat.opacity = coreOpacity;
+        if (mat) mat.opacity = finalCoreOpacity;
       }
       if (scan && arterial) {
         const trace = traces[i];
@@ -6375,7 +6949,7 @@ function TraceStrips({
         const mat = scan.material as { opacity?: number } | undefined;
         if (mat) {
           const envelope = 0.35 + 0.65 * Math.sin(scanT * Math.PI);
-          mat.opacity = MathUtils.clamp(0.07 * envelope * dimScale, 0, 0.12);
+          mat.opacity = MathUtils.clamp(0.07 * envelope * dimScale * clutterFade * introAlpha, 0, 0.12);
         }
       }
     }
@@ -6463,10 +7037,14 @@ function TraceStrips({
 
 function TrafficParticles({
   particles,
-  focusMode = false
+  focusMode = false,
+  introLifeAlpha = 1,
+  clutter = 0
 }: {
   particles: TrafficParticleDatum[];
   focusMode?: boolean;
+  introLifeAlpha?: number;
+  clutter?: number;
 }) {
   const { camera } = useThree();
   const bodyRef = useRef<ThreeInstancedMesh>(null);
@@ -6634,6 +7212,8 @@ function TrafficParticles({
 
     // Keep traffic readable at wide zoom: stronger glow shell + lights; bodies stay bright (meshBasic).
     const dimScale = MathUtils.lerp(1, FOCUS_TRAFFIC_DIM, focusMixRef.current);
+    const introAlpha = MathUtils.clamp(introLifeAlpha, 0, 1);
+    const clutterFade = MathUtils.lerp(1, 0.88, MathUtils.clamp(clutter, 0, 1));
     const bodyMat = body.material as { color?: Color } | undefined;
     if (bodyMat?.color && !DEBUG_FORCE_TRAFFIC_VIS) {
       bodyMat.color.copy(tempColorA.set('#f4fbff').lerp(tempColorB.set('#43505c'), focusMixRef.current));
@@ -6643,13 +7223,17 @@ function TrafficParticles({
       cabinMat.color.copy(tempColorA.set('#ffffff').lerp(tempColorB.set('#48525e'), focusMixRef.current * 0.95));
     }
     const bodyWireMat = bodyWire.material as { opacity?: number } | undefined;
-    if (bodyWireMat) bodyWireMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 0.98 : 0.98 * dimScale;
+    if (bodyWireMat) bodyWireMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 0.98 : 0.98 * dimScale * introAlpha * clutterFade;
     const cabinWireMat = cabinWire.material as { opacity?: number } | undefined;
-    if (cabinWireMat) cabinWireMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 0.96 : 0.96 * dimScale;
+    if (cabinWireMat) cabinWireMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 0.96 : 0.96 * dimScale * introAlpha * clutterFade;
     const glowMat = glow.material as { opacity?: number } | undefined;
-    if (glowMat) glowMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.92, 1.0, visCurve) * dimScale;
+    if (glowMat) glowMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.92, 1.0, visCurve) * dimScale * introAlpha * clutterFade;
     const lightMat = light.material as { opacity?: number } | undefined;
-    if (lightMat) lightMat.opacity = DEBUG_FORCE_TRAFFIC_VIS ? 1 : MathUtils.lerp(0.95, 1, visCurve) * Math.max(0.35, dimScale);
+    if (lightMat) {
+      lightMat.opacity = DEBUG_FORCE_TRAFFIC_VIS
+        ? 1
+        : MathUtils.lerp(0.95, 1, visCurve) * Math.max(0.35, dimScale) * introAlpha * clutterFade;
+    }
   });
 
   return (
@@ -7102,6 +7686,59 @@ function FakeVignettePlane() {
   );
 }
 
+function MarketMoodLightRig({ mood = 0.5 }: { mood?: number }) {
+  const ambientRef = useRef<{ intensity: number; color: Color } | null>(null);
+  const hemiRef = useRef<{ intensity: number; color: Color } | null>(null);
+  const keyRef = useRef<{ intensity: number; color: Color } | null>(null);
+  const fillRef = useRef<{ intensity: number; color: Color } | null>(null);
+  const moodRef = useRef(mood);
+
+  useFrame((_, delta) => {
+    moodRef.current = MathUtils.damp(moodRef.current, mood, 2.2, delta);
+    const m = MathUtils.clamp(moodRef.current, 0, 1);
+    const breadthSigned = m * 2 - 1;
+    const coolTint = tempColorA.set('#9ec6ef');
+    const warmTint = tempColorB.set('#f4d0a8');
+    const mixedTint = tempColorC.copy(coolTint).lerp(warmTint, MathUtils.clamp(0.5 - breadthSigned * 0.25, 0, 1));
+
+    if (ambientRef.current) {
+      ambientRef.current.intensity = MathUtils.lerp(0.28, 0.38, Math.abs(breadthSigned));
+      ambientRef.current.color.copy(mixedTint);
+    }
+    if (hemiRef.current) {
+      hemiRef.current.intensity = MathUtils.lerp(0.3, 0.42, Math.abs(breadthSigned));
+      hemiRef.current.color.copy(tempColorA.copy(coolTint).lerp(warmTint, MathUtils.clamp(0.5 - breadthSigned * 0.2, 0, 1)));
+    }
+    if (keyRef.current) {
+      keyRef.current.intensity = MathUtils.lerp(0.66, 0.8, Math.abs(breadthSigned));
+      keyRef.current.color.copy(
+        tempColorA.copy(tempColorB.set('#d6e8ff')).lerp(tempColorC.set('#ffd5a8'), MathUtils.clamp(0.5 - breadthSigned * 0.22, 0, 1))
+      );
+    }
+    if (fillRef.current) {
+      fillRef.current.intensity = MathUtils.lerp(0.28, 0.38, Math.abs(breadthSigned));
+      fillRef.current.color.copy(
+        tempColorA.copy(tempColorB.set('#7fd3ff')).lerp(tempColorC.set('#f8bd88'), MathUtils.clamp(0.5 - breadthSigned * 0.22, 0, 1))
+      );
+    }
+  });
+
+  return (
+    <>
+      <ambientLight ref={ambientRef as never} intensity={0.32} color="#9bb8d6" />
+      <hemisphereLight ref={hemiRef as never} args={['#9cc4ee', '#090b10', 0.34]} />
+      <directionalLight
+        ref={keyRef as never}
+        position={[10, 18, 8]}
+        intensity={0.72}
+        color="#d6e8ff"
+        castShadow={RUNTIME_QUALITY_CONFIG.shadows}
+      />
+      <directionalLight ref={fillRef as never} position={[-14, 20, -10]} intensity={0.34} color="#7fd3ff" />
+    </>
+  );
+}
+
 function SandboxScene({
   towers,
   traces,
@@ -7115,6 +7752,7 @@ function SandboxScene({
   recordCeremonies,
   bounds,
   marketMoodTarget,
+  topFx,
   hoveredTowerSequence,
   selectedTowerSequence,
   tallestTowerSequence,
@@ -7135,6 +7773,14 @@ function SandboxScene({
   recordCeremonies: RecordCeremonyDatum[];
   bounds: SandboxBounds;
   marketMoodTarget: number;
+  topFx?: {
+    introBootAlpha: number;
+    introLifeAlpha: number;
+    introProgress: number;
+    introActive: boolean;
+    storyBeatUntilMs: number;
+    clutter: number;
+  };
   hoveredTowerSequence: number | null;
   selectedTowerSequence: number | null;
   tallestTowerSequence: number | null;
@@ -7143,6 +7789,14 @@ function SandboxScene({
   onHoverHudUpdate?: (snapshot: HoverHudSnapshot) => void;
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
 }) {
+  const fx = topFx ?? {
+    introBootAlpha: 1,
+    introLifeAlpha: 1,
+    introProgress: 1,
+    introActive: false,
+    storyBeatUntilMs: 0,
+    clutter: 0
+  };
   const hoveredTower = useMemo(
     () => (hoveredTowerSequence == null ? null : towers.find((tower) => tower.sequence === hoveredTowerSequence) ?? null),
     [hoveredTowerSequence, towers]
@@ -7267,24 +7921,38 @@ function SandboxScene({
     >
       <color attach="background" args={['#06080c']} />
       {ENABLE_CINEMATIC_BACKDROP ? <CinematicBackdrop /> : null}
-      <ambientLight intensity={0.32} color="#9bb8d6" />
-      <hemisphereLight args={['#9cc4ee', '#090b10', 0.34]} />
-      <directionalLight position={[10, 18, 8]} intensity={0.72} color="#d6e8ff" castShadow={RUNTIME_QUALITY_CONFIG.shadows} />
-      <directionalLight position={[-14, 20, -10]} intensity={0.34} color="#7fd3ff" />
+      {topFx ? (
+        <MarketMoodLightRig mood={marketMoodTarget} />
+      ) : (
+        <>
+          <ambientLight intensity={0.32} color="#9bb8d6" />
+          <hemisphereLight args={['#9cc4ee', '#090b10', 0.34]} />
+          <directionalLight position={[10, 18, 8]} intensity={0.72} color="#d6e8ff" castShadow={RUNTIME_QUALITY_CONFIG.shadows} />
+          <directionalLight position={[-14, 20, -10]} intensity={0.34} color="#7fd3ff" />
+        </>
+      )}
       <MinimalOrbitRig
         bounds={bounds}
         focusTarget={focusTarget}
         onClearFocusTarget={() => onSelectTowerChange?.(null)}
         onCameraDebug={onCameraDebug}
+        storyBeatUntilMs={fx.storyBeatUntilMs}
       />
 
-      <CircuitBoardGround bounds={bounds} focusMode={focusMode} marketPulse={marketMoodTarget} />
+      <CircuitBoardGround bounds={bounds} focusMode={focusMode} marketPulse={marketMoodTarget} introBootAlpha={fx.introBootAlpha} />
       <DistrictBoundariesLayer districts={districts} focusMode={focusMode} />
       <ShockwaveLayer shockwaves={shockwaves} focusMode={focusMode} />
       <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} />
-      <TraceStrips traces={traces} focusMode={focusMode} marketPulse={marketMoodTarget} />
-      <TraceStrips traces={arterialTraces} focusMode={focusMode} marketPulse={marketMoodTarget} arterial />
-      <TrafficParticles particles={trafficParticles} focusMode={focusMode} />
+      <TraceStrips traces={traces} focusMode={focusMode} marketPulse={marketMoodTarget} introLifeAlpha={fx.introLifeAlpha} clutter={fx.clutter} />
+      <TraceStrips
+        traces={arterialTraces}
+        focusMode={focusMode}
+        marketPulse={marketMoodTarget}
+        arterial
+        introLifeAlpha={fx.introLifeAlpha}
+        clutter={fx.clutter}
+      />
+      <TrafficParticles particles={trafficParticles} focusMode={focusMode} introLifeAlpha={fx.introLifeAlpha} clutter={fx.clutter} />
       <HoverProjectionTracker tower={hoveredTower} onHudUpdate={onHoverHudUpdate} />
 
       {/* Render band 6: tower bodies and holo layers remain the top visual anchors */}
@@ -7297,6 +7965,7 @@ function SandboxScene({
             isTallest={tallestTowerSequence === tower.sequence}
             onHoverTower={requestHoverTower}
             onSelectTower={requestSelectTower}
+            topFx={fx}
           />
         ))}
       </group>
@@ -7353,6 +8022,8 @@ export function MinimalVizSandbox({
   const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const topDebug = mode === 'top200' ? topData.topCoinsDebug : null;
+  const topReplay = mode === 'top200' ? topData.topReplay : null;
+  const topFx = mode === 'top200' ? topData.topFx : undefined;
 
   useEffect(() => {
     setHoveredTowerSequence(null);
@@ -7415,7 +8086,8 @@ export function MinimalVizSandbox({
       hoveredTowerSequence,
       tallestTowerSequence,
       tallestTowerHeight,
-      topDebug
+      topDebug,
+      topReplay
     }),
     [
       latest,
@@ -7437,7 +8109,8 @@ export function MinimalVizSandbox({
       tallestTowerSequence,
       tallestTowerHeight,
       mode,
-      topDebug
+      topDebug,
+      topReplay
     ]
   );
 
@@ -7456,6 +8129,7 @@ export function MinimalVizSandbox({
         recordCeremonies={recordCeremonies}
         bounds={bounds}
         marketMoodTarget={marketMoodTarget}
+        topFx={topFx}
         hoveredTowerSequence={hoveredTowerSequence}
         selectedTowerSequence={selectedTowerSequence}
         tallestTowerSequence={tallestTowerSequence}
@@ -7486,6 +8160,40 @@ export function MinimalVizSandbox({
             <span>Active</span>
             <span>{overlay.mode === 'top200' ? 'top200' : `btc (${overlay.feedMode})`}</span>
           </div>
+          {overlay.mode === 'top200' && overlay.topReplay ? (
+            <>
+              <div className="minimal-viz__row minimal-viz__row--control">
+                <span>Replay</span>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    checked={overlay.topReplay.enabled}
+                    onChange={(event) => {
+                      overlay.topReplay!.setEnabled(event.currentTarget.checked);
+                    }}
+                  />
+                  <span>{overlay.topReplay.enabled ? 'on' : 'off'}</span>
+                </label>
+              </div>
+              <div className="minimal-viz__row minimal-viz__row--control">
+                <span>T-index</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(0, overlay.topReplay.max)}
+                  step={1}
+                  value={Math.max(0, overlay.topReplay.offset)}
+                  onChange={(event) => {
+                    const next = Math.max(0, Math.floor(Number(event.currentTarget.value) || 0));
+                    overlay.topReplay!.setEnabled(true);
+                    overlay.topReplay!.setOffset(next);
+                  }}
+                  style={{ width: 108 }}
+                />
+                <span>{`T-${Math.max(0, overlay.topReplay.offset)}`}</span>
+              </div>
+            </>
+          ) : null}
           {overlay.mode === 'btc' ? (
             <div className="minimal-viz__row">
               <span>Latest Seq</span>
@@ -7585,6 +8293,56 @@ export function MinimalVizSandbox({
                 <span>{overlay.topDebug.applyCount}</span>
               </div>
               <div className="minimal-viz__row">
+                <span>PollInterval</span>
+                <span>{overlay.topDebug.pollSec}s</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>NextUpdateIn</span>
+                <span>{fmtMmSs(Math.max(0, (overlay.topDebug.nextUpdateAtMs - nowTick) / 1000))}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>NextUpdateAt</span>
+                <span>{overlay.topDebug.nextUpdateAtMs > 0 ? new Date(overlay.topDebug.nextUpdateAtMs).toISOString() : 'n/a'}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>LastFetchOk</span>
+                <span>{overlay.topDebug.lastFetchOk ? 'yes' : 'no'}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>LastFetchAt</span>
+                <span>{overlay.topDebug.lastFetchAt > 0 ? new Date(overlay.topDebug.lastFetchAt).toISOString() : 'n/a'}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>AsOf</span>
+                <span>{overlay.topDebug.asOfIso || 'n/a'}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>AsOfAgeSec</span>
+                <span>{overlay.topDebug.asOfMs > 0 ? `${Math.max(0, Math.floor((nowTick - overlay.topDebug.asOfMs) / 1000))}s` : 'n/a'}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>AsOfAge</span>
+                <span>{overlay.topDebug.asOfAgeLabel}</span>
+              </div>
+              {overlay.topDebug.staleData ? (
+                <div className="minimal-viz__row" style={{ color: '#ff9f8f', fontWeight: 700 }}>
+                  <span>STALE DATA</span>
+                  <span>{`>${overlay.topDebug.pollSec * 2}s`}</span>
+                </div>
+              ) : null}
+              <div className="minimal-viz__row">
+                <span>SnapshotHash</span>
+                <span>{overlay.topDebug.lastHash}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>HashChanged</span>
+                <span>{overlay.topDebug.hashChanged ? 'yes' : 'no'}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>ChangedCount</span>
+                <span>{overlay.topDebug.changedCount}</span>
+              </div>
+              <div className="minimal-viz__row">
                 <span>ApplyAge</span>
                 <span>
                   {overlay.topDebug.lastAppliedAt > 0
@@ -7600,32 +8358,8 @@ export function MinimalVizSandbox({
                 </span>
               </div>
               <div className="minimal-viz__row">
-                <span>AsOf</span>
-                <span>{overlay.topDebug.asOfIso || 'n/a'}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>LastFetchOk</span>
-                <span>{overlay.topDebug.lastFetchOk ? 'yes' : 'no'}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>AsOfAge</span>
-                <span>
-                  {overlay.topDebug.asOfMs > 0
-                    ? `${fmtFixed(Math.max(0, nowTick - overlay.topDebug.asOfMs) / 1000, 1)}s`
-                    : 'n/a'}
-                </span>
-              </div>
-              <div className="minimal-viz__row">
                 <span>FetchAge</span>
                 <span>{fmtFixed(Math.max(0, nowTick - overlay.topDebug.fetchedAt) / 1000, 1)}s</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>Poll</span>
-                <span>{overlay.topDebug.pollSec}s</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>LastHash</span>
-                <span>{overlay.topDebug.lastHash}</span>
               </div>
               <div className="minimal-viz__row">
                 <span>LogosMissing</span>
@@ -7644,6 +8378,46 @@ export function MinimalVizSandbox({
               <div className="minimal-viz__row">
                 <span>OverlapFix</span>
                 <span>{overlay.topDebug.overlapFix}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>Intro</span>
+                <span>
+                  {overlay.topDebug.introActive ? 'active' : 'done'} · boot {fmtFixed(overlay.topDebug.introBootAlpha, 2)} · life{' '}
+                  {fmtFixed(overlay.topDebug.introLifeAlpha, 2)}
+                </span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>Clutter</span>
+                <span>{fmtFixed(overlay.topDebug.clutter, 2)}</span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>DiscLOD</span>
+                <span>
+                  {overlay.topDebug.discMode} · {overlay.topDebug.discVisible}
+                </span>
+              </div>
+              <div className="minimal-viz__row">
+                <span>Replay</span>
+                <span>
+                  {overlay.topDebug.replayEnabled ? `on T-${overlay.topDebug.replayOffset}` : 'off'}
+                  {overlay.topDebug.replayAsOfIso ? ` · ${overlay.topDebug.replayAsOfIso}` : ''}
+                </span>
+              </div>
+              <div
+                style={{
+                  marginTop: 6,
+                  padding: '6px 8px',
+                  border: '1px solid rgba(247,147,26,0.25)',
+                  borderRadius: 8,
+                  background: 'rgba(7,9,13,0.62)',
+                  fontSize: 11,
+                  lineHeight: 1.35,
+                  color: 'rgba(255,236,208,0.92)'
+                }}
+              >
+                <div>Top gainer: {overlay.topDebug.topGainer.symbol} {fmtSignedPct(overlay.topDebug.topGainer.pct)}</div>
+                <div>Top loser: {overlay.topDebug.topLoser.symbol} {fmtSignedPct(overlay.topDebug.topLoser.pct)}</div>
+                <div>Top volume: {overlay.topDebug.topVolume.symbol} {fmtUsdCompact(overlay.topDebug.topVolume.quoteVolume)}</div>
               </div>
               <div className="minimal-viz__row">
                 <span>Top+</span>

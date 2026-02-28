@@ -14,7 +14,7 @@ export function useTopCoinsSkylineEngine(options: { enabled: boolean }) {
     clearTopCoinsStore();
 
     const engine = new TopCoinsDataEngine({
-      pollMs: Number(import.meta.env.VITE_TOP_COINS_POLL_MS ?? 30_000),
+      pollMs: Number(import.meta.env.VITE_TOP_COINS_POLL_MS ?? 60_000),
       limit: Number(import.meta.env.VITE_TOP_COINS_LIMIT ?? 200)
     });
 

@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -17,9 +18,12 @@ const BINANCE_BASE_CANDIDATES = [
 ]
   .map((raw) => String(raw ?? '').trim())
   .filter(Boolean);
+
 const QUOTE_ASSET = 'USDT';
 const LIMIT = 200;
+const INTERVAL_SEC = 60;
 const LOGO_CONCURRENCY = 8;
+const LEVERAGED_TOKEN_SUFFIX = /(UP|DOWN|BULL|BEAR)$/;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,22 +41,28 @@ function toNumber(value) {
   return Number.isFinite(num) ? num : 0;
 }
 
+function isSpotSymbolAllowed(symbol, baseAsset) {
+  if (!symbol.endsWith(QUOTE_ASSET)) return false;
+  if (!/^[A-Z0-9]+USDT$/.test(symbol)) return false;
+  if (!baseAsset) return false;
+  if (LEVERAGED_TOKEN_SUFFIX.test(baseAsset)) return false;
+  return true;
+}
+
 function normalizeTickerRow(ticker, symbolMeta) {
-  const symbol = String(ticker.symbol ?? '').toUpperCase();
+  const symbol = String(ticker?.symbol ?? '').toUpperCase();
   if (!symbol || symbol !== symbolMeta.symbol) return null;
 
   return {
-    rank: 0,
     symbol,
-    baseAsset: symbolMeta.baseAsset,
-    quoteAsset: symbolMeta.quoteAsset,
-    lastPrice: toNumber(ticker.lastPrice),
-    priceChangePercent: toNumber(ticker.priceChangePercent),
-    quoteVolume: Math.max(0, toNumber(ticker.quoteVolume)),
-    baseVolume: Math.max(0, toNumber(ticker.volume)),
-    tradeCount: Math.max(0, Math.floor(toNumber(ticker.count))),
-    highPrice: toNumber(ticker.highPrice),
-    lowPrice: toNumber(ticker.lowPrice)
+    base: symbolMeta.base,
+    quote: symbolMeta.quote,
+    lastPrice: toNumber(ticker?.lastPrice),
+    priceChangePercent: toNumber(ticker?.priceChangePercent),
+    quoteVolume: Math.max(0, toNumber(ticker?.quoteVolume)),
+    tradeCount: Math.max(0, Math.floor(toNumber(ticker?.count))),
+    highPrice: toNumber(ticker?.highPrice),
+    lowPrice: toNumber(ticker?.lowPrice)
   };
 }
 
@@ -64,7 +74,7 @@ async function fetchJsonWithRetry(url, label, maxAttempts = 2) {
         method: 'GET',
         headers: {
           Accept: 'application/json',
-          'User-Agent': 'top-coins-snapshot-bot/1.0'
+          'User-Agent': 'top-coins-snapshot-bot/2.0'
         }
       });
     } catch (error) {
@@ -92,21 +102,16 @@ async function fetchJsonWithRetry(url, label, maxAttempts = 2) {
   throw new Error(`${label} request failed after retries`);
 }
 
-async function fetchBinanceJson(path, label) {
+async function fetchBinanceJson(apiPath, label) {
   const errors = [];
   for (const base of BINANCE_BASE_CANDIDATES) {
     const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;
-    const url = `${normalizedBase}${path}`;
+    const url = `${normalizedBase}${apiPath}`;
     try {
       return await fetchJsonWithRetry(url, `${label} @ ${normalizedBase}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       errors.push(message);
-      // 451 is geolocation block. Move to next Binance endpoint immediately.
-      if (message.includes(' 451:') || message.includes(' 451 ')) {
-        continue;
-      }
-      // For non-451 errors we still continue to next endpoint for resilience.
       continue;
     }
   }
@@ -152,17 +157,15 @@ function logoCandidates(baseAsset, symbol) {
   const baseLower = baseUpper.toLowerCase();
   const symbolUpper = String(symbol || '').toUpperCase();
 
-  const urls = [
+  return [
     `https://bin.bnbstatic.com/static/images/common/cryptoicons/${baseUpper}.png`,
     `https://bin.bnbstatic.com/static/images/common/cryptoicons/${symbolUpper}.png`,
     `https://raw.githubusercontent.com/spothq/cryptocurrency-icons/master/128/color/${baseLower}.png`
   ];
-
-  return urls;
 }
 
-async function resolveLogoForItem(item) {
-  const symbol = String(item.symbol ?? '').toUpperCase();
+async function resolveLogoForCoin(coin) {
+  const symbol = String(coin.symbol ?? '').toUpperCase();
   if (!symbol) return { logoPath: null, downloaded: false };
 
   const fileName = `${symbol}.png`;
@@ -173,7 +176,7 @@ async function resolveLogoForItem(item) {
     return { logoPath: publicPath, downloaded: false };
   }
 
-  const candidates = logoCandidates(item.baseAsset, item.symbol);
+  const candidates = logoCandidates(coin.base, coin.symbol);
   for (let i = 0; i < candidates.length; i++) {
     const binary = await fetchLogoBinary(candidates[i]);
     if (!binary) continue;
@@ -206,21 +209,25 @@ async function runWithConcurrency(items, limit, worker) {
   return out;
 }
 
-function snapshotStableComparable(snapshot) {
-  return {
-    source: snapshot.source,
-    window: snapshot.window,
-    baseQuote: snapshot.baseQuote,
-    method: snapshot.method,
-    logosAttempted: snapshot.logosAttempted,
-    logosDownloaded: snapshot.logosDownloaded,
-    logosMissing: snapshot.logosMissing,
-    items: snapshot.items
+function buildSnapshotHash({ source, intervalSec, coins }) {
+  const normalizedForHash = {
+    source,
+    intervalSec,
+    coins: coins.map((coin) => ({
+      symbol: coin.symbol,
+      base: coin.base,
+      quote: coin.quote,
+      lastPrice: coin.lastPrice,
+      priceChangePercent: coin.priceChangePercent,
+      quoteVolume: coin.quoteVolume,
+      rankByQuoteVolume: coin.rankByQuoteVolume,
+      tradeCount: coin.tradeCount,
+      highPrice: coin.highPrice,
+      lowPrice: coin.lowPrice
+    }))
   };
-}
-
-function deepEqual(a, b) {
-  return JSON.stringify(a) === JSON.stringify(b);
+  const payload = JSON.stringify(normalizedForHash);
+  return createHash('sha256').update(payload).digest('hex').slice(0, 8);
 }
 
 async function generateSnapshot() {
@@ -245,17 +252,21 @@ async function generateSnapshot() {
     const quoteAsset = String(entry?.quoteAsset ?? '').toUpperCase();
     const baseAsset = String(entry?.baseAsset ?? '').toUpperCase();
     const isSpotTradingAllowed = entry?.isSpotTradingAllowed;
+    const permissions = Array.isArray(entry?.permissions)
+      ? entry.permissions.map((p) => String(p ?? '').toUpperCase())
+      : null;
 
     if (!symbol || !baseAsset) continue;
     if (status !== 'TRADING') continue;
     if (quoteAsset !== QUOTE_ASSET) continue;
-    if (!symbol.endsWith(QUOTE_ASSET)) continue;
+    if (!isSpotSymbolAllowed(symbol, baseAsset)) continue;
     if (typeof isSpotTradingAllowed === 'boolean' && !isSpotTradingAllowed) continue;
+    if (permissions && permissions.length > 0 && !permissions.includes('SPOT')) continue;
 
     tradableSymbolMap.set(symbol, {
       symbol,
-      baseAsset,
-      quoteAsset
+      base: baseAsset,
+      quote: quoteAsset
     });
   }
 
@@ -271,60 +282,63 @@ async function generateSnapshot() {
 
   normalized.sort((a, b) => b.quoteVolume - a.quoteVolume || a.symbol.localeCompare(b.symbol));
 
-  const top = normalized.slice(0, LIMIT).map((item, index) => ({
-    rank: index + 1,
-    symbol: item.symbol,
-    baseAsset: item.baseAsset,
-    quoteAsset: item.quoteAsset,
-    lastPrice: item.lastPrice,
-    priceChangePercent: item.priceChangePercent,
-    quoteVolume: item.quoteVolume,
-    baseVolume: item.baseVolume,
-    tradeCount: item.tradeCount,
-    highPrice: item.highPrice,
-    lowPrice: item.lowPrice
+  const ranked = normalized.slice(0, LIMIT).map((coin, index) => ({
+    symbol: coin.symbol,
+    base: coin.base,
+    quote: coin.quote,
+    lastPrice: coin.lastPrice,
+    priceChangePercent: coin.priceChangePercent,
+    quoteVolume: coin.quoteVolume,
+    rankByQuoteVolume: index + 1,
+    tradeCount: coin.tradeCount,
+    highPrice: coin.highPrice,
+    lowPrice: coin.lowPrice
   }));
+
+  if (ranked.length < LIMIT) {
+    throw new Error(`not-enough-symbols-after-filtering: expected ${LIMIT}, got ${ranked.length}`);
+  }
 
   await mkdir(logosDir, { recursive: true });
 
-  const logoResults = await runWithConcurrency(top, LOGO_CONCURRENCY, async (item) => resolveLogoForItem(item));
+  const logoResults = await runWithConcurrency(ranked, LOGO_CONCURRENCY, async (coin) => resolveLogoForCoin(coin));
 
   let downloadedNow = 0;
   let logosAvailable = 0;
-  const items = top.map((item, index) => {
+  const coins = ranked.map((coin, index) => {
     const logo = logoResults[index];
     if (logo?.downloaded) downloadedNow += 1;
     if (logo?.logoPath) logosAvailable += 1;
     return {
-      rank: item.rank,
-      symbol: item.symbol,
-      baseAsset: item.baseAsset,
-      quoteAsset: item.quoteAsset,
-      lastPrice: item.lastPrice,
-      priceChangePercent: item.priceChangePercent,
-      quoteVolume: item.quoteVolume,
-      baseVolume: item.baseVolume,
-      tradeCount: item.tradeCount,
-      highPrice: item.highPrice,
-      lowPrice: item.lowPrice,
+      symbol: coin.symbol,
+      base: coin.base,
+      quote: coin.quote,
+      lastPrice: coin.lastPrice,
+      priceChangePercent: coin.priceChangePercent,
+      quoteVolume: coin.quoteVolume,
+      rankByQuoteVolume: coin.rankByQuoteVolume,
+      tradeCount: coin.tradeCount,
+      highPrice: coin.highPrice,
+      lowPrice: coin.lowPrice,
       logoPath: logo?.logoPath ?? null
     };
   });
 
-  const logosAttempted = items.length;
-  const logosDownloaded = logosAvailable;
-  const logosMissing = Math.max(0, logosAttempted - logosDownloaded);
+  const hash = buildSnapshotHash({
+    source: 'binance',
+    intervalSec: INTERVAL_SEC,
+    coins
+  });
 
   return {
-    asOf: Date.now(),
-    source: 'binance-spot-rest',
-    window: '24h',
-    baseQuote: QUOTE_ASSET,
-    method: 'top200-by-quoteVolume',
-    logosAttempted,
-    logosDownloaded,
-    logosMissing,
-    items,
+    asOf: new Date().toISOString(),
+    intervalSec: INTERVAL_SEC,
+    source: 'binance',
+    hash,
+    logosAttempted: coins.length,
+    logosDownloaded: logosAvailable,
+    logosMissing: Math.max(0, coins.length - logosAvailable),
+    coins,
     _debug: {
       downloadedNow
     }
@@ -334,38 +348,16 @@ async function generateSnapshot() {
 async function writeSnapshotFile() {
   const snapshotRaw = await generateSnapshot();
   const { _debug, ...snapshot } = snapshotRaw;
-
   await mkdir(path.dirname(outputPath), { recursive: true });
 
-  let previous = null;
-  let previousParsed = null;
-  try {
-    previous = await readFile(outputPath, 'utf8');
-    previousParsed = JSON.parse(previous);
-  } catch {
-    previous = null;
-    previousParsed = null;
-  }
-
-  if (previousParsed && deepEqual(snapshotStableComparable(previousParsed), snapshotStableComparable(snapshot))) {
-    console.log(`Top coins snapshot unchanged (logos downloaded now: ${_debug.downloadedNow}).`);
-    return false;
-  }
-
   const output = `${JSON.stringify(snapshot, null, 2)}\n`;
-  if (previous === output) {
-    console.log(`Top coins snapshot unchanged (logos downloaded now: ${_debug.downloadedNow}).`);
-    return false;
-  }
-
   const tempPath = `${outputPath}.tmp`;
   await writeFile(tempPath, output, 'utf8');
   await rename(tempPath, outputPath);
 
   console.log(
-    `Top coins snapshot updated: ${snapshot.items.length} items, logos ${snapshot.logosDownloaded}/${snapshot.logosAttempted} (new ${_debug.downloadedNow}).`
+    `Top coins snapshot updated: ${snapshot.coins.length} coins, hash=${snapshot.hash}, logos ${snapshot.logosDownloaded}/${snapshot.logosAttempted} (new ${_debug.downloadedNow}).`
   );
-  return true;
 }
 
 writeSnapshotFile().catch((error) => {

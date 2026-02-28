@@ -1,12 +1,11 @@
 export type TopCoinItem = {
-  rank: number;
   symbol: string;
-  baseAsset: string;
-  quoteAsset: string;
+  base: string;
+  quote: string;
   lastPrice: number;
   priceChangePercent: number;
   quoteVolume: number;
-  baseVolume: number;
+  rankByQuoteVolume: number;
   tradeCount: number;
   highPrice: number;
   lowPrice: number;
@@ -14,15 +13,14 @@ export type TopCoinItem = {
 };
 
 export type TopCoinsStaticSnapshotFile = {
-  asOf: number;
+  asOf: string;
+  intervalSec: number;
   source: string;
-  window: string;
-  baseQuote: string;
-  method: string;
+  hash: string;
   logosAttempted?: number;
   logosDownloaded?: number;
   logosMissing?: number;
-  items: TopCoinItem[];
+  coins: TopCoinItem[];
 };
 
 export type TopCoinsSnapshot = {
@@ -30,6 +28,9 @@ export type TopCoinsSnapshot = {
   sequence: number;
   emittedAt: number;
   asOf: number;
+  asOfIso: string;
+  hash: string;
+  hashChanged: boolean;
   ttlMs: number;
   items: TopCoinItem[];
   stats: {
@@ -42,15 +43,20 @@ export type TopCoinsSnapshot = {
       positive: number;
       negative: number;
     };
+    breadth: number;
   };
   debug: {
     symbols: number;
     fetchedAt: number;
     lastFetchAt: number;
+    lastSuccessAt: number;
     lastAsOf: number;
     lastHash: string;
+    hashChanged: boolean;
+    changedCount: number;
     refreshAgeSec: number;
     pollMs: number;
+    nextUpdateAt: number;
     endpoint: string;
     lastError: string | null;
     lastFetchOk: boolean;
