@@ -22,6 +22,7 @@ const BINANCE_BASE_CANDIDATES = [
 const QUOTE_ASSET = 'USDT';
 const LIMIT = 150;
 const INTERVAL_SEC = 60;
+const SLOT_COUNT = 16;
 const LOGO_CONCURRENCY = 8;
 const LEVERAGED_TOKEN_SUFFIX = /(UP|DOWN|BULL|BEAR)$/;
 
@@ -31,6 +32,10 @@ const repoRoot = path.resolve(__dirname, '..');
 const dataDir = path.join(repoRoot, 'public', 'data');
 const logosDir = path.join(dataDir, 'logos');
 const outputPath = path.join(dataDir, 'top-coins.json');
+
+function positiveModulo(value, mod) {
+  return ((value % mod) + mod) % mod;
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -355,8 +360,16 @@ async function writeSnapshotFile() {
   await writeFile(tempPath, output, 'utf8');
   await rename(tempPath, outputPath);
 
+  const asOfMs = Date.parse(snapshot.asOf);
+  const minuteBucket = Math.floor((Number.isFinite(asOfMs) ? asOfMs : Date.now()) / 60_000);
+  const slotIndex = positiveModulo(minuteBucket, SLOT_COUNT);
+  const slotPath = path.join(dataDir, `top-coins-slot-${slotIndex}.json`);
+  const slotTempPath = `${slotPath}.tmp`;
+  await writeFile(slotTempPath, output, 'utf8');
+  await rename(slotTempPath, slotPath);
+
   console.log(
-    `Top coins snapshot updated: ${snapshot.coins.length} coins, hash=${snapshot.hash}, logos ${snapshot.logosDownloaded}/${snapshot.logosAttempted} (new ${_debug.downloadedNow}).`
+    `Top coins snapshot updated: ${snapshot.coins.length} coins, hash=${snapshot.hash}, slot=${slotIndex}/${SLOT_COUNT}, logos ${snapshot.logosDownloaded}/${snapshot.logosAttempted} (new ${_debug.downloadedNow}).`
   );
 }
 

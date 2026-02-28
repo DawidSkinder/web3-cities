@@ -15,6 +15,12 @@ type TopCoinsSnapshotSeed = Omit<TopCoinsSnapshot, 'sequence' | 'emittedAt'>;
 const DEFAULT_POLL_MS = 60_000;
 const MIN_POLL_MS = 60_000;
 const LOCAL_STORAGE_KEY = 'top200:last-good-snapshot:v2';
+const RAW_SLOT_COUNT = 16;
+const RAW_SLOT_LOOKBACK = 4;
+
+function positiveModulo(value: number, mod: number) {
+  return ((value % mod) + mod) % mod;
+}
 
 function resolveDefaultEndpoint() {
   const base = import.meta.env.BASE_URL || '/';
@@ -35,6 +41,22 @@ function resolveDefaultRawEndpoint() {
 
   const branch = String(import.meta.env.VITE_TOP_COINS_RAW_BRANCH ?? 'main').trim() || 'main';
   return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/public/data/top-coins.json`;
+}
+
+function resolveRawSlotEndpoint(rawEndpoint: string, slotIndex: number) {
+  const normalized = rawEndpoint.trim();
+  if (!normalized) return '';
+
+  try {
+    const url = new URL(normalized, 'https://example.com');
+    if (!url.pathname.endsWith('/top-coins.json')) return '';
+    url.pathname = url.pathname.replace(/top-coins\.json$/, `top-coins-slot-${slotIndex}.json`);
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return '';
+  }
 }
 
 function parsePollMs(raw: unknown, minMs: number, fallbackMs: number) {
@@ -174,7 +196,8 @@ function formatTopVolume(quoteVolume: number) {
 }
 
 export class TopCoinsDataEngine {
-  private readonly endpoints: string[];
+  private readonly rawEndpoint: string;
+  private readonly pagesEndpoint: string;
   private readonly limit: number;
   private readonly pollMs: number;
   private readonly storageKey: string;
@@ -200,7 +223,8 @@ export class TopCoinsDataEngine {
     const pagesEndpoint = config.endpoint?.trim() || resolveDefaultEndpoint();
     const rawEndpoint = config.rawEndpoint?.trim() || resolveDefaultRawEndpoint();
 
-    this.endpoints = [rawEndpoint, pagesEndpoint].filter((value, index, arr) => Boolean(value) && arr.indexOf(value) === index);
+    this.rawEndpoint = rawEndpoint;
+    this.pagesEndpoint = pagesEndpoint;
     this.limit = parseLimit(config.limit ?? import.meta.env.VITE_TOP_COINS_LIMIT);
     this.pollMs = parsePollMs(config.pollMs ?? import.meta.env.VITE_TOP_COINS_POLL_MS, MIN_POLL_MS, DEFAULT_POLL_MS);
     this.storageKey = config.storageKey?.trim() || LOCAL_STORAGE_KEY;
@@ -348,7 +372,7 @@ export class TopCoinsDataEngine {
         refreshAgeSec: this.lastAsOf > 0 ? Math.max(0, (fetchedAt - this.lastAsOf) / 1000) : 0,
         pollMs: this.pollMs,
         nextUpdateAt,
-        endpoint: this.endpoints[0] ?? 'none',
+        endpoint: this.rawEndpoint || this.pagesEndpoint || 'none',
         lastError,
         lastFetchOk: false,
         logosMissing: this.lastGoodPayload?.logosMissing ?? 0,
@@ -490,6 +514,27 @@ export class TopCoinsDataEngine {
     return false;
   }
 
+  private buildRequestEndpoints(minuteBucket: number) {
+    const ordered: string[] = [];
+    const push = (endpoint: string) => {
+      const normalized = endpoint.trim();
+      if (!normalized) return;
+      if (!ordered.includes(normalized)) ordered.push(normalized);
+    };
+
+    if (this.rawEndpoint) {
+      for (let offset = 0; offset <= RAW_SLOT_LOOKBACK; offset++) {
+        const slot = positiveModulo(minuteBucket - offset, RAW_SLOT_COUNT);
+        const slotEndpoint = resolveRawSlotEndpoint(this.rawEndpoint, slot);
+        if (slotEndpoint) push(slotEndpoint);
+      }
+      push(this.rawEndpoint);
+    }
+
+    if (this.pagesEndpoint) push(this.pagesEndpoint);
+    return ordered;
+  }
+
   private async pollNow() {
     if (!this.started || this.activeRequest) {
       return this.activeRequest;
@@ -522,12 +567,23 @@ export class TopCoinsDataEngine {
     const now = Date.now();
     this.lastFetchAt = now;
     const minuteBucket = Math.floor(now / 60_000);
+    const staleThresholdSec = Math.max(120, Math.floor((this.pollMs / 1000) * 2));
+    const requestEndpoints = this.buildRequestEndpoints(minuteBucket);
 
     let payload: TopCoinsStaticSnapshotFile | null = null;
-    let usedEndpoint = this.endpoints[0] ?? resolveDefaultEndpoint();
+    let usedEndpoint = requestEndpoints[0] ?? this.rawEndpoint ?? this.pagesEndpoint ?? resolveDefaultEndpoint();
+    let parsedAsOfMs = NaN;
+    let bestCandidate:
+      | {
+          payload: TopCoinsStaticSnapshotFile;
+          endpoint: string;
+          asOfMs: number;
+          ageSec: number;
+        }
+      | null = null;
     const endpointErrors: string[] = [];
 
-    for (const endpoint of this.endpoints) {
+    for (const endpoint of requestEndpoints) {
       try {
         const url = new URL(endpoint, window.location.origin);
         url.searchParams.set('t', String(minuteBucket));
@@ -553,9 +609,25 @@ export class TopCoinsDataEngine {
           throw new Error('snapshot-invalid-json');
         }
 
-        payload = parsePayload(json, this.limit);
-        usedEndpoint = endpoint;
-        break;
+        const parsedPayload = parsePayload(json, this.limit);
+        const asOfMs = Date.parse(parsedPayload.asOf);
+        const ageSec = Number.isFinite(asOfMs) ? Math.max(0, (now - asOfMs) / 1000) : Number.POSITIVE_INFINITY;
+
+        if (!bestCandidate || ageSec < bestCandidate.ageSec) {
+          bestCandidate = {
+            payload: parsedPayload,
+            endpoint,
+            asOfMs,
+            ageSec
+          };
+        }
+
+        if (ageSec <= staleThresholdSec) {
+          payload = parsedPayload;
+          usedEndpoint = endpoint;
+          parsedAsOfMs = asOfMs;
+          break;
+        }
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') {
           throw error;
@@ -564,11 +636,19 @@ export class TopCoinsDataEngine {
       }
     }
 
+    if (!payload && bestCandidate) {
+      payload = bestCandidate.payload;
+      usedEndpoint = bestCandidate.endpoint;
+      parsedAsOfMs = bestCandidate.asOfMs;
+    }
+
     if (!payload) {
       throw new Error(endpointErrors.join(' | ') || 'snapshot-fetch-failed');
     }
 
-    const parsedAsOfMs = Date.parse(payload.asOf);
+    if (!Number.isFinite(parsedAsOfMs)) {
+      parsedAsOfMs = Date.parse(payload.asOf);
+    }
     const hashChanged = this.lastSeenHash === 'none' || payload.hash !== this.lastSeenHash;
     const changedCount = hashChanged
       ? this.computeChangedCount(payload.coins, this.lastGoodPayload?.coins ?? null)

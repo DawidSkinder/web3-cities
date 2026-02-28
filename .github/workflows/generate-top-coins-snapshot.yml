@@ -2,7 +2,7 @@ name: Generate Top Coins Snapshot
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
   repository_dispatch:
     types:
@@ -57,13 +57,13 @@ jobs:
 
               node scripts/generate-top-coins-snapshot.mjs
 
-              if git diff --quiet -- public/data/top-coins.json public/data/logos; then
+              if git diff --quiet -- public/data; then
                 echo "[top-coins] tick ${tick}: no changes"
                 tick_ok=1
                 break
               fi
 
-              git add public/data/top-coins.json public/data/logos
+              git add public/data
               if ! git commit -m "chore(data): update top coins snapshot"; then
                 echo "[top-coins] tick ${tick}: nothing to commit"
                 tick_ok=1
@@ -103,7 +103,7 @@ jobs:
           set -euo pipefail
 
           queued_count="$(
-            curl -sS \
+            curl -fsS \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${GH_TOKEN}" \
               "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/generate-top-coins-snapshot.yml/runs?status=queued&branch=${GITHUB_REF_NAME}&per_page=50" \
@@ -120,7 +120,7 @@ jobs:
           JSON
           )"
 
-          curl -sS -X POST \
+          curl -fsS -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/dispatches" \

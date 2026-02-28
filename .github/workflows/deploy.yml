@@ -5,6 +5,7 @@ on:
     branches: ["main"]
     paths-ignore:
       - "public/data/top-coins.json"
+      - "public/data/top-coins-slot-*.json"
       - "public/data/logos/**"
   workflow_dispatch:
 
