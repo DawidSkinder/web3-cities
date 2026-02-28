@@ -5803,34 +5803,36 @@ function AnimatedHoloTower({
         </group>
       ))}
 
-      {bandFractions.map((f, i) => (
-        <mesh
-          key={`${tower.sequence}-band-${i}`}
-          ref={(el) => {
-            bandRefs.current[i] = el;
-          }}
-          position={[0, tower.height * f, 0]}
-          renderOrder={6.18}
-          visible={i < tower.bandCount}
-        >
-          <boxGeometry
-            args={[
-              Math.max(0.18, tower.footprintX * (i % 2 === 0 ? 1.04 : 0.92)),
-              0.05,
-              Math.max(0.18, tower.footprintZ * (i % 2 === 0 ? 1.04 : 0.92))
-            ]}
-          />
-          <meshBasicMaterial
-            color={glowColor}
-            transparent
-            opacity={0}
-            toneMapped={false}
-            depthTest
-            depthWrite={false}
-            blending={AdditiveBlending}
-          />
-        </mesh>
-      ))}
+      {tower.mode !== 'top200'
+        ? bandFractions.map((f, i) => (
+            <mesh
+              key={`${tower.sequence}-band-${i}`}
+              ref={(el) => {
+                bandRefs.current[i] = el;
+              }}
+              position={[0, tower.height * f, 0]}
+              renderOrder={6.18}
+              visible={i < tower.bandCount}
+            >
+              <boxGeometry
+                args={[
+                  Math.max(0.18, tower.footprintX * (i % 2 === 0 ? 1.04 : 0.92)),
+                  0.05,
+                  Math.max(0.18, tower.footprintZ * (i % 2 === 0 ? 1.04 : 0.92))
+                ]}
+              />
+              <meshBasicMaterial
+                color={glowColor}
+                transparent
+                opacity={0}
+                toneMapped={false}
+                depthTest
+                depthWrite={false}
+                blending={AdditiveBlending}
+              />
+            </mesh>
+          ))
+        : null}
 
       {terraceEnabled ? (
         <>

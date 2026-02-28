@@ -2,11 +2,15 @@ name: Generate Top Coins Snapshot
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
+  repository_dispatch:
+    types:
+      - top-coins-loop
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: top-coins-snapshot
@@ -91,3 +95,35 @@ jobs:
               sleep "${sleep_for}"
             fi
           done
+
+      - name: Queue next loop run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          queued_count="$(
+            curl -sS \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/generate-top-coins-snapshot.yml/runs?status=queued&branch=${GITHUB_REF_NAME}&per_page=50" \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{const j=JSON.parse(s);console.log((j.workflow_runs||[]).length);}catch{console.log('0');}})"
+          )"
+
+          if [ "${queued_count}" -gt 0 ]; then
+            echo "[top-coins] queued runs already present (${queued_count}); skip self-dispatch"
+            exit 0
+          fi
+
+          payload="$(cat <<JSON
+          {"event_type":"top-coins-loop","client_payload":{"from_run_id":"${GITHUB_RUN_ID}","from_event":"${GITHUB_EVENT_NAME}"}}
+          JSON
+          )"
+
+          curl -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/dispatches" \
+            -d "${payload}" >/dev/null
+
+          echo "[top-coins] queued next loop run"
