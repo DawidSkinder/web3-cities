@@ -428,6 +428,10 @@ const DISTRICT_SIZE = 28;
 const MAX_VISIBLE_DISTRICT_LOOPS = 12;
 const MAX_PARKS_VISIBLE = 24;
 const TOP_REPLAY_HISTORY_MAX = 30;
+const TOP_COINS_UNIVERSE_LIMIT = 150;
+const TOP_COINS_DISC_GAINERS = 50;
+const TOP_COINS_QUOTE_ASSET = 'USDT';
+const TOP_COINS_CHANGE_TF_LABEL = '24h';
 const TOP_INTRO_BOOT_MS = 1500;
 const TOP_INTRO_WAVE_A_START_MS = 1500;
 const TOP_INTRO_WAVE_B_START_MS = 4300;
@@ -1212,14 +1216,14 @@ function parkConflictsTopCoinTower(x: number, z: number, w: number, d: number, t
   const dz = Math.abs(z - tower.z);
   const towerHalfX = Math.max(tower.baseW, tower.footprintX) * 0.6;
   const towerHalfZ = Math.max(tower.baseD, tower.footprintZ) * 0.6;
-  const topClearance = 0.68;
+  const topClearance = 1.05;
   return dx < w * 0.5 + towerHalfX + topClearance && dz < d * 0.5 + towerHalfZ + topClearance;
 }
 
 function parkConflictsTopCoinPark(x: number, z: number, w: number, d: number, park: ParkDatum) {
   const dx = Math.abs(x - park.x);
   const dz = Math.abs(z - park.z);
-  const topClearance = 0.6;
+  const topClearance = 0.9;
   return dx < w * 0.5 + park.w * 0.5 + topClearance && dz < d * 0.5 + park.d * 0.5 + topClearance;
 }
 
@@ -2297,6 +2301,7 @@ type TopCoinSymbolState = {
   isTopLoser: boolean;
   isTopVolume: boolean;
   logoPath: string | null;
+  isDiscPriority: boolean;
   discRevealAt: number;
   discOcclusion: number;
   sparkUntilMs: number;
@@ -2343,6 +2348,8 @@ type TopCoinsParkTower = ParkTowerCollisionTarget & {
 type TopCoinsParkResult = {
   parks: ParkDatum[];
   trees: ParkTreeDatum[];
+  traces: TraceDatum[];
+  arterialTraces: TraceDatum[];
 };
 
 function hashString32(value: string) {
@@ -2575,14 +2582,69 @@ function buildTopCoinsDecorativeParks({
 }): TopCoinsParkResult {
   const parks: ParkDatum[] = [];
   const trees: ParkTreeDatum[] = [];
+  const passthrough = {
+    parks,
+    trees,
+    traces: [...traces],
+    arterialTraces: [...arterialTraces]
+  };
   if (!ENABLE_PARKS_V2 || towers.length < 20) {
-    return { parks, trees };
+    return passthrough;
   }
 
   const desiredParks = Math.min(MAX_PARKS_VISIBLE, Math.max(10, Math.round(towers.length / 16)));
   const attemptsMax = desiredParks * 180;
   const now = Date.now();
   const tracePool = [...traces, ...arterialTraces];
+  const gridCellSize = 1.35;
+  const gridMin = -cityRadius * 1.05;
+  const gridMax = cityRadius * 1.05;
+  const occupiedCells = new Set<string>();
+
+  const toCell = (value: number) => Math.floor((value - gridMin) / gridCellSize);
+  const cellKey = (ix: number, iz: number) => `${ix}:${iz}`;
+  const reserveRect = (x: number, z: number, w: number, d: number, padding: number) => {
+    const minX = x - (w * 0.5 + padding);
+    const maxX = x + (w * 0.5 + padding);
+    const minZ = z - (d * 0.5 + padding);
+    const maxZ = z + (d * 0.5 + padding);
+    const ix0 = toCell(minX);
+    const ix1 = toCell(maxX);
+    const iz0 = toCell(minZ);
+    const iz1 = toCell(maxZ);
+    for (let ix = ix0; ix <= ix1; ix++) {
+      for (let iz = iz0; iz <= iz1; iz++) {
+        occupiedCells.add(cellKey(ix, iz));
+      }
+    }
+  };
+  const rectIsFree = (x: number, z: number, w: number, d: number, padding: number) => {
+    const edge = Math.max(w, d) * 0.5 + padding;
+    if (Math.hypot(x, z) + edge > cityRadius * 0.98) return false;
+    const minX = x - (w * 0.5 + padding);
+    const maxX = x + (w * 0.5 + padding);
+    const minZ = z - (d * 0.5 + padding);
+    const maxZ = z + (d * 0.5 + padding);
+    if (minX < gridMin || maxX > gridMax || minZ < gridMin || maxZ > gridMax) return false;
+    const ix0 = toCell(minX);
+    const ix1 = toCell(maxX);
+    const iz0 = toCell(minZ);
+    const iz1 = toCell(maxZ);
+    for (let ix = ix0; ix <= ix1; ix++) {
+      for (let iz = iz0; iz <= iz1; iz++) {
+        if (occupiedCells.has(cellKey(ix, iz))) return false;
+      }
+    }
+    return true;
+  };
+
+  for (let i = 0; i < towers.length; i++) {
+    const tower = towers[i];
+    if (!tower) continue;
+    const w = Math.max(tower.baseW, tower.footprintX);
+    const d = Math.max(tower.baseD, tower.footprintZ);
+    reserveRect(tower.x, tower.z, w, d, 1.0);
+  }
 
   const traceTouchesCandidate = (x: number, z: number, parkRadius: number) => {
     for (let i = 0; i < tracePool.length; i++) {
@@ -2596,7 +2658,17 @@ function buildTopCoinsDecorativeParks({
       const bx = trace.midX + dirX * halfLen;
       const bz = trace.midZ + dirZ * halfLen;
       const d = pointSegmentDistanceXZ(x, z, ax, az, bx, bz);
-      if (d < parkRadius + 0.38) return true;
+      if (d < parkRadius + 0.56) return true;
+    }
+    return false;
+  };
+
+  const treeTouchesTower = (x: number, z: number) => {
+    const marker = 0.36;
+    for (let i = 0; i < towers.length; i++) {
+      if (parkConflictsTopCoinTower(x, z, marker, marker, towers[i])) {
+        return true;
+      }
     }
     return false;
   };
@@ -2604,7 +2676,11 @@ function buildTopCoinsDecorativeParks({
   for (let attempt = 0; attempt < attemptsMax && parks.length < desiredParks; attempt++) {
     const seed = 81_001 + attempt * 137;
     const angle = hash01(seed, 1) * Math.PI * 2;
-    const radialN = MathUtils.lerp(0.22, 0.8, hash01(seed, 3));
+    const edgeBias = hash01(seed, 2);
+    const radialN =
+      edgeBias > 0.78
+        ? MathUtils.lerp(0.78, 0.92, hash01(seed, 3))
+        : MathUtils.lerp(0.2, 0.78, hash01(seed, 3));
     const radialJitter = (hash01(seed, 5) - 0.5) * MathUtils.lerp(9, 22, radialN);
     const radial = Math.max(9, cityRadius * radialN + radialJitter);
     const x = Math.cos(angle) * radial;
@@ -2614,7 +2690,7 @@ function buildTopCoinsDecorativeParks({
     const yaw = hash01(seed, 11) * Math.PI;
     const radius = Math.max(w, d) * 0.58;
 
-    if (Math.hypot(x, z) > cityRadius * 0.88) continue;
+    if (!rectIsFree(x, z, w, d, 0.52)) continue;
 
     let blocked = false;
     for (let i = 0; i < towers.length; i++) {
@@ -2661,7 +2737,8 @@ function buildTopCoinsDecorativeParks({
       const sn = Math.sin(yaw);
       const worldX = x + localX * cs - localZ * sn;
       const worldZ = z + localX * sn + localZ * cs;
-      if (Math.hypot(worldX, worldZ) > cityRadius * 1.06) continue;
+      if (Math.hypot(worldX, worldZ) > cityRadius * 0.98) continue;
+      if (treeTouchesTower(worldX, worldZ)) continue;
 
       trees.push({
         x: worldX,
@@ -2683,6 +2760,7 @@ function buildTopCoinsDecorativeParks({
     }
 
     if (trees.length <= treeStart) continue;
+    reserveRect(x, z, w, d, 0.56);
 
     let linkX: number | null = null;
     let linkZ: number | null = null;
@@ -2723,13 +2801,14 @@ function buildTopCoinsDecorativeParks({
     for (let i = parks.length; i < desiredParks; i++) {
       const seed = 93_001 + i * 131;
       const angle = ((i + 1) / (desiredParks + 1)) * Math.PI * 2 + (hash01(seed, 1) - 0.5) * 0.18;
-      const radius = cityRadius * MathUtils.lerp(0.3, 0.7, hash01(seed, 3));
+      const radius = cityRadius * MathUtils.lerp(0.28, 0.9, hash01(seed, 3));
       const x = Math.cos(angle) * radius;
       const z = Math.sin(angle) * radius;
       const w = MathUtils.lerp(2.9, 4.2, hash01(seed, 5));
       const d = MathUtils.lerp(2.8, 4.0, hash01(seed, 7));
       const yaw = hash01(seed, 9) * Math.PI;
       const r = Math.max(w, d) * 0.58;
+      if (!rectIsFree(x, z, w, d, 0.48)) continue;
       let blocked = false;
       for (let t = 0; t < towers.length; t++) {
         if (parkConflictsTopCoinTower(x, z, w, d, towers[t])) {
@@ -2758,6 +2837,8 @@ function buildTopCoinsDecorativeParks({
         const sn = Math.sin(yaw);
         const worldX = x + lx * cs - lz * sn;
         const worldZ = z + lx * sn + lz * cs;
+        if (Math.hypot(worldX, worldZ) > cityRadius * 0.98) continue;
+        if (treeTouchesTower(worldX, worldZ)) continue;
         trees.push({
           x: worldX,
           z: worldZ,
@@ -2770,6 +2851,7 @@ function buildTopCoinsDecorativeParks({
       }
       const treeCount = trees.length - treeStart;
       if (treeCount <= 0) continue;
+      reserveRect(x, z, w, d, 0.54);
       const fireflyCount = Math.max(4, Math.min(treeCount, Math.round(treeCount * 0.7)));
       parks.push({
         id: `top-park-fallback-${i}-${seed}`,
@@ -2792,7 +2874,26 @@ function buildTopCoinsDecorativeParks({
     }
   }
 
-  return { parks, trees };
+  const traceCrossesAnyPark = (trace: TraceDatum) => {
+    const dirX = Math.sin(trace.yaw);
+    const dirZ = Math.cos(trace.yaw);
+    const halfLen = Math.max(0.4, trace.length * 0.5);
+    const ax = trace.midX - dirX * halfLen;
+    const az = trace.midZ - dirZ * halfLen;
+    const bx = trace.midX + dirX * halfLen;
+    const bz = trace.midZ + dirZ * halfLen;
+    for (let i = 0; i < parks.length; i++) {
+      const park = parks[i];
+      if (!park) continue;
+      const d = pointSegmentDistanceXZ(park.x, park.z, ax, az, bx, bz);
+      if (d < park.radius + 0.28) return true;
+    }
+    return false;
+  };
+
+  const parkSafeTraces = traces.filter((trace) => !traceCrossesAnyPark(trace));
+  const parkSafeArterials = arterialTraces.filter((trace) => !traceCrossesAnyPark(trace));
+  return { parks, trees, traces: parkSafeTraces, arterialTraces: parkSafeArterials };
 }
 
 function easeTowards(current: number, target: number, lambda: number, dtSec: number) {
@@ -3120,6 +3221,26 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     const nowMs = Date.now();
     const sizeScoreBySymbol = new Map<string, number>();
     const metricsBySymbol = new Map<string, { height: number; sizeScore: number; heightScore: number; volumeNorm: number }>();
+    const prioritizedDiscSymbols = (() => {
+      const gainers = selected.items
+        .filter((item) => item.priceChangePercent > 0)
+        .sort(
+          (a, b) =>
+            b.priceChangePercent - a.priceChangePercent ||
+            a.rankByQuoteVolume - b.rankByQuoteVolume ||
+            a.symbol.localeCompare(b.symbol)
+        );
+      const source =
+        gainers.length > 0
+          ? gainers
+          : [...selected.items].sort(
+              (a, b) =>
+                Math.abs(b.priceChangePercent) - Math.abs(a.priceChangePercent) ||
+                a.rankByQuoteVolume - b.rankByQuoteVolume ||
+                a.symbol.localeCompare(b.symbol)
+            );
+      return new Set(source.slice(0, TOP_COINS_DISC_GAINERS).map((item) => item.symbol));
+    })();
     let changedTowers = 0;
     let heightDeltaSum = 0;
     let baseDeltaSum = 0;
@@ -3188,6 +3309,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         const volumeNorm = metrics?.volumeNorm ?? MathUtils.clamp(Math.log10(item.quoteVolume + 1) / Math.log10(maxQuoteVolume + 1), 0, 1);
         const nextHeight = metrics?.height ?? TOWER_VISUAL_MIN_HEIGHT;
         const nextBase = metrics?.sizeScore ?? 0.5;
+        const isDiscPriority = prioritizedDiscSymbols.has(item.symbol);
         const targetX = placement?.x ?? prev?.xTarget ?? prev?.x ?? 0;
         const targetZ = placement?.z ?? prev?.zTarget ?? prev?.z ?? 0;
         const districtId = placement?.districtId ?? prev?.districtId ?? 0;
@@ -3240,6 +3362,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
             isTopLoser,
             isTopVolume,
             logoPath: item.logoPath ?? null,
+            isDiscPriority,
             discRevealAt,
             discOcclusion: 0,
             sparkUntilMs: 0
@@ -3288,6 +3411,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         prev.isTopLoser = isTopLoser;
         prev.isTopVolume = isTopVolume;
         prev.logoPath = item.logoPath ?? null;
+        prev.isDiscPriority = isDiscPriority;
       }
 
       for (const [symbol, state] of states) {
@@ -3368,7 +3492,11 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
           0,
           1
         );
-        const rankFactor = MathUtils.lerp(1.22, 0.74, MathUtils.clamp((Math.min(a.rank, b.rank) - 1) / 199, 0, 1));
+        const rankFactor = MathUtils.lerp(
+          1.22,
+          0.74,
+          MathUtils.clamp((Math.min(a.rank, b.rank) - 1) / Math.max(1, TOP_COINS_UNIVERSE_LIMIT - 1), 0, 1)
+        );
 
         const baseWarm = new Color('#f4d8af');
         const accent = avgPct >= 0 ? new Color('#8dc78b') : new Color('#cc7f77');
@@ -3498,11 +3626,6 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         }
       }
 
-      tracesRef.current = traces;
-      arterialTracesRef.current = arterialTraces;
-      trafficRef.current = trafficParticles;
-      arterialTrafficRef.current = arterialTrafficParticles;
-
       const maxRadius = Math.max(
         layout.cityRadius,
         ...selected.items
@@ -3563,6 +3686,24 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         traces,
         arterialTraces
       });
+      const filteredTraceIds = new Set<string>();
+      for (let i = 0; i < decorativeParks.traces.length; i++) {
+        const trace = decorativeParks.traces[i];
+        if (trace) filteredTraceIds.add(trace.id);
+      }
+      const filteredArterialTraceIds = new Set<string>();
+      for (let i = 0; i < decorativeParks.arterialTraces.length; i++) {
+        const trace = decorativeParks.arterialTraces[i];
+        if (trace) filteredArterialTraceIds.add(trace.id);
+      }
+      const filteredTraffic = trafficParticles.filter((particle) => filteredTraceIds.has(particle.traceId));
+      const filteredArterialTraffic = arterialTrafficParticles.filter((particle) =>
+        filteredArterialTraceIds.has(particle.traceId)
+      );
+      tracesRef.current = decorativeParks.traces;
+      arterialTracesRef.current = decorativeParks.arterialTraces;
+      trafficRef.current = filteredTraffic;
+      arterialTrafficRef.current = filteredArterialTraffic;
       parksRef.current = decorativeParks.parks;
       parkTreesRef.current = decorativeParks.trees;
 
@@ -3577,7 +3718,11 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
               1.2
             )
           : 0.2;
-      clutterRef.current = MathUtils.clamp((traces.length * 0.65 + trafficParticles.length * 0.2 + selected.items.length) / 360, 0, 1);
+      clutterRef.current = MathUtils.clamp(
+        (decorativeParks.traces.length * 0.65 + filteredTraffic.length * 0.2 + selected.items.length) / 360,
+        0,
+        1
+      );
     }
 
     const meta = liveSnapshotRef.current ?? selected;
@@ -3623,7 +3768,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       introLifeAlpha: introRef.current.lifeAlpha,
       introProgress: introRef.current.progress,
       clutter: clutterRef.current,
-      discVisible: Array.from(statesRef.current.values()).filter((state) => state.rank <= 60 || state.isTopGainer || state.isTopLoser).length,
+      discVisible: Array.from(statesRef.current.values()).filter((state) => state.isDiscPriority).length,
       discMode: replayEnabled ? 'replay' : 'live',
       replayEnabled,
       replayOffset,
@@ -3809,7 +3954,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         usdNotional: state.quoteVolume,
         usdSource: 'top-coins',
         logUsd: Math.log10(Math.max(1, state.quoteVolume)),
-        usdAnchorU: MathUtils.clamp(state.rank / 200, 0, 1),
+        usdAnchorU: MathUtils.clamp(state.rank / TOP_COINS_UNIVERSE_LIMIT, 0, 1),
         usdScoreDist: MathUtils.clamp(Math.abs(state.pct) / 20, 0, 1),
         averagePrice: state.lastPrice,
         tradeCount: 0,
@@ -3830,7 +3975,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         isTopVolume: state.isTopVolume,
         discRevealAt: state.discRevealAt,
         discOcclusion: state.discOcclusion,
-        isDiscPriority: state.rank <= 60 || state.isTopGainer || state.isTopLoser || state.isTopVolume,
+        isDiscPriority: state.isDiscPriority,
         sparkUntilMs: state.sparkUntilMs
       });
     }
@@ -4772,12 +4917,18 @@ function TopCoinLogoDisc({
   tower,
   focusMode,
   isHovered,
+  isSelected,
+  focusAnchorX = 0,
+  focusAnchorZ = 0,
   introLifeAlpha = 1,
   clutter = 0
 }: {
   tower: TowerDatum;
   focusMode: boolean;
   isHovered: boolean;
+  isSelected: boolean;
+  focusAnchorX?: number;
+  focusAnchorZ?: number;
   introLifeAlpha?: number;
   clutter?: number;
 }) {
@@ -4812,56 +4963,85 @@ function TopCoinLogoDisc({
     // Keep bobbing positive-only so discs never dip into rooftops.
     const bob = (Math.sin(t * 1.14) * 0.5 + 0.5) * 0.16;
     g.quaternion.copy(camera.quaternion);
-    g.position.set(0, tower.height + 2.7 + bob, 0);
+    const isForceVisible = isHovered || isSelected;
+    const camDist = camera.position.length();
+    const rank = tower.rank ?? TOP_COINS_UNIVERSE_LIMIT;
+    const isPriority = Boolean(tower.isDiscPriority);
+    const zoomRevealT = smoothstep01(remapClamped(camDist, 24, 14));
+    const focusDist = Math.hypot(tower.x - focusAnchorX, tower.z - focusAnchorZ);
+    const contextualRadius = MathUtils.lerp(4.2, 24, zoomRevealT);
+    const contextualFade = 1 - smoothstep01(remapClamped(focusDist, contextualRadius * 0.4, contextualRadius));
+    const contextualAlpha = zoomRevealT * contextualFade;
+    const priorityAlpha = isForceVisible ? 1 : isPriority ? 1 : contextualAlpha;
+    const introDelay = tower.discRevealAt && tower.discRevealAt > 0 ? MathUtils.clamp((Date.now() - tower.discRevealAt) / 900, 0, 1) : 1;
+    const introFade = MathUtils.clamp(introLifeAlpha, 0, 1) * introDelay;
+    const baseLodAlpha = MathUtils.clamp(priorityAlpha * introFade, 0, 1);
 
+    // Keep very-low-priority discs nearly free in far/default views.
+    if (!isForceVisible && baseLodAlpha < 0.01 && !isPriority) {
+      topCoinDiscScreenRegistry.delete(tower.sequence);
+    }
+
+    g.position.set(0, tower.height + 2.7 + bob, 0);
     g.getWorldPosition(worldPosRef.current);
     const distance = camera.position.distanceTo(worldPosRef.current);
-    const camDist = camera.position.length();
     const baseScale = MathUtils.clamp(1.16 + distance * 0.0104, 1.35, 4.35);
     // One-way boost: large/tall towers get larger discs; baseline towers never get smaller.
     const towerBoostT = smoothstep01(remapClamped(tower.height, 30, 90));
-    const scale = baseScale * MathUtils.lerp(1, 1.26, towerBoostT);
+    let scale = baseScale * MathUtils.lerp(1, 1.26, towerBoostT);
+    const fovDeg = (camera as { fov?: number }).fov ?? 50;
+    const worldPerPx = (2 * distance * Math.tan(MathUtils.degToRad(fovDeg * 0.5))) / Math.max(320, size.height);
+    const minReadableScale = worldPerPx * 42;
+    scale = Math.max(scale, minReadableScale);
     const clearance = MathUtils.clamp(1.2 + tower.height * 0.12 + scale * 0.1, 1.6, 5.6);
     g.position.set(0, tower.height + clearance + bob, 0);
     g.scale.set(scale, scale, scale);
+    if (ringRef.current) ringRef.current.rotation.z = t * 0.58;
+    if (bodyRef.current) bodyRef.current.rotation.z = -t * 0.14;
+    if (discRef.current) discRef.current.rotation.z = Math.sin(t * 0.35) * 0.04;
+    if (fallbackPlateRef.current) fallbackPlateRef.current.rotation.z = Math.sin(t * 0.35) * 0.04;
 
-    const rank = tower.rank ?? 200;
-    const farT = smoothstep01(remapClamped(camDist, 52, 168));
-    const rankCutoff = MathUtils.lerp(200, 46, farT);
-    const rankDelta = rank - rankCutoff;
-    const isPriority = Boolean(tower.isDiscPriority || tower.isTopGainer || tower.isTopLoser || tower.isTopVolume);
-    const rankFade = isPriority ? 1 : 1 - smoothstep01(remapClamped(rankDelta, 0, 28));
-    const introDelay = tower.discRevealAt && tower.discRevealAt > 0 ? MathUtils.clamp((Date.now() - tower.discRevealAt) / 900, 0, 1) : 1;
-    const introFade = MathUtils.clamp(introLifeAlpha, 0, 1) * introDelay;
     const projected = ndcRef.current.copy(worldPosRef.current).project(camera);
     const nowPerf = performance.now();
-    topCoinDiscScreenRegistry.set(tower.sequence, {
-      x: projected.x,
-      y: projected.y,
-      rank,
-      updatedAt: nowPerf
-    });
+    if (baseLodAlpha >= 0.01 || isForceVisible) {
+      topCoinDiscScreenRegistry.set(tower.sequence, {
+        x: projected.x,
+        y: projected.y,
+        rank,
+        updatedAt: nowPerf
+      });
+    }
 
     let screenOcclusion = tower.discOcclusion ?? 0;
-    const screenThresholdX = 0.11 * MathUtils.clamp(1200 / Math.max(320, size.width), 0.78, 1.4);
-    const screenThresholdY = 0.15 * MathUtils.clamp(900 / Math.max(320, size.height), 0.78, 1.4);
-    for (const [sequence, other] of topCoinDiscScreenRegistry) {
-      if (sequence === tower.sequence) continue;
-      if (other.updatedAt < nowPerf - 120) continue;
-      if (other.rank >= rank) continue;
-      const dx = Math.abs(other.x - projected.x);
-      const dy = Math.abs(other.y - projected.y);
-      const ox = 1 - smoothstep01(remapClamped(dx, 0, screenThresholdX));
-      const oy = 1 - smoothstep01(remapClamped(dy, 0, screenThresholdY));
-      const overlap = ox * oy;
-      if (overlap > screenOcclusion) {
-        screenOcclusion = overlap;
+    if (baseLodAlpha >= 0.02 || isForceVisible) {
+      const screenThresholdX = 0.11 * MathUtils.clamp(1200 / Math.max(320, size.width), 0.78, 1.4);
+      const screenThresholdY = 0.15 * MathUtils.clamp(900 / Math.max(320, size.height), 0.78, 1.4);
+      for (const [sequence, other] of topCoinDiscScreenRegistry) {
+        if (sequence === tower.sequence) continue;
+        if (other.updatedAt < nowPerf - 120) continue;
+        if (other.rank >= rank) continue;
+        const dx = Math.abs(other.x - projected.x);
+        const dy = Math.abs(other.y - projected.y);
+        const ox = 1 - smoothstep01(remapClamped(dx, 0, screenThresholdX));
+        const oy = 1 - smoothstep01(remapClamped(dy, 0, screenThresholdY));
+        const overlap = ox * oy;
+        if (overlap > screenOcclusion) {
+          screenOcclusion = overlap;
+        }
       }
     }
 
-    const occlusionFade = 1 - MathUtils.clamp(screenOcclusion * 0.8, 0, 0.8);
+    const occlusionFade = isForceVisible ? 1 : 1 - MathUtils.clamp(screenOcclusion * 0.8, 0, 0.8);
     const clutterFade = MathUtils.lerp(1, 0.84, MathUtils.clamp(clutter, 0, 1));
-    const lodAlpha = MathUtils.clamp(rankFade * introFade * occlusionFade * clutterFade, 0, 1);
+    const lodAlpha = MathUtils.clamp(baseLodAlpha * occlusionFade * clutterFade, 0, 1);
+    if (!isForceVisible && screenOcclusion > 0.3) {
+      const stagger = MathUtils.lerp(
+        0,
+        0.24,
+        smoothstep01(remapClamped(screenOcclusion, 0.3, 1)) * MathUtils.clamp(rank / TOP_COINS_UNIVERSE_LIMIT, 0.45, 1)
+      );
+      g.position.y += stagger;
+    }
 
     const dimFactor = focusMode && !isHovered ? FOCUS_NON_HOVER_DIM : 1;
     const hoverBoost = isHovered ? 1.2 : 1;
@@ -5178,6 +5358,9 @@ function HoverHudOverlay({
 function AnimatedHoloTower({
   tower,
   hoveredTowerSequence,
+  selectedTowerSequence,
+  discFocusAnchorX,
+  discFocusAnchorZ,
   isTallest,
   onHoverTower,
   onSelectTower,
@@ -5185,6 +5368,9 @@ function AnimatedHoloTower({
 }: {
   tower: TowerDatum;
   hoveredTowerSequence: number | null;
+  selectedTowerSequence: number | null;
+  discFocusAnchorX: number;
+  discFocusAnchorZ: number;
   isTallest: boolean;
   onHoverTower?: (sequence: number | null) => void;
   onSelectTower?: (sequence: number) => void;
@@ -5284,6 +5470,7 @@ function AnimatedHoloTower({
   }, [outlineGeometries, outlineMaterial]);
 
   const isHovered = hoveredTowerSequence === tower.sequence;
+  const isSelected = selectedTowerSequence === tower.sequence;
   const focusMode = hoveredTowerSequence != null;
 
   useFrame((_, delta) => {
@@ -5768,6 +5955,9 @@ function AnimatedHoloTower({
           tower={tower}
           focusMode={focusMode}
           isHovered={isHovered}
+          isSelected={isSelected}
+          focusAnchorX={discFocusAnchorX}
+          focusAnchorZ={discFocusAnchorZ}
           introLifeAlpha={topFx?.introLifeAlpha ?? 1}
           clutter={topFx?.clutter ?? 0}
         />
@@ -7821,6 +8011,15 @@ function SandboxScene({
         : null,
     [selectedTower]
   );
+  const discFocusAnchor = useMemo(
+    () =>
+      selectedTower
+        ? { x: selectedTower.x, z: selectedTower.z }
+        : hoveredTower
+          ? { x: hoveredTower.x, z: hoveredTower.z }
+          : { x: 0, z: 0 },
+    [hoveredTower, selectedTower]
+  );
   const focusMode = hoveredTowerSequence != null;
   const hoverStableRef = useRef<number | null>(hoveredTowerSequence);
   const hoverIntentRef = useRef<number | null>(hoveredTowerSequence);
@@ -7962,6 +8161,9 @@ function SandboxScene({
             key={tower.sequence}
             tower={tower}
             hoveredTowerSequence={hoveredTowerSequence}
+            selectedTowerSequence={selectedTowerSequence}
+            discFocusAnchorX={discFocusAnchor.x}
+            discFocusAnchorZ={discFocusAnchor.z}
             isTallest={tallestTowerSequence === tower.sequence}
             onHoverTower={requestHoverTower}
             onSelectTower={requestSelectTower}
@@ -7970,7 +8172,7 @@ function SandboxScene({
         ))}
       </group>
 
-      {tallestTower ? (
+      {tallestTower && tallestTower.mode !== 'top200' ? (
         <TallestBeacon
           tower={tallestTower}
           sceneMaxY={bounds.maxY}
@@ -8009,20 +8211,14 @@ export function MinimalVizSandbox({
     recordCeremonies,
     bounds,
     marketMoodTarget,
-    latestHeightDebug,
-    tallestTowerSequence,
-    tallestTowerHeight,
-    parksAttempted,
-    parksPlaced,
-    lastParkSkipReason
+    tallestTowerSequence
   } = active;
-  const [cameraDebug, setCameraDebug] = useState<CameraDebugSnapshot>({ camDist: 0, visCurve: 0 });
+  const [, setCameraDebug] = useState<CameraDebugSnapshot>({ camDist: 0, visCurve: 0 });
   const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
   const [selectedTowerSequence, setSelectedTowerSequence] = useState<number | null>(null);
   const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const topDebug = mode === 'top200' ? topData.topCoinsDebug : null;
-  const topReplay = mode === 'top200' ? topData.topReplay : null;
   const topFx = mode === 'top200' ? topData.topFx : undefined;
 
   useEffect(() => {
@@ -8067,51 +8263,10 @@ export function MinimalVizSandbox({
   const overlay = useMemo(
     () => ({
       mode,
-      feedMode: latest?.feedMode ?? 'auto',
       latestSequence: latest?.sequence ?? 0,
-      towerCount: towers.length,
-      traceCount: traces.length + arterialTraces.length,
-      trafficCount: trafficParticles.length + arterialTrafficParticles.length,
-      arterialCount: arterialTraces.length,
-      districtCount: districts.length,
-      parkCount: parks.length,
-      parksAttempted,
-      parksPlaced,
-      lastParkSkipReason,
-      cityRadius: bounds.radius,
-      glowRadius: Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT),
-      camDist: cameraDebug.camDist,
-      visCurve: cameraDebug.visCurve,
-      mood: marketMoodTarget,
-      hoveredTowerSequence,
-      tallestTowerSequence,
-      tallestTowerHeight,
-      topDebug,
-      topReplay
+      topDebug
     }),
-    [
-      latest,
-      towers.length,
-      traces.length,
-      arterialTraces.length,
-      trafficParticles.length,
-      arterialTrafficParticles.length,
-      parks.length,
-      districts.length,
-      parksAttempted,
-      parksPlaced,
-      lastParkSkipReason,
-      bounds.radius,
-      cameraDebug.camDist,
-      cameraDebug.visCurve,
-      marketMoodTarget,
-      hoveredTowerSequence,
-      tallestTowerSequence,
-      tallestTowerHeight,
-      mode,
-      topDebug,
-      topReplay
-    ]
+    [latest, mode, topDebug]
   );
 
   return (
@@ -8157,360 +8312,94 @@ export function MinimalVizSandbox({
             </select>
           </div>
           <div className="minimal-viz__row">
-            <span>Active</span>
-            <span>{overlay.mode === 'top200' ? 'top200' : `btc (${overlay.feedMode})`}</span>
+            <span>Mode</span>
+            <span>{overlay.mode === 'top200' ? 'Top Coins Skyline' : 'BTC Spot Buys'}</span>
           </div>
-          {overlay.mode === 'top200' && overlay.topReplay ? (
-            <>
-              <div className="minimal-viz__row minimal-viz__row--control">
-                <span>Replay</span>
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <input
-                    type="checkbox"
-                    checked={overlay.topReplay.enabled}
-                    onChange={(event) => {
-                      overlay.topReplay!.setEnabled(event.currentTarget.checked);
-                    }}
-                  />
-                  <span>{overlay.topReplay.enabled ? 'on' : 'off'}</span>
-                </label>
+          {overlay.mode === 'top200' ? (
+            overlay.topDebug ? (
+              <>
+                {(() => {
+                  const asOfAgeSec =
+                    overlay.topDebug.asOfMs > 0 ? Math.max(0, Math.floor((nowTick - overlay.topDebug.asOfMs) / 1000)) : Number.POSITIVE_INFINITY;
+                  const nextUpdateSec = Math.max(0, Math.ceil((overlay.topDebug.nextUpdateAtMs - nowTick) / 1000));
+                  let status: 'ok' | 'STALE' | 'error' = 'ok';
+                  let statusColor = '#9fd8b2';
+                  let staleMessage = '';
+                  if (!overlay.topDebug.lastFetchOk && overlay.topDebug.lastError) {
+                    status = 'error';
+                    statusColor = '#ff9f8f';
+                  } else if (asOfAgeSec > 600) {
+                    status = 'STALE';
+                    statusColor = '#ff8d6a';
+                    staleMessage = 'Snapshot not updating - check GitHub Actions.';
+                  } else if (asOfAgeSec > 120) {
+                    status = 'STALE';
+                    statusColor = '#ffbd75';
+                  }
+                  const lastFetchLabel = overlay.topDebug.lastFetchOk
+                    ? 'ok'
+                    : `fail${overlay.topDebug.lastError ? ` · ${fmtTopCoinsError(overlay.topDebug.lastError)}` : ''}`;
+
+                  return (
+                    <>
+                      <div className="minimal-viz__row">
+                        <span>Status</span>
+                        <span style={{ color: statusColor, fontWeight: 700 }}>{status}</span>
+                      </div>
+                      <div className="minimal-viz__row">
+                        <span>AsOf</span>
+                        <span>{overlay.topDebug.asOfIso || 'n/a'}</span>
+                      </div>
+                      <div className="minimal-viz__row">
+                        <span>Age</span>
+                        <span>{Number.isFinite(asOfAgeSec) ? `${asOfAgeSec}s` : 'n/a'}</span>
+                      </div>
+                      <div className="minimal-viz__row">
+                        <span>Next update in</span>
+                        <span>{nextUpdateSec}s</span>
+                      </div>
+                      <div className="minimal-viz__row">
+                        <span>Universe</span>
+                        <span>{`Top ${TOP_COINS_UNIVERSE_LIMIT} · ${TOP_COINS_QUOTE_ASSET} · ${TOP_COINS_CHANGE_TF_LABEL}`}</span>
+                      </div>
+                      <div className="minimal-viz__row">
+                        <span>Top gainer</span>
+                        <span>{`${overlay.topDebug.topGainer.symbol} ${fmtSignedPct(overlay.topDebug.topGainer.pct)}`}</span>
+                      </div>
+                      <div className="minimal-viz__row">
+                        <span>Top loser</span>
+                        <span>{`${overlay.topDebug.topLoser.symbol} ${fmtSignedPct(overlay.topDebug.topLoser.pct)}`}</span>
+                      </div>
+                      <div className="minimal-viz__row">
+                        <span>Top volume</span>
+                        <span>{`${overlay.topDebug.topVolume.symbol} ${fmtUsdCompact(overlay.topDebug.topVolume.quoteVolume)}`}</span>
+                      </div>
+                      <div className="minimal-viz__row">
+                        <span>Last fetch</span>
+                        <span>{lastFetchLabel}</span>
+                      </div>
+                      {staleMessage ? (
+                        <div className="minimal-viz__row" style={{ color: '#ff8d6a', fontWeight: 700 }}>
+                          <span>Notice</span>
+                          <span>{staleMessage}</span>
+                        </div>
+                      ) : null}
+                    </>
+                  );
+                })()}
+              </>
+            ) : (
+              <div className="minimal-viz__row">
+                <span>Status</span>
+                <span>loading...</span>
               </div>
-              <div className="minimal-viz__row minimal-viz__row--control">
-                <span>T-index</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={Math.max(0, overlay.topReplay.max)}
-                  step={1}
-                  value={Math.max(0, overlay.topReplay.offset)}
-                  onChange={(event) => {
-                    const next = Math.max(0, Math.floor(Number(event.currentTarget.value) || 0));
-                    overlay.topReplay!.setEnabled(true);
-                    overlay.topReplay!.setOffset(next);
-                  }}
-                  style={{ width: 108 }}
-                />
-                <span>{`T-${Math.max(0, overlay.topReplay.offset)}`}</span>
-              </div>
-            </>
-          ) : null}
-          {overlay.mode === 'btc' ? (
+            )
+          ) : (
             <div className="minimal-viz__row">
               <span>Latest Seq</span>
               <span>{overlay.latestSequence}</span>
             </div>
-          ) : null}
-          <div className="minimal-viz__row">
-            <span>Towers</span>
-            <span>{overlay.towerCount}</span>
-          </div>
-          <div className="minimal-viz__row">
-            <span>Traces</span>
-            <span>{overlay.traceCount}</span>
-          </div>
-          <div className="minimal-viz__row">
-            <span>Traffic</span>
-            <span>{overlay.trafficCount}</span>
-          </div>
-          <div className="minimal-viz__row">
-            <span>Arteries</span>
-            <span>{overlay.arterialCount}</span>
-          </div>
-          <div className="minimal-viz__row">
-            <span>Districts</span>
-            <span>{overlay.districtCount}</span>
-          </div>
-          <div className="minimal-viz__row">
-            <span>Parks</span>
-            <span>{overlay.parkCount}</span>
-          </div>
-          {overlay.mode === 'btc' ? (
-            <>
-              <div className="minimal-viz__row">
-                <span>ParksAttempted</span>
-                <span>{overlay.parksAttempted}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>ParksPlaced</span>
-                <span>{overlay.parksPlaced}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>ParkSkip</span>
-                <span>{overlay.lastParkSkipReason}</span>
-              </div>
-            </>
-          ) : null}
-          <div className="minimal-viz__row">
-            <span>TrafficMode</span>
-            <span>solid</span>
-          </div>
-          <div className="minimal-viz__row">
-            <span>CityRadius</span>
-            <span>{fmtFixed(overlay.cityRadius, 1)}</span>
-          </div>
-          <div className="minimal-viz__row">
-            <span>GlowRadius</span>
-            <span>{fmtFixed(overlay.glowRadius, 1)}</span>
-          </div>
-          <div className="minimal-viz__row">
-            <span>CamDist</span>
-            <span>{fmtFixed(overlay.camDist, 1)}</span>
-          </div>
-          <div className="minimal-viz__row">
-            <span>VisCurve</span>
-            <span>{fmtFixed(overlay.visCurve, 2)}</span>
-          </div>
-          {MARKET_PULSE_DEBUG_OVERLAY ? (
-            <div className="minimal-viz__row">
-              <span>Mood</span>
-              <span>{fmtFixed(overlay.mood, 2)}</span>
-            </div>
-          ) : null}
-          <div className="minimal-viz__row">
-            <span>Hover</span>
-            <span>{overlay.hoveredTowerSequence ?? 'none'}</span>
-          </div>
-          <div className="minimal-viz__row">
-            <span>Tallest</span>
-            <span>{overlay.tallestTowerSequence ?? 'none'}</span>
-          </div>
-          <div className="minimal-viz__row">
-            <span>Tall H</span>
-            <span>{fmtFixed(overlay.tallestTowerHeight, 1)}</span>
-          </div>
-          {overlay.topDebug ? (
-            <>
-              <div className="minimal-viz__row">
-                <span>Symbols</span>
-                <span>{overlay.topDebug.symbols}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>SnapSeq</span>
-                <span>{overlay.topDebug.snapshotSeq}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>Apply#</span>
-                <span>{overlay.topDebug.applyCount}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>PollInterval</span>
-                <span>{overlay.topDebug.pollSec}s</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>NextUpdateIn</span>
-                <span>{fmtMmSs(Math.max(0, (overlay.topDebug.nextUpdateAtMs - nowTick) / 1000))}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>NextUpdateAt</span>
-                <span>{overlay.topDebug.nextUpdateAtMs > 0 ? new Date(overlay.topDebug.nextUpdateAtMs).toISOString() : 'n/a'}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>LastFetchOk</span>
-                <span>{overlay.topDebug.lastFetchOk ? 'yes' : 'no'}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>LastFetchAt</span>
-                <span>{overlay.topDebug.lastFetchAt > 0 ? new Date(overlay.topDebug.lastFetchAt).toISOString() : 'n/a'}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>AsOf</span>
-                <span>{overlay.topDebug.asOfIso || 'n/a'}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>AsOfAgeSec</span>
-                <span>{overlay.topDebug.asOfMs > 0 ? `${Math.max(0, Math.floor((nowTick - overlay.topDebug.asOfMs) / 1000))}s` : 'n/a'}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>AsOfAge</span>
-                <span>{overlay.topDebug.asOfAgeLabel}</span>
-              </div>
-              {overlay.topDebug.staleData ? (
-                <div className="minimal-viz__row" style={{ color: '#ff9f8f', fontWeight: 700 }}>
-                  <span>STALE DATA</span>
-                  <span>{`>${overlay.topDebug.pollSec * 2}s`}</span>
-                </div>
-              ) : null}
-              <div className="minimal-viz__row">
-                <span>SnapshotHash</span>
-                <span>{overlay.topDebug.lastHash}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>HashChanged</span>
-                <span>{overlay.topDebug.hashChanged ? 'yes' : 'no'}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>ChangedCount</span>
-                <span>{overlay.topDebug.changedCount}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>ApplyAge</span>
-                <span>
-                  {overlay.topDebug.lastAppliedAt > 0
-                    ? `${fmtFixed(Math.max(0, nowTick - overlay.topDebug.lastAppliedAt) / 1000, 1)}s`
-                    : 'n/a'}
-                </span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>Changed</span>
-                <span>
-                  {overlay.topDebug.changedTowers} | dH {fmtFixed(overlay.topDebug.heightDeltaSum, 2)} | dB{' '}
-                  {fmtFixed(overlay.topDebug.baseDeltaSum, 2)}
-                </span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>FetchAge</span>
-                <span>{fmtFixed(Math.max(0, nowTick - overlay.topDebug.fetchedAt) / 1000, 1)}s</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>LogosMissing</span>
-                <span>
-                  {overlay.topDebug.logosMissing}/{overlay.topDebug.logosAttempted}
-                </span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>LayoutIters</span>
-                <span>{overlay.topDebug.layoutIters}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>MinSep</span>
-                <span>{fmtFixed(overlay.topDebug.minSeparation, 2)}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>OverlapFix</span>
-                <span>{overlay.topDebug.overlapFix}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>Intro</span>
-                <span>
-                  {overlay.topDebug.introActive ? 'active' : 'done'} · boot {fmtFixed(overlay.topDebug.introBootAlpha, 2)} · life{' '}
-                  {fmtFixed(overlay.topDebug.introLifeAlpha, 2)}
-                </span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>Clutter</span>
-                <span>{fmtFixed(overlay.topDebug.clutter, 2)}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>DiscLOD</span>
-                <span>
-                  {overlay.topDebug.discMode} · {overlay.topDebug.discVisible}
-                </span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>Replay</span>
-                <span>
-                  {overlay.topDebug.replayEnabled ? `on T-${overlay.topDebug.replayOffset}` : 'off'}
-                  {overlay.topDebug.replayAsOfIso ? ` · ${overlay.topDebug.replayAsOfIso}` : ''}
-                </span>
-              </div>
-              <div
-                style={{
-                  marginTop: 6,
-                  padding: '6px 8px',
-                  border: '1px solid rgba(247,147,26,0.25)',
-                  borderRadius: 8,
-                  background: 'rgba(7,9,13,0.62)',
-                  fontSize: 11,
-                  lineHeight: 1.35,
-                  color: 'rgba(255,236,208,0.92)'
-                }}
-              >
-                <div>Top gainer: {overlay.topDebug.topGainer.symbol} {fmtSignedPct(overlay.topDebug.topGainer.pct)}</div>
-                <div>Top loser: {overlay.topDebug.topLoser.symbol} {fmtSignedPct(overlay.topDebug.topLoser.pct)}</div>
-                <div>Top volume: {overlay.topDebug.topVolume.symbol} {fmtUsdCompact(overlay.topDebug.topVolume.quoteVolume)}</div>
-              </div>
-              <div className="minimal-viz__row">
-                <span>Top+</span>
-                <span>
-                  {overlay.topDebug.topGainer.symbol} {fmtSignedPct(overlay.topDebug.topGainer.pct)}
-                </span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>Top-</span>
-                <span>
-                  {overlay.topDebug.topLoser.symbol} {fmtSignedPct(overlay.topDebug.topLoser.pct)}
-                </span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>Top Vol</span>
-                <span>
-                  {overlay.topDebug.topVolume.symbol} {fmtUsdCompact(overlay.topDebug.topVolume.quoteVolume)}
-                </span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>Error</span>
-                <span>{fmtTopCoinsError(overlay.topDebug.lastError)}</span>
-              </div>
-            </>
-          ) : null}
-          {latestHeightDebug ? (
-            <>
-              <div className="minimal-viz__row">
-                <span>USD</span>
-                <span>{fmtUsdCompact(latestHeightDebug.usdNotional)}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>USD Src</span>
-                <span>{latestHeightDebug.usdSource}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>logUSD</span>
-                <span>{fmtFixed(latestHeightDebug.logUsd, 2)}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>AnchorU</span>
-                <span>{fmtFixed(latestHeightDebug.anchorU, 2)}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>UsdZ</span>
-                <span>{fmtFixed(latestHeightDebug.zUsd, 2)}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>UsdDist</span>
-                <span>{fmtFixed(latestHeightDebug.scoreUsdDist, 2)}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>ScoreUSD</span>
-                <span>{fmtFixed(latestHeightDebug.scoreUsd, 2)}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>Score</span>
-                <span>{fmtFixed(latestHeightDebug.score, 2)}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>Height</span>
-                <span>{fmtFixed(latestHeightDebug.height, 1)}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>Hero</span>
-                <span>{latestHeightDebug.isHero ? latestHeightDebug.heroMode : 'no'}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>HeroMult</span>
-                <span>{fmtFixed(latestHeightDebug.heroMult, 2)}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>BaseW</span>
-                <span>{fmtFixed(latestHeightDebug.baseW, 2)}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>BaseD</span>
-                <span>{fmtFixed(latestHeightDebug.baseD, 2)}</span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>EMA logU</span>
-                <span>
-                  {fmtFixed(latestHeightDebug.meanLogUsd, 2)}/{fmtFixed(latestHeightDebug.stdLogUsd, 2)}
-                </span>
-              </div>
-              <div className="minimal-viz__row">
-                <span>EMA I</span>
-                <span>
-                  {fmtFixed(latestHeightDebug.meanI, 2)}/{fmtFixed(latestHeightDebug.stdI, 2)}
-                </span>
-              </div>
-            </>
-          ) : null}
+          )}
         </div>
       </div>
     </div>

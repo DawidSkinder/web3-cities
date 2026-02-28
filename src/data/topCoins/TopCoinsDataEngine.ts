@@ -45,8 +45,8 @@ function parsePollMs(raw: unknown, minMs: number, fallbackMs: number) {
 
 function parseLimit(raw: unknown) {
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return 200;
-  return Math.max(1, Math.min(200, Math.floor(parsed)));
+  if (!Number.isFinite(parsed)) return 150;
+  return Math.max(1, Math.min(150, Math.floor(parsed)));
 }
 
 function topBy<T>(items: T[], getValue: (item: T) => number) {
@@ -296,6 +296,17 @@ export class TopCoinsDataEngine {
 
   private buildEmptySnapshot(lastError: string, fetchedAt: number): TopCoinsSnapshotSeed {
     const nextUpdateAt = fetchedAt + this.pollMs;
+    const cachedItems = this.lastGoodPayload?.coins ?? [];
+    const topGainer = topBy(cachedItems, (item) => item.priceChangePercent) ?? cachedItems[0] ?? null;
+    const topLoser = topBy(cachedItems, (item) => -item.priceChangePercent) ?? cachedItems[0] ?? null;
+    const topVolume = topBy(cachedItems, (item) => item.quoteVolume) ?? cachedItems[0] ?? null;
+    let positive = 0;
+    let negative = 0;
+    for (const item of cachedItems) {
+      if (item.priceChangePercent > 0) positive += 1;
+      if (item.priceChangePercent < 0) negative += 1;
+    }
+    const breadthBase = Math.max(cachedItems.length, 1);
     return {
       kind: 'top-coins-snapshot',
       asOf: this.lastAsOf,
@@ -303,18 +314,27 @@ export class TopCoinsDataEngine {
       hash: this.lastSeenHash,
       hashChanged: false,
       ttlMs: this.pollMs,
-      items: this.lastGoodPayload?.coins ?? [],
+      items: cachedItems,
       stats: {
-        topGainer: { symbol: 'N/A', pct: 0 },
-        topLoser: { symbol: 'N/A', pct: 0 },
-        topVolume: { symbol: 'N/A', quoteVolume: 0 },
+        topGainer: {
+          symbol: topGainer?.symbol ?? 'N/A',
+          pct: topGainer?.priceChangePercent ?? 0
+        },
+        topLoser: {
+          symbol: topLoser?.symbol ?? 'N/A',
+          pct: topLoser?.priceChangePercent ?? 0
+        },
+        topVolume: {
+          symbol: topVolume?.symbol ?? 'N/A',
+          quoteVolume: topVolume?.quoteVolume ?? 0
+        },
         sessionMaxQuoteVolume: this.sessionMaxQuoteVolume,
         sessionMaxAbsPct: this.sessionMaxAbsPct,
         marketBreadth: {
-          positive: 0,
-          negative: 0
+          positive,
+          negative
         },
-        breadth: 0
+        breadth: (positive - negative) / breadthBase
       },
       debug: {
         symbols: this.lastGoodPayload?.coins.length ?? 0,

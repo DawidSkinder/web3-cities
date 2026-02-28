@@ -20,7 +20,7 @@ const BINANCE_BASE_CANDIDATES = [
   .filter(Boolean);
 
 const QUOTE_ASSET = 'USDT';
-const LIMIT = 200;
+const LIMIT = 150;
 const INTERVAL_SEC = 60;
 const LOGO_CONCURRENCY = 8;
 const LEVERAGED_TOKEN_SUFFIX = /(UP|DOWN|BULL|BEAR)$/;
