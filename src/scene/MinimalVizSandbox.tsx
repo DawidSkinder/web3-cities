@@ -3638,32 +3638,16 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         }
       }
 
-      const maxRadius = Math.max(
-        layout.cityRadius,
-        ...selected.items
-          .map((item) => states.get(item.symbol))
-          .filter((state): state is TopCoinSymbolState => Boolean(state))
-          .map((state) => {
-            const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.baseTarget, 0, 1));
-            const baseScale = topCoinBaseScale({
-              pct: state.pctTarget,
-              rank: state.rank,
-              sizeScore: state.baseTarget,
-              isTopGainer: state.isTopGainer,
-              isTopLoser: state.isTopLoser,
-              isTopVolume: state.isTopVolume
-            });
-            const radius = 0.5 * Math.hypot(shape.baseW * baseScale, shape.baseD * baseScale);
-            return Math.hypot(state.xTarget, state.zTarget) + radius * 3.6;
-          })
-      );
-      const maxHeight = Math.max(
-        24,
-        ...selected.items
-          .map((item) => states.get(item.symbol))
-          .filter((state): state is TopCoinSymbolState => Boolean(state))
-          .map((state) => state.heightTarget + 4.5)
-      );
+      // Keep Top Coins ground scaling aligned with BTC mode:
+      // derive bounds directly from active tower positions with a fixed margin.
+      let maxRadius = 18;
+      let maxHeight = 10;
+      for (let i = 0; i < activeStates.length; i++) {
+        const state = activeStates[i];
+        if (!state) continue;
+        maxRadius = Math.max(maxRadius, Math.hypot(state.xTarget, state.zTarget) + 8);
+        maxHeight = Math.max(maxHeight, state.heightTarget + 2.5);
+      }
       boundsRef.current = { radius: maxRadius, maxY: maxHeight };
 
       const parkTowerTargets: TopCoinsParkTower[] = [];
