@@ -432,16 +432,20 @@ const TOP_COINS_UNIVERSE_LIMIT = 150;
 const TOP_COINS_DISC_GAINERS = 50;
 const TOP_COINS_QUOTE_ASSET = 'USDT';
 const TOP_COINS_CHANGE_TF_LABEL = '24h';
-const TOP_INTRO_BOOT_MS = 1500;
-const TOP_INTRO_WAVE_A_START_MS = 1500;
-const TOP_INTRO_WAVE_B_START_MS = 4300;
-const TOP_INTRO_WAVE_C_START_MS = 7000;
-const TOP_INTRO_LIFE_START_MS = 10_200;
-const TOP_INTRO_TOTAL_MS = 13_200;
-const TOP_INTRO_CAMERA_BEAT_MS = 8_500;
+const TOP_INTRO_BOOT_MS = 2100;
+const TOP_INTRO_WAVE_A_START_MS = 2100;
+const TOP_INTRO_WAVE_B_START_MS = 6400;
+const TOP_INTRO_WAVE_C_START_MS = 11_100;
+const TOP_INTRO_LIFE_START_MS = 15_800;
+const TOP_INTRO_TOTAL_MS = 19_600;
+const TOP_INTRO_CAMERA_BEAT_MS = 10_500;
 const TOP_UPDATE_THRESHOLD_PCT = 0.1;
 const TOP_UPDATE_THRESHOLD_VOLUME = 0.05;
 const TOP_REPLAY_SCRUB_MS = 1200;
+const TOP_UPDATE_WAVE_MIN_DELAY_MS = 26;
+const TOP_UPDATE_WAVE_MAX_DELAY_MS = 88;
+const TOP_UPDATE_WAVE_LEAD_MS = 120;
+const TOP_UPDATE_WAVE_TAIL_MS = 2200;
 
 const ENABLE_SPECTACLE_LAYER = true;
 const ENABLE_MARKET_PULSE = true;
@@ -2303,6 +2307,7 @@ type TopCoinSymbolState = {
   logoPath: string | null;
   isDiscPriority: boolean;
   discRevealAt: number;
+  updateStartAt: number;
   discOcclusion: number;
   sparkUntilMs: number;
 };
@@ -3029,6 +3034,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
   const moodTargetRef = useRef(0.5);
   const volatilityRef = useRef(0.25);
   const clutterRef = useRef(0.1);
+  const updateWaveUntilRef = useRef(0);
+  const updateWaveLoadRef = useRef(0);
   const historyRef = useRef<TopCoinsSnapshot[]>([]);
   const liveSnapshotRef = useRef<TopCoinsSnapshot | null>(null);
   const lastAppliedKeyRef = useRef('');
@@ -3303,12 +3310,18 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     const isIntroApply = introRef.current.active && states.size === 0 && !replayEnabled;
     const introDelayByRank = (rank: number) => {
       if (!isIntroApply) return 0;
-      if (rank <= 20) return TOP_INTRO_WAVE_A_START_MS + (rank - 1) * 86;
-      if (rank <= 80) return TOP_INTRO_WAVE_B_START_MS + (rank - 21) * 52;
-      return TOP_INTRO_WAVE_C_START_MS + (rank - 81) * 30;
+      if (rank <= 20) return TOP_INTRO_WAVE_A_START_MS + (rank - 1) * 120;
+      if (rank <= 80) return TOP_INTRO_WAVE_B_START_MS + (rank - 21) * 76;
+      return TOP_INTRO_WAVE_C_START_MS + (rank - 81) * 46;
     };
 
     if (!metadataOnly) {
+      const changedBudget = Math.max(1, selected.debug.changedCount || selected.items.length);
+      const perTowerDelayMs = replayEnabled
+        ? 0
+        : MathUtils.clamp(7_500 / changedBudget, TOP_UPDATE_WAVE_MIN_DELAY_MS, TOP_UPDATE_WAVE_MAX_DELAY_MS);
+      let stagedOrdinal = 0;
+
       for (let i = 0; i < selected.items.length; i++) {
         const item = selected.items[i];
         if (!item) continue;
@@ -3379,6 +3392,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
             logoPath: item.logoPath ?? null,
             isDiscPriority,
             discRevealAt,
+            updateStartAt: emittedAt,
             discOcclusion: 0,
             sparkUntilMs: 0
           });
@@ -3407,6 +3421,12 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
           pushShockwave(prev.x, prev.z, item.priceChangePercent >= 0 ? '#f9b563' : '#7aa6d9', 1100, 13, 0.25);
         }
 
+        let updateStartAt = nowMs;
+        if (!replayEnabled && selected.hashChanged && meaningful) {
+          updateStartAt = nowMs + TOP_UPDATE_WAVE_LEAD_MS + stagedOrdinal * perTowerDelayMs;
+          stagedOrdinal += 1;
+        }
+
         const blend = replayEnabled ? 1 : meaningful ? 0.56 : 0.18;
         prev.baseAsset = item.base;
         prev.quoteAsset = item.quote;
@@ -3427,6 +3447,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         prev.isTopVolume = isTopVolume;
         prev.logoPath = item.logoPath ?? null;
         prev.isDiscPriority = isDiscPriority;
+        prev.updateStartAt = updateStartAt;
       }
 
       for (const [symbol, state] of states) {
@@ -3434,6 +3455,13 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         state.active = false;
         state.opacityTarget = 0;
         state.rank = 999;
+        state.updateStartAt = nowMs;
+      }
+
+      if (!replayEnabled && selected.hashChanged) {
+        const stagedWindowMs =
+          TOP_UPDATE_WAVE_LEAD_MS + Math.max(0, stagedOrdinal - 1) * perTowerDelayMs + TOP_UPDATE_WAVE_TAIL_MS;
+        updateWaveUntilRef.current = nowMs + stagedWindowMs;
       }
 
       if (!replayEnabled && selected.hashChanged) {
@@ -3795,11 +3823,19 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       const dt = Math.max(0.001, (now - prevTime) / 1000);
       prevTime = now;
       let dirty = false;
+      const nowMs = Date.now();
 
       moodRef.current = easeTowards(moodRef.current, moodTargetRef.current, 2.8, dt);
+      const waveLeftMs = Math.max(0, updateWaveUntilRef.current - nowMs);
+      const waveLoadTarget = waveLeftMs > 0 ? MathUtils.clamp(0.35 + (waveLeftMs / 10_000) * 0.65, 0, 1) : 0;
+      const nextWaveLoad = easeTowards(updateWaveLoadRef.current, waveLoadTarget, 4.5, dt);
+      if (Math.abs(nextWaveLoad - updateWaveLoadRef.current) > 0.001) {
+        updateWaveLoadRef.current = nextWaveLoad;
+        dirty = true;
+      }
 
       if (introRef.current.active) {
-        const elapsed = Date.now() - introRef.current.startedAtMs;
+        const elapsed = nowMs - introRef.current.startedAtMs;
         const bootAlpha = MathUtils.clamp(elapsed / TOP_INTRO_BOOT_MS, 0, 1);
         const lifeAlpha = MathUtils.clamp((elapsed - TOP_INTRO_LIFE_START_MS) / 1600, 0, 1);
         const progress = MathUtils.clamp(elapsed / TOP_INTRO_TOTAL_MS, 0, 1);
@@ -3818,7 +3854,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
           introRef.current.bootAlpha = 1;
           introRef.current.lifeAlpha = 1;
           introRef.current.progress = 1;
-          introRef.current.storyBeatUntilMs = Date.now() + TOP_INTRO_CAMERA_BEAT_MS;
+          introRef.current.storyBeatUntilMs = nowMs + TOP_INTRO_CAMERA_BEAT_MS;
           dirty = true;
         }
       }
@@ -3834,17 +3870,20 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         const prevPrice = state.lastPrice;
         const prevGlow = state.glowStrength;
         const prevOpacity = state.opacity;
+        const canStart = nowMs >= (state.updateStartAt || 0);
 
-        const smoothAlpha = Number.isFinite(state.smoothAlpha) ? state.smoothAlpha : 3.8;
-        state.x = easeTowards(state.x, state.xTarget, Math.min(2.3, smoothAlpha * 0.55), dt);
-        state.z = easeTowards(state.z, state.zTarget, Math.min(2.3, smoothAlpha * 0.55), dt);
-        state.height = easeTowards(state.height, state.heightTarget, 1.85, dt);
-        state.base = easeTowards(state.base, state.baseTarget, 1.78, dt);
-        state.pct = easeTowards(state.pct, state.pctTarget, 1.7, dt);
-        state.quoteVolume = easeTowards(state.quoteVolume, state.quoteVolumeTarget, 1.62, dt);
-        state.lastPrice = easeTowards(state.lastPrice, state.lastPriceTarget, 1.62, dt);
-        state.glowStrength = easeTowards(state.glowStrength, state.glowStrengthTarget, 1.86, dt);
-        state.opacity = easeTowards(state.opacity, state.opacityTarget, 2.4, dt);
+        if (canStart) {
+          const smoothAlpha = Number.isFinite(state.smoothAlpha) ? state.smoothAlpha : 3.8;
+          state.x = easeTowards(state.x, state.xTarget, Math.min(2.3, smoothAlpha * 0.55), dt);
+          state.z = easeTowards(state.z, state.zTarget, Math.min(2.3, smoothAlpha * 0.55), dt);
+          state.height = easeTowards(state.height, state.heightTarget, 1.85, dt);
+          state.base = easeTowards(state.base, state.baseTarget, 1.78, dt);
+          state.pct = easeTowards(state.pct, state.pctTarget, 1.7, dt);
+          state.quoteVolume = easeTowards(state.quoteVolume, state.quoteVolumeTarget, 1.62, dt);
+          state.lastPrice = easeTowards(state.lastPrice, state.lastPriceTarget, 1.62, dt);
+          state.glowStrength = easeTowards(state.glowStrength, state.glowStrengthTarget, 1.86, dt);
+          state.opacity = easeTowards(state.opacity, state.opacityTarget, 2.4, dt);
+        }
 
         if (state.opacityTarget <= 0.001 && state.opacity < 0.02) {
           statesRef.current.delete(symbol);
@@ -4048,7 +4087,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       introProgress: introRef.current.progress,
       introActive: introRef.current.active,
       storyBeatUntilMs: introRef.current.storyBeatUntilMs,
-      clutter: clutterRef.current
+      clutter: MathUtils.clamp(clutterRef.current + updateWaveLoadRef.current * 0.42, 0, 1),
+      transitionLoad: updateWaveLoadRef.current
     }
   };
 }
@@ -4959,8 +4999,6 @@ function TopCoinLogoDisc({
     const g = groupRef.current;
     if (!g) return;
     const t = clock.getElapsedTime() + tower.sequence * 0.015;
-    // Keep bobbing positive-only so discs never dip into rooftops.
-    const bob = (Math.sin(t * 1.14) * 0.5 + 0.5) * 0.16;
     g.quaternion.copy(camera.quaternion);
     const isForceVisible = isHovered || isSelected;
     const camDist = camera.position.length();
@@ -4981,7 +5019,7 @@ function TopCoinLogoDisc({
       topCoinDiscScreenRegistry.delete(tower.sequence);
     }
 
-    g.position.set(0, tower.height + 2.7 + bob, 0);
+    g.position.set(0, tower.height + 2.7, 0);
     g.getWorldPosition(worldPosRef.current);
     const distance = camera.position.distanceTo(worldPosRef.current);
     const baseScale = MathUtils.clamp(1.16 + distance * 0.0104, 1.35, 4.35);
@@ -4993,7 +5031,7 @@ function TopCoinLogoDisc({
     const minReadableScale = worldPerPx * 42;
     scale = Math.max(scale, minReadableScale);
     const clearance = MathUtils.clamp(1.2 + tower.height * 0.12 + scale * 0.1, 1.6, 5.6);
-    g.position.set(0, tower.height + clearance + bob, 0);
+    g.position.set(0, tower.height + clearance, 0);
     g.scale.set(scale, scale, scale);
     if (ringRef.current) ringRef.current.rotation.z = t * 0.58;
     if (bodyRef.current) bodyRef.current.rotation.z = -t * 0.14;
@@ -5380,6 +5418,7 @@ function AnimatedHoloTower({
     introActive: boolean;
     storyBeatUntilMs: number;
     clutter: number;
+    transitionLoad: number;
   };
 }) {
   const groupRef = useRef<Group>(null);
@@ -7971,6 +8010,7 @@ function SandboxScene({
     introActive: boolean;
     storyBeatUntilMs: number;
     clutter: number;
+    transitionLoad: number;
   };
   hoveredTowerSequence: number | null;
   selectedTowerSequence: number | null;
@@ -7986,7 +8026,8 @@ function SandboxScene({
     introProgress: 1,
     introActive: false,
     storyBeatUntilMs: 0,
-    clutter: 0
+    clutter: 0,
+    transitionLoad: 0
   };
   const hoveredTower = useMemo(
     () => (hoveredTowerSequence == null ? null : towers.find((tower) => tower.sequence === hoveredTowerSequence) ?? null),
@@ -8022,6 +8063,37 @@ function SandboxScene({
     [hoveredTower, selectedTower]
   );
   const focusMode = hoveredTowerSequence != null;
+  const introInfraAlpha = topFx ? smoothstep01(remapClamped(fx.introProgress, 0.62, 0.92)) : 1;
+  const transitionLoad = MathUtils.clamp(fx.transitionLoad ?? 0, 0, 1);
+  const heavySuppression = MathUtils.clamp(Math.max(1 - introInfraAlpha, transitionLoad), 0, 1);
+  const sampleByRatio = <T,>(source: T[], ratio: number) => {
+    const safeRatio = MathUtils.clamp(ratio, 0, 1);
+    if (safeRatio >= 0.999 || source.length <= 2) return source;
+    if (safeRatio <= 0.001) return [] as T[];
+    const count = Math.max(1, Math.floor(source.length * safeRatio));
+    if (count >= source.length) return source;
+    const stride = source.length / count;
+    const out: T[] = [];
+    for (let i = 0; i < count; i++) {
+      const idx = Math.min(source.length - 1, Math.floor(i * stride));
+      const item = source[idx];
+      if (item) out.push(item);
+    }
+    return out;
+  };
+  const tracesRender = useMemo(() => {
+    const keep = MathUtils.clamp(1 - heavySuppression * 0.72, 0.24, 1);
+    return sampleByRatio(traces, keep);
+  }, [heavySuppression, traces]);
+  const arterialTracesRender = useMemo(() => {
+    const keep = MathUtils.clamp(1 - heavySuppression * 0.64, 0.28, 1);
+    return sampleByRatio(arterialTraces, keep);
+  }, [arterialTraces, heavySuppression]);
+  const trafficRender = useMemo(() => {
+    const keep = MathUtils.clamp(1 - heavySuppression * 0.85, 0.06, 1);
+    return sampleByRatio(trafficParticles, keep);
+  }, [heavySuppression, trafficParticles]);
+  const showParksLayer = !topFx || introInfraAlpha >= 0.7;
   const hoverStableRef = useRef<number | null>(hoveredTowerSequence);
   const hoverIntentRef = useRef<number | null>(hoveredTowerSequence);
   const hoverCandidateRef = useRef<number | null>(null);
@@ -8142,17 +8214,23 @@ function SandboxScene({
       <CircuitBoardGround bounds={bounds} focusMode={focusMode} marketPulse={marketMoodTarget} introBootAlpha={fx.introBootAlpha} />
       <DistrictBoundariesLayer districts={districts} focusMode={focusMode} />
       <ShockwaveLayer shockwaves={shockwaves} focusMode={focusMode} />
-      <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} />
-      <TraceStrips traces={traces} focusMode={focusMode} marketPulse={marketMoodTarget} introLifeAlpha={fx.introLifeAlpha} clutter={fx.clutter} />
+      {showParksLayer ? <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} /> : null}
       <TraceStrips
-        traces={arterialTraces}
+        traces={tracesRender}
+        focusMode={focusMode}
+        marketPulse={marketMoodTarget}
+        introLifeAlpha={fx.introLifeAlpha}
+        clutter={fx.clutter}
+      />
+      <TraceStrips
+        traces={arterialTracesRender}
         focusMode={focusMode}
         marketPulse={marketMoodTarget}
         arterial
         introLifeAlpha={fx.introLifeAlpha}
         clutter={fx.clutter}
       />
-      <TrafficParticles particles={trafficParticles} focusMode={focusMode} introLifeAlpha={fx.introLifeAlpha} clutter={fx.clutter} />
+      <TrafficParticles particles={trafficRender} focusMode={focusMode} introLifeAlpha={fx.introLifeAlpha} clutter={fx.clutter} />
       <HoverProjectionTracker tower={hoveredTower} onHudUpdate={onHoverHudUpdate} />
 
       {/* Render band 6: tower bodies and holo layers remain the top visual anchors */}
