@@ -4960,7 +4960,8 @@ function TopCoinLogoDisc({
   focusAnchorX = 0,
   focusAnchorZ = 0,
   introLifeAlpha = 1,
-  clutter = 0
+  clutter = 0,
+  transitionLoad = 0
 }: {
   tower: TowerDatum;
   focusMode: boolean;
@@ -4970,6 +4971,7 @@ function TopCoinLogoDisc({
   focusAnchorZ?: number;
   introLifeAlpha?: number;
   clutter?: number;
+  transitionLoad?: number;
 }) {
   const { camera, gl, size } = useThree();
   const groupRef = useRef<Group>(null);
@@ -5012,7 +5014,8 @@ function TopCoinLogoDisc({
     const priorityAlpha = isForceVisible ? 1 : isPriority ? 1 : contextualAlpha;
     const introDelay = tower.discRevealAt && tower.discRevealAt > 0 ? MathUtils.clamp((Date.now() - tower.discRevealAt) / 900, 0, 1) : 1;
     const introFade = MathUtils.clamp(introLifeAlpha, 0, 1) * introDelay;
-    const baseLodAlpha = MathUtils.clamp(priorityAlpha * introFade, 0, 1);
+    const transitionVisibility = 1 - smoothstep01(remapClamped(transitionLoad, 0.05, 0.22));
+    const baseLodAlpha = MathUtils.clamp(priorityAlpha * introFade * transitionVisibility, 0, 1);
 
     // Keep very-low-priority discs nearly free in far/default views.
     if (!isForceVisible && baseLodAlpha < 0.01 && !isPriority) {
@@ -6000,6 +6003,7 @@ function AnimatedHoloTower({
           focusAnchorZ={discFocusAnchorZ}
           introLifeAlpha={topFx?.introLifeAlpha ?? 1}
           clutter={topFx?.clutter ?? 0}
+          transitionLoad={topFx?.transitionLoad ?? 0}
         />
       ) : null}
       {isTallest && tower.mode !== 'top200' ? <TallestBtcDecals tower={tower} focusMode={focusMode} isHovered={isHovered} /> : null}
@@ -8065,7 +8069,8 @@ function SandboxScene({
   const focusMode = hoveredTowerSequence != null;
   const introInfraAlpha = topFx ? smoothstep01(remapClamped(fx.introProgress, 0.62, 0.92)) : 1;
   const transitionLoad = MathUtils.clamp(fx.transitionLoad ?? 0, 0, 1);
-  const heavySuppression = MathUtils.clamp(Math.max(1 - introInfraAlpha, transitionLoad), 0, 1);
+  const introSuppression = MathUtils.clamp(1 - introInfraAlpha, 0, 1);
+  const transitionHideNetwork = transitionLoad > 0.08;
   const sampleByRatio = <T,>(source: T[], ratio: number) => {
     const safeRatio = MathUtils.clamp(ratio, 0, 1);
     if (safeRatio >= 0.999 || source.length <= 2) return source;
@@ -8082,17 +8087,20 @@ function SandboxScene({
     return out;
   };
   const tracesRender = useMemo(() => {
-    const keep = MathUtils.clamp(1 - heavySuppression * 0.72, 0.24, 1);
+    if (transitionHideNetwork) return [] as TraceDatum[];
+    const keep = MathUtils.clamp(1 - introSuppression * 0.72, 0.24, 1);
     return sampleByRatio(traces, keep);
-  }, [heavySuppression, traces]);
+  }, [introSuppression, traces, transitionHideNetwork]);
   const arterialTracesRender = useMemo(() => {
-    const keep = MathUtils.clamp(1 - heavySuppression * 0.64, 0.28, 1);
+    if (transitionHideNetwork) return [] as TraceDatum[];
+    const keep = MathUtils.clamp(1 - introSuppression * 0.72, 0.24, 1);
     return sampleByRatio(arterialTraces, keep);
-  }, [arterialTraces, heavySuppression]);
+  }, [arterialTraces, introSuppression, transitionHideNetwork]);
   const trafficRender = useMemo(() => {
-    const keep = MathUtils.clamp(1 - heavySuppression * 0.85, 0.06, 1);
+    if (transitionHideNetwork) return [] as TrafficParticleDatum[];
+    const keep = MathUtils.clamp(1 - introSuppression * 0.72, 0.24, 1);
     return sampleByRatio(trafficParticles, keep);
-  }, [heavySuppression, trafficParticles]);
+  }, [introSuppression, trafficParticles, transitionHideNetwork]);
   const showParksLayer = !topFx || introInfraAlpha >= 0.7;
   const hoverStableRef = useRef<number | null>(hoveredTowerSequence);
   const hoverIntentRef = useRef<number | null>(hoveredTowerSequence);
