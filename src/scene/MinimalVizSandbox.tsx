@@ -2315,7 +2315,7 @@ const TOP_COINS_DISTRICT_TINTS = [
   '#c9b29f',
   '#bda89f'
 ];
-const TOP_LAYOUT_PADDING = 4;
+const TOP_LAYOUT_PADDING = 5;
 const TOP_LAYOUT_INITIAL_ITERS = 64;
 const TOP_LAYOUT_REFRESH_ITERS = 20;
 const TOP_LAYOUT_INNER_RADIUS = 8;
@@ -2472,7 +2472,7 @@ function buildTopCoinsLayoutTargets({
   }
 
   const maxNominalRadius = nodes.reduce((acc, node) => Math.max(acc, Math.hypot(node.homeX, node.homeZ) + node.radius), 0);
-  let cityRadius = Math.max(86, maxNominalRadius + 35 + Math.sqrt(Math.max(1, nodes.length)) * 0.8);
+  let cityRadius = Math.max(86, maxNominalRadius + 50 + Math.sqrt(Math.max(1, nodes.length)) * 0.8);
 
   const dispX = new Array(nodes.length).fill(0);
   const dispZ = new Array(nodes.length).fill(0);
