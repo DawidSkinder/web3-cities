@@ -2307,9 +2307,11 @@ type TopCoinSymbolState = {
   logoPath: string | null;
   isDiscPriority: boolean;
   discRevealAt: number;
+  discRevealDelayMs?: number;
   updateStartAt: number;
   discOcclusion: number;
   sparkUntilMs: number;
+  introDelayMs?: number;
 };
 
 const TOP_COINS_DISTRICT_COUNT = 5;
@@ -3043,7 +3045,9 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
   const introRef = useRef({
     hasRun: false,
     active: false,
+    startPending: false,
     startedAtMs: 0,
+    elapsedMs: 0,
     progress: 1,
     bootAlpha: 1,
     lifeAlpha: 1,
@@ -3219,9 +3223,11 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       }
       introRef.current.hasRun = false;
       introRef.current.active = false;
+      introRef.current.startPending = false;
       introRef.current.progress = 1;
       introRef.current.bootAlpha = 1;
       introRef.current.lifeAlpha = 1;
+      introRef.current.elapsedMs = 0;
       introRef.current.storyBeatUntilMs = 0;
       return;
     }
@@ -3300,7 +3306,9 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     if (!replayEnabled && selected.hashChanged && !introRef.current.hasRun) {
       introRef.current.hasRun = true;
       introRef.current.active = true;
-      introRef.current.startedAtMs = nowMs;
+      introRef.current.startPending = true;
+      introRef.current.startedAtMs = 0;
+      introRef.current.elapsedMs = 0;
       introRef.current.progress = 0;
       introRef.current.bootAlpha = 0;
       introRef.current.lifeAlpha = 0;
@@ -3353,8 +3361,9 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
 
         if (!prev) {
           const delay = introDelayByRank(rank);
-          const emittedAt = nowMs + delay;
-          const discRevealAt = nowMs + (isIntroApply ? TOP_INTRO_LIFE_START_MS + rank * 18 : 220 + rank * 5);
+          const emittedAt = isIntroApply ? Number.POSITIVE_INFINITY : nowMs;
+          const discRevealAt = isIntroApply ? Number.POSITIVE_INFINITY : nowMs + (220 + rank * 5);
+          const discRevealDelayMs = isIntroApply ? TOP_INTRO_LIFE_START_MS + rank * 18 : undefined;
           changedTowers += 1;
           heightDeltaSum += nextHeight;
           baseDeltaSum += nextBase;
@@ -3392,9 +3401,11 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
             logoPath: item.logoPath ?? null,
             isDiscPriority,
             discRevealAt,
-            updateStartAt: emittedAt,
+            discRevealDelayMs,
+            updateStartAt: nowMs,
             discOcclusion: 0,
-            sparkUntilMs: 0
+            sparkUntilMs: 0,
+            introDelayMs: isIntroApply ? delay : undefined
           });
           continue;
         }
@@ -3820,7 +3831,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
 
     const tick = (now: number) => {
       if (!mounted) return;
-      const dt = Math.max(0.001, (now - prevTime) / 1000);
+      const rawDtMs = Math.max(0, now - prevTime);
+      const dt = Math.max(0.001, rawDtMs / 1000);
       prevTime = now;
       let dirty = false;
       const nowMs = Date.now();
@@ -3834,8 +3846,27 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         dirty = true;
       }
 
+      if (introRef.current.active && introRef.current.startPending) {
+        introRef.current.startPending = false;
+        introRef.current.startedAtMs = nowMs;
+        introRef.current.elapsedMs = 0;
+        for (const state of statesRef.current.values()) {
+          if (state.introDelayMs != null) {
+            state.emittedAt = nowMs + state.introDelayMs;
+            state.introDelayMs = undefined;
+          }
+          if (state.discRevealDelayMs != null) {
+            state.discRevealAt = nowMs + state.discRevealDelayMs;
+            state.discRevealDelayMs = undefined;
+          }
+        }
+        dirty = true;
+      }
+
       if (introRef.current.active) {
-        const elapsed = nowMs - introRef.current.startedAtMs;
+        const introDtMs = Math.min(rawDtMs, 50);
+        introRef.current.elapsedMs += introDtMs;
+        const elapsed = introRef.current.elapsedMs;
         const bootAlpha = MathUtils.clamp(elapsed / TOP_INTRO_BOOT_MS, 0, 1);
         const lifeAlpha = MathUtils.clamp((elapsed - TOP_INTRO_LIFE_START_MS) / 1600, 0, 1);
         const progress = MathUtils.clamp(elapsed / TOP_INTRO_TOTAL_MS, 0, 1);
@@ -3851,9 +3882,11 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         }
         if (elapsed >= TOP_INTRO_TOTAL_MS) {
           introRef.current.active = false;
+          introRef.current.startPending = false;
           introRef.current.bootAlpha = 1;
           introRef.current.lifeAlpha = 1;
           introRef.current.progress = 1;
+          introRef.current.elapsedMs = TOP_INTRO_TOTAL_MS;
           introRef.current.storyBeatUntilMs = nowMs + TOP_INTRO_CAMERA_BEAT_MS;
           dirty = true;
         }
@@ -6540,11 +6573,13 @@ function CircuitBoardGround({
 function ParksLayer({
   parks,
   trees,
-  focusMode = false
+  focusMode = false,
+  showFireflies = true
 }: {
   parks: ParkDatum[];
   trees: ParkTreeDatum[];
   focusMode?: boolean;
+  showFireflies?: boolean;
 }) {
   const patchRefs = useRef<Array<Mesh | null>>([]);
   const pathRefs = useRef<Array<Mesh | null>>([]);
@@ -6600,7 +6635,7 @@ function ParksLayer({
     const crownWire = crownWireRef.current;
     const crownGlow = crownGlowRef.current;
     const firefly = fireflyRef.current;
-    if (!trunk || !crown || !trunkWire || !crownWire || !crownGlow || !firefly) return;
+    if (!trunk || !crown || !trunkWire || !crownWire || !crownGlow) return;
 
     const count = Math.min(trees.length, Math.max(1, trunk.instanceMatrix.count));
     trunk.count = count;
@@ -6608,7 +6643,11 @@ function ParksLayer({
     trunkWire.count = count;
     crownWire.count = count;
     crownGlow.count = count;
-    firefly.count = Math.max(1, Math.min(fireflySources.length, Math.max(1, firefly.instanceMatrix.count)));
+    if (firefly) {
+      firefly.count = showFireflies
+        ? Math.max(1, Math.min(fireflySources.length, Math.max(1, firefly.instanceMatrix.count)))
+        : 0;
+    }
     const matrix = matrixRef.current;
     const pos = posRef.current;
     const scl = sclRef.current;
@@ -6644,7 +6683,7 @@ function ParksLayer({
       crownGlow.setMatrixAt(i, matrix);
       crownGlow.setColorAt(i, crownColor.set('#ffd7a0').lerp(new Color('#f7931a'), 0.25 + tree.tintMix * 0.35));
 
-      if (i < firefly.count) {
+      if (showFireflies && firefly && i < firefly.count) {
         const fireflyTree = trees[fireflySources[i] ?? i] ?? tree;
         const fx = fireflyTree.x + (hash01(i, 9021) - 0.5) * fireflyTree.crownR * 0.9;
         const fz = fireflyTree.z + (hash01(i, 9029) - 0.5) * fireflyTree.crownR * 0.9;
@@ -6663,12 +6702,12 @@ function ParksLayer({
     trunkWire.instanceMatrix.needsUpdate = true;
     crownWire.instanceMatrix.needsUpdate = true;
     crownGlow.instanceMatrix.needsUpdate = true;
-    firefly.instanceMatrix.needsUpdate = true;
+    if (firefly) firefly.instanceMatrix.needsUpdate = true;
     if (trunk.instanceColor) trunk.instanceColor.needsUpdate = true;
     if (crown.instanceColor) crown.instanceColor.needsUpdate = true;
     if (crownGlow.instanceColor) crownGlow.instanceColor.needsUpdate = true;
-    if (firefly.instanceColor) firefly.instanceColor.needsUpdate = true;
-  }, [fireflySources.length, trees.length]);
+    if (firefly?.instanceColor) firefly.instanceColor.needsUpdate = true;
+  }, [fireflySources.length, showFireflies, trees.length]);
 
   useFrame((_, delta) => {
     focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 7.5, delta);
@@ -6770,11 +6809,12 @@ function ParksLayer({
     const fireflyMat = fireflyRef.current?.material as { opacity?: number } | undefined;
     if (fireflyMat) {
       const base = RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.13 : 0.2;
-      fireflyMat.opacity = MathUtils.damp(fireflyMat.opacity ?? base, base * dimScale, 8.5, delta);
+      const targetOpacity = showFireflies ? base * dimScale : 0;
+      fireflyMat.opacity = MathUtils.damp(fireflyMat.opacity ?? base, targetOpacity, 8.5, delta);
     }
 
     const firefly = fireflyRef.current;
-    if (firefly && fireflySources.length > 0) {
+    if (showFireflies && firefly && fireflySources.length > 0) {
       const now = performance.now() * 0.001;
       const matrix = matrixRef.current;
       const pos = posRef.current;
@@ -6817,6 +6857,8 @@ function ParksLayer({
         firefly.setMatrixAt(i, matrix);
       }
       firefly.instanceMatrix.needsUpdate = true;
+    } else if (firefly) {
+      firefly.count = 0;
     }
   });
 
@@ -7085,21 +7127,23 @@ function ParksLayer({
           polygonOffsetUnits={-3}
         />
       </instancedMesh>
-      <instancedMesh ref={fireflyRef} args={[undefined, undefined, Math.max(1, trees.length)]} renderOrder={2.78} frustumCulled={false}>
-        <boxGeometry args={[1, 1, 1]} />
-        <meshBasicMaterial
-          vertexColors
-          transparent
-          opacity={0.24}
-          toneMapped={false}
-          depthTest
-          depthWrite={false}
-          blending={AdditiveBlending}
-          polygonOffset
-          polygonOffsetFactor={-1}
-          polygonOffsetUnits={-2}
-        />
-      </instancedMesh>
+      {showFireflies ? (
+        <instancedMesh ref={fireflyRef} args={[undefined, undefined, Math.max(1, trees.length)]} renderOrder={2.78} frustumCulled={false}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshBasicMaterial
+            vertexColors
+            transparent
+            opacity={0.24}
+            toneMapped={false}
+            depthTest
+            depthWrite={false}
+            blending={AdditiveBlending}
+            polygonOffset
+            polygonOffsetFactor={-1}
+            polygonOffsetUnits={-2}
+          />
+        </instancedMesh>
+      ) : null}
     </group>
   );
 }
@@ -7334,6 +7378,7 @@ function TrafficParticles({
   useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
+    const introGate = MathUtils.clamp(introLifeAlpha, 0, 1) > 0.01;
     focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 7.5, delta);
     const sizeScale = MathUtils.lerp(1.15, 1.95, visCurve);
     const body = bodyRef.current;
@@ -7344,7 +7389,7 @@ function TrafficParticles({
     const glow = glowRef.current;
     if (!body || !cabin || !bodyWire || !cabinWire || !light || !glow) return;
     const capacity = Math.max(1, body.instanceMatrix.count);
-    const instanceCount = Math.min(particles.length, capacity);
+    const instanceCount = introGate ? Math.min(particles.length, capacity) : 0;
     body.count = instanceCount;
     cabin.count = instanceCount;
     bodyWire.count = instanceCount;
@@ -8068,9 +8113,10 @@ function SandboxScene({
   );
   const focusMode = hoveredTowerSequence != null;
   const introInfraAlpha = topFx ? smoothstep01(remapClamped(fx.introProgress, 0.62, 0.92)) : 1;
+  const introNetworkAlpha = topFx ? smoothstep01(remapClamped(fx.introProgress, 0.86, 0.985)) : 1;
   const transitionLoad = MathUtils.clamp(fx.transitionLoad ?? 0, 0, 1);
   const introSuppression = MathUtils.clamp(1 - introInfraAlpha, 0, 1);
-  const transitionHideNetwork = transitionLoad > 0.08;
+  const transitionHideNetwork = transitionLoad > 0.08 || introNetworkAlpha <= 0.01;
   const sampleByRatio = <T,>(source: T[], ratio: number) => {
     const safeRatio = MathUtils.clamp(ratio, 0, 1);
     if (safeRatio >= 0.999 || source.length <= 2) return source;
@@ -8088,20 +8134,21 @@ function SandboxScene({
   };
   const tracesRender = useMemo(() => {
     if (transitionHideNetwork) return [] as TraceDatum[];
-    const keep = MathUtils.clamp(1 - introSuppression * 0.72, 0.24, 1);
+    const keep = MathUtils.clamp(introNetworkAlpha * (1 - introSuppression * 0.42), 0, 1);
     return sampleByRatio(traces, keep);
-  }, [introSuppression, traces, transitionHideNetwork]);
+  }, [introNetworkAlpha, introSuppression, traces, transitionHideNetwork]);
   const arterialTracesRender = useMemo(() => {
     if (transitionHideNetwork) return [] as TraceDatum[];
-    const keep = MathUtils.clamp(1 - introSuppression * 0.72, 0.24, 1);
+    const keep = MathUtils.clamp(introNetworkAlpha * (1 - introSuppression * 0.42), 0, 1);
     return sampleByRatio(arterialTraces, keep);
-  }, [arterialTraces, introSuppression, transitionHideNetwork]);
+  }, [arterialTraces, introNetworkAlpha, introSuppression, transitionHideNetwork]);
   const trafficRender = useMemo(() => {
     if (transitionHideNetwork) return [] as TrafficParticleDatum[];
-    const keep = MathUtils.clamp(1 - introSuppression * 0.72, 0.24, 1);
+    const keep = MathUtils.clamp(introNetworkAlpha * (1 - introSuppression * 0.42), 0, 1);
     return sampleByRatio(trafficParticles, keep);
-  }, [introSuppression, trafficParticles, transitionHideNetwork]);
-  const showParksLayer = !topFx || introInfraAlpha >= 0.7;
+  }, [introNetworkAlpha, introSuppression, trafficParticles, transitionHideNetwork]);
+  const showParksLayer = !topFx || introInfraAlpha >= 0.82;
+  const showParkFireflies = !topFx || (!fx.introActive && fx.introProgress >= 0.995);
   const hoverStableRef = useRef<number | null>(hoveredTowerSequence);
   const hoverIntentRef = useRef<number | null>(hoveredTowerSequence);
   const hoverCandidateRef = useRef<number | null>(null);
@@ -8222,7 +8269,7 @@ function SandboxScene({
       <CircuitBoardGround bounds={bounds} focusMode={focusMode} marketPulse={marketMoodTarget} introBootAlpha={fx.introBootAlpha} />
       <DistrictBoundariesLayer districts={districts} focusMode={focusMode} />
       <ShockwaveLayer shockwaves={shockwaves} focusMode={focusMode} />
-      {showParksLayer ? <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} /> : null}
+      {showParksLayer ? <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} showFireflies={showParkFireflies} /> : null}
       <TraceStrips
         traces={tracesRender}
         focusMode={focusMode}
