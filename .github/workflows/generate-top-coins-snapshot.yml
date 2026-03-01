@@ -1,8 +1,6 @@
 name: Generate Top Coins Snapshot
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch:
   repository_dispatch:
     types:
@@ -97,6 +95,7 @@ jobs:
           done
 
       - name: Queue next loop run
+        if: ${{ always() && !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
