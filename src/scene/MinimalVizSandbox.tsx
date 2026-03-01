@@ -2315,7 +2315,7 @@ const TOP_COINS_DISTRICT_TINTS = [
   '#c9b29f',
   '#bda89f'
 ];
-const TOP_LAYOUT_PADDING = 3.15;
+const TOP_LAYOUT_PADDING = 4;
 const TOP_LAYOUT_INITIAL_ITERS = 64;
 const TOP_LAYOUT_REFRESH_ITERS = 20;
 const TOP_LAYOUT_INNER_RADIUS = 8;
@@ -2472,7 +2472,7 @@ function buildTopCoinsLayoutTargets({
   }
 
   const maxNominalRadius = nodes.reduce((acc, node) => Math.max(acc, Math.hypot(node.homeX, node.homeZ) + node.radius), 0);
-  let cityRadius = Math.max(86, maxNominalRadius + 25 + Math.sqrt(Math.max(1, nodes.length)) * 0.8);
+  let cityRadius = Math.max(86, maxNominalRadius + 35 + Math.sqrt(Math.max(1, nodes.length)) * 0.8);
 
   const dispX = new Array(nodes.length).fill(0);
   const dispZ = new Array(nodes.length).fill(0);
@@ -3002,6 +3002,9 @@ function topCoinBaseScale({
   let scale = MathUtils.lerp(0.92, 1.9, gainBoost);
   scale *= MathUtils.lerp(1, 1.28, sizeBoost);
   scale *= MathUtils.lerp(1, 1.13, rankBoost);
+  // Keep small towers as-is; only medium/large towers get an extra base-width lift.
+  const mediumLargeWidthBoost = smoothstep01(remapClamped(sizeScore, 0.34, 0.92));
+  scale *= MathUtils.lerp(1, 1.34, mediumLargeWidthBoost);
 
   if (isTopGainer) scale *= 1.15;
   if (isTopVolume) scale *= 1.1;
@@ -3009,7 +3012,7 @@ function topCoinBaseScale({
   if (isTopLoser || pct < 0) {
     scale = Math.min(scale, 1.02);
   }
-  return MathUtils.clamp(scale, 0.85, 2.35);
+  return MathUtils.clamp(scale, 0.85, 2.65);
 }
 
 function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
