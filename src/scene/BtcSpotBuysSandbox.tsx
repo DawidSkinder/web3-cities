@@ -287,6 +287,7 @@ type AccumState = {
   tallestTowerHeight: number;
   lastTallestCeremonySequence: number | null;
   lastTallestCeremonyHeight: number;
+  lastTowerBirthAt: number;
   parksAttempted: number;
   parksPlaced: number;
   lastParkSkipReason: string;
@@ -320,6 +321,7 @@ const BIRTH_RISE_MS = 900;
 const BIRTH_GLOW_DELAY_MS = 150;
 const BIRTH_GLOW_RAMP_MS = 700;
 const BIRTH_OVERSHOOT = 1.18;
+const BTC_TOWER_BIRTH_PACE_MS = 3000;
 const GLOW_SHELL_SCALE = 1.022;
 const GLOW_EDGE_SCALE = 1.034;
 const GLOW_SHELL_OPACITY = 0.24;
@@ -452,8 +454,8 @@ const TOP_INTRO_TOTAL_MS = Math.max(
 const TOP_INTRO_CAMERA_BEAT_MS = scaleTopIntroMs(10_500);
 const TOP_INTRO_DISC_STAGGER_STEP_MS = scaleTopIntroMs(3);
 const TOP_INTRO_DISC_STAGGER_MAX_MS = scaleTopIntroMs(360);
-const BTC_GROUND_BOOT_MS = RUNTIME_QUALITY_CONFIG.reducedMotion ? 0 : 1300;
-const BTC_GROUND_BOOT_START_SCALE = 0.62;
+const BTC_GROUND_BOOT_MS = RUNTIME_QUALITY_CONFIG.reducedMotion ? 0 : 2400;
+const BTC_GROUND_BOOT_START_SCALE = 0.34;
 const TOP_UPDATE_THRESHOLD_PCT = 0.1;
 const TOP_UPDATE_THRESHOLD_VOLUME = 0.05;
 const TOP_REPLAY_SCRUB_MS = 1200;
@@ -997,6 +999,7 @@ function createEmptyAccum(): AccumState {
     tallestTowerHeight: 0,
     lastTallestCeremonySequence: null,
     lastTallestCeremonyHeight: 0,
+    lastTowerBirthAt: 0,
     parksAttempted: 0,
     parksPlaced: 0,
     lastParkSkipReason: 'none'
@@ -2187,6 +2190,13 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
         }
       }
       ensureDistrictForNextTower(target, tower);
+      const nowWallMs = Date.now();
+      const pacedBirthAt =
+        target.lastTowerBirthAt <= 0
+          ? Math.max(nowWallMs, tower.emittedAt)
+          : Math.max(target.lastTowerBirthAt + BTC_TOWER_BIRTH_PACE_MS, nowWallMs);
+      target.lastTowerBirthAt = pacedBirthAt;
+      tower.emittedAt = pacedBirthAt;
       target.towers.push(tower);
       appendTracesForNewTower(target, tower);
       if (ENABLE_SHOCKWAVES) {

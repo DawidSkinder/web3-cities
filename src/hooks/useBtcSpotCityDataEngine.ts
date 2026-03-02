@@ -14,7 +14,7 @@ export function useBtcSpotCityDataEngine(options: { enabled: boolean }) {
     clearBlockEventStore();
 
     const engine = new BtcSpotCityDataEngine({
-      windowMs: 2000,
+      windowMs: 3000,
       graceMs: 0,
       logWindows: true
     });
