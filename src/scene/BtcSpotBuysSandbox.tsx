@@ -322,6 +322,7 @@ const BIRTH_GLOW_DELAY_MS = 150;
 const BIRTH_GLOW_RAMP_MS = 700;
 const BIRTH_OVERSHOOT = 1.18;
 const BTC_TOWER_BIRTH_PACE_MS = 3000;
+const BTC_BUILDING_SPACING_MULT = 1.2;
 const GLOW_SHELL_SCALE = 1.022;
 const GLOW_EDGE_SCALE = 1.034;
 const GLOW_SHELL_OPACITY = 0.24;
@@ -1713,7 +1714,7 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
 function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   const idx = Math.max(0, Math.floor(event.sequence) - 1);
   const angle = idx * GOLDEN_ANGLE;
-  const radius = Math.sqrt(idx) * SPIRAL_STEP;
+  const radius = Math.sqrt(idx) * SPIRAL_STEP * BTC_BUILDING_SPACING_MULT;
   let x = Math.cos(angle) * radius;
   let z = Math.sin(angle) * radius;
 
@@ -1969,7 +1970,7 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
         const pairTallT = Math.max(tallJumboT, otherTallT);
         const bothTallT = Math.min(tallJumboT, otherTallT);
         const dynamicPad = 0.38 + pairJumboT * JUMBO_CLEARANCE_PAD_MAX + pairTallT * 0.45 + bothTallT * 0.42;
-        const minDist = otherR + thisRBase + dynamicPad;
+        const minDist = (otherR + thisRBase + dynamicPad) * BTC_BUILDING_SPACING_MULT;
         if (dist < minDist) {
           const overlap = minDist - dist + 0.07;
           // Hybrid push keeps spiral character (radial bias) while opening a real local pocket.
@@ -2042,7 +2043,8 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
           const pairTallT = Math.max(tallJumboT, otherTallT);
           const bothTallT = Math.min(tallJumboT, otherTallT);
           const hardMinDist =
-            otherR + thisRBase + (0.46 + pairJumboT * (JUMBO_CLEARANCE_PAD_MAX + 0.12) + pairTallT * 0.5 + bothTallT * 0.48);
+            (otherR + thisRBase + (0.46 + pairJumboT * (JUMBO_CLEARANCE_PAD_MAX + 0.12) + pairTallT * 0.5 + bothTallT * 0.48)) *
+            BTC_BUILDING_SPACING_MULT;
           if (dist < hardMinDist) {
             const overlap = hardMinDist - dist + 0.03;
             x += nX * overlap;
