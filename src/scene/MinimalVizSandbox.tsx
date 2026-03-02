@@ -2933,6 +2933,11 @@ function easeTowards(current: number, target: number, lambda: number, dtSec: num
   return current + (target - current) * t;
 }
 
+function resolveClockNowForEmittedAt(emittedAt: number, perfNowMs: number, wallNowMs: number) {
+  // BTC mode still uses wall-clock timestamps, while Top Coins intro uses animation-clock timestamps.
+  return Number.isFinite(emittedAt) && emittedAt > 1_000_000_000_000 ? wallNowMs : perfNowMs;
+}
+
 function mapTopCoinTowerMetrics({
   pct,
   quoteVolume,
@@ -5575,7 +5580,9 @@ function AnimatedHoloTower({
     focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 8.5, delta);
     hoverMixRef.current = MathUtils.damp(hoverMixRef.current, isHovered ? 1 : 0, 11, delta);
 
-    const now = performance.now();
+    const perfNowMs = performance.now();
+    const wallNowMs = Date.now();
+    const now = resolveClockNowForEmittedAt(tower.emittedAt, perfNowMs, wallNowMs);
     const elapsed = now - tower.emittedAt;
     const riseT = MathUtils.clamp(elapsed / BIRTH_RISE_MS, 0, 1);
     const riseScaleY = Math.max(0.0001, easeOutBack(riseT, BIRTH_OVERSHOOT));
@@ -6733,7 +6740,8 @@ function ParksLayer({
   useFrame((_, delta) => {
     focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 7.5, delta);
     const dimScale = MathUtils.lerp(1, FOCUS_GROUND_DIM, focusMixRef.current);
-    const nowMs = performance.now();
+    const perfNowMs = performance.now();
+    const wallNowMs = Date.now();
     for (let i = 0; i < patchRefs.current.length; i++) {
       const patch = patchRefs.current[i];
       const pathA = pathRefs.current[i * 2];
@@ -6742,7 +6750,8 @@ function ParksLayer({
       const pathAMat = pathA?.material as { opacity?: number } | undefined;
       const pathBMat = pathB?.material as { opacity?: number } | undefined;
       const park = parks[i];
-      const parkElapsed = park ? nowMs - park.emittedAt : BIRTH_RISE_MS + BIRTH_GLOW_RAMP_MS;
+      const parkNowMs = park ? resolveClockNowForEmittedAt(park.emittedAt, perfNowMs, wallNowMs) : perfNowMs;
+      const parkElapsed = park ? parkNowMs - park.emittedAt : BIRTH_RISE_MS + BIRTH_GLOW_RAMP_MS;
       const parkRiseT = MathUtils.clamp(parkElapsed / BIRTH_RISE_MS, 0, 1);
       const parkGlowT = MathUtils.clamp((parkElapsed - BIRTH_GLOW_DELAY_MS) / BIRTH_GLOW_RAMP_MS, 0, 1);
       const parkBirthAlpha = easeOutCubic(parkGlowT) * MathUtils.clamp(parkRiseT * 1.15, 0, 1);
@@ -6772,8 +6781,10 @@ function ParksLayer({
         const tree = trees[i];
         if (!tree) continue;
         const birth = treeBirthMeta[i];
+        const birthAt = birth?.emittedAt ?? perfNowMs;
+        const treeNowMs = resolveClockNowForEmittedAt(birthAt, perfNowMs, wallNowMs);
         const localDelay = (birth?.localIndex ?? 0) * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 18 : 28);
-        const elapsed = nowMs - ((birth?.emittedAt ?? nowMs) + localDelay);
+        const elapsed = treeNowMs - (birthAt + localDelay);
         const riseT = MathUtils.clamp(elapsed / BIRTH_RISE_MS, 0, 1);
         const riseScaleY = Math.max(0.0001, easeOutBack(riseT, BIRTH_OVERSHOOT));
         const crownScaleXZ = MathUtils.lerp(0.25, 1, MathUtils.clamp(riseT * 1.15, 0, 1));
@@ -6849,8 +6860,10 @@ function ParksLayer({
         const tree = trees[sourceIndex];
         if (!tree) continue;
         const birth = treeBirthMeta[sourceIndex];
+        const birthAt = birth?.emittedAt ?? perfNowMs;
+        const fireflyNowMs = resolveClockNowForEmittedAt(birthAt, perfNowMs, wallNowMs);
         const localDelay = (birth?.localIndex ?? 0) * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 18 : 28);
-        const fireflyElapsed = nowMs - ((birth?.emittedAt ?? nowMs) + localDelay + BIRTH_GLOW_DELAY_MS);
+        const fireflyElapsed = fireflyNowMs - (birthAt + localDelay + BIRTH_GLOW_DELAY_MS);
         const fireflyT = MathUtils.clamp(fireflyElapsed / BIRTH_GLOW_RAMP_MS, 0, 1);
         if (fireflyT <= 0.02) {
           pos.set(tree.x, TREE_BASE_Y + tree.trunkH, tree.z);
