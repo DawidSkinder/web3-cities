@@ -8225,7 +8225,7 @@ function SandboxScene({
     if (transitionHideNetwork) return [] as TrafficParticleDatum[];
     return trafficParticles;
   }, [trafficParticles, transitionHideNetwork]);
-  const showParksLayer = true;
+  const showParksLayer = !topFx || fx.introLifeAlpha > 0.001;
   const showParkFireflies = !topFx || (!fx.introActive && fx.introProgress >= 0.995);
   const hoverStableRef = useRef<number | null>(hoveredTowerSequence);
   const hoverIntentRef = useRef<number | null>(hoveredTowerSequence);
