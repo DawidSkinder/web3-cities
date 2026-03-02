@@ -326,6 +326,8 @@ const BIRTH_OVERSHOOT = 1.18;
 const BTC_TOWER_BIRTH_PACE_MS = 3000;
 const BTC_BUILDING_SPACING_MULT = 1.2;
 const BTC_STRICT_ADJACENT_ROADS = true;
+const BTC_ADJACENT_DIST_RATIO = 1.42;
+const BTC_ADJACENT_DIST_PAD = 0.55;
 const TRACE_BIRTH_FADE_MS = 260;
 const TRAFFIC_BIRTH_FADE_MS = 220;
 const GLOW_SHELL_SCALE = 1.022;
@@ -1690,14 +1692,6 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
       : RUNTIME_QUALITY_CONFIG.tier === 'medium'
         ? 24
         : 28;
-  const desiredLinks = BTC_STRICT_ADJACENT_ROADS
-    ? 1
-    : RUNTIME_QUALITY_CONFIG.tier === 'low'
-      ? 2
-      : RUNTIME_QUALITY_CONFIG.tier === 'medium'
-        ? 3
-        : 4;
-
   const candidates = existing
     .map((other) => {
       const dist = Math.hypot(tower.x - other.x, tower.z - other.z);
@@ -1705,10 +1699,28 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
     })
     .filter((item) => item.dist > 0.001 && item.dist <= maxLinkDistance)
     .sort((a, b) => a.dist - b.dist);
+  const desiredLinks = BTC_STRICT_ADJACENT_ROADS
+    ? candidates.length
+    : RUNTIME_QUALITY_CONFIG.tier === 'low'
+      ? 2
+      : RUNTIME_QUALITY_CONFIG.tier === 'medium'
+        ? 3
+        : 4;
+  const adjacentMaxDist = BTC_STRICT_ADJACENT_ROADS
+    ? candidates.length > 0
+      ? Math.min(
+          maxLinkDistance,
+          Math.max(candidates[0]!.dist * BTC_ADJACENT_DIST_RATIO, candidates[0]!.dist + BTC_ADJACENT_DIST_PAD)
+        )
+      : 0
+    : maxLinkDistance;
 
   const picked: TowerDatum[] = [];
   for (let i = 0; i < candidates.length && picked.length < desiredLinks; i++) {
-    const neighbor = candidates[i]?.other;
+    const candidate = candidates[i];
+    if (!candidate) continue;
+    if (BTC_STRICT_ADJACENT_ROADS && candidate.dist > adjacentMaxDist) continue;
+    const neighbor = candidate.other;
     if (!neighbor) continue;
     const aSeq = Math.min(tower.sequence, neighbor.sequence);
     const bSeq = Math.max(tower.sequence, neighbor.sequence);
