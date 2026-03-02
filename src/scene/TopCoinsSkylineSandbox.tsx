@@ -6377,9 +6377,11 @@ function CircuitBoardGround({
   const glowMeshRef = useRef<Mesh>(null);
   const slabRef = useRef<Mesh>(null);
   const deckRef = useRef<Mesh>(null);
+  const initialIntroBoot = MathUtils.clamp(introBootAlpha, 0, 1);
+  const initialIntroScale = MathUtils.lerp(BTC_GROUND_BOOT_START_SCALE, 1, easeOutCubic(initialIntroBoot));
   const graphicsGroupRef = useRef<Group>(null);
   const smoothGlowRadiusRef = useRef(targetGlowRadius);
-  const introScaleRef = useRef(1);
+  const introScaleRef = useRef(initialIntroScale);
   const focusMixRef = useRef(0);
   const moodRef = useRef(marketPulse);
   const glowGeometry = useMemo(() => new PlaneGeometry(1, 1, 1, 1), []);
@@ -6466,7 +6468,7 @@ function CircuitBoardGround({
         ref={glowMeshRef}
         rotation={[-Math.PI / 2, 0, 0]}
         position={[0, GROUND_GLOW_Y, 0]}
-        scale={[targetGlowRadius * 2.2, targetGlowRadius * 2.2, 1]}
+        scale={[targetGlowRadius * 2.2 * initialIntroScale, targetGlowRadius * 2.2 * initialIntroScale, 1]}
         renderOrder={1}
         geometry={glowGeometry}
         material={glowMaterial}
@@ -6502,7 +6504,7 @@ function CircuitBoardGround({
         />
       </mesh>
 
-      <group ref={graphicsGroupRef}>
+      <group ref={graphicsGroupRef} scale={[initialIntroScale, 1, initialIntroScale]}>
         {gridLinePairs.map((points, i) => (
           <ScreenSpaceGroundLine
             key={`grid-${i}`}
@@ -8031,7 +8033,7 @@ function FakeVignettePlane() {
 
 function useTopGroundIntroBootAlpha() {
   const startAtRef = useRef(performance.now());
-  const [alpha, setAlpha] = useState(() => (BTC_GROUND_BOOT_MS <= 0 ? 1 : 0.06));
+  const [alpha, setAlpha] = useState(() => (BTC_GROUND_BOOT_MS <= 0 ? 1 : 0.18));
 
   useEffect(() => {
     if (BTC_GROUND_BOOT_MS <= 0) {
@@ -8053,7 +8055,7 @@ function useTopGroundIntroBootAlpha() {
 
     const now = performance.now();
     const initialT = MathUtils.clamp((now - startAt) / BTC_GROUND_BOOT_MS, 0, 1);
-    const initialAlpha = Math.max(0.06, easeOutCubic(initialT));
+    const initialAlpha = Math.max(0.18, easeOutCubic(initialT));
     setAlpha(initialAlpha);
     raf = window.requestAnimationFrame(tick);
 
