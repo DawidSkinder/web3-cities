@@ -8334,18 +8334,11 @@ function SandboxScene({
   );
 }
 
-export function MinimalVizSandbox({
-  mode = 'top200',
-  onModeChange
-}: {
-  mode?: CityMode;
-  onModeChange?: (nextMode: CityMode) => void;
-}) {
+export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode: CityMode) => void }) {
+  const mode: CityMode = 'btc';
   const { events, latest } = useBlockEventStore();
-  const { latest: topSnapshot } = useTopCoinsStore();
   const btcData = useAppendOnlyTowers(events);
-  const topData = useTopCoinsSkyline(topSnapshot);
-  const active = mode === 'top200' ? topData : btcData;
+  const active = btcData;
   const {
     towers,
     traces,
@@ -8365,9 +8358,7 @@ export function MinimalVizSandbox({
   const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
   const [selectedTowerSequence, setSelectedTowerSequence] = useState<number | null>(null);
   const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
-  const [nowTick, setNowTick] = useState(() => Date.now());
-  const topDebug = mode === 'top200' ? topData.topCoinsDebug : null;
-  const topFx = mode === 'top200' ? topData.topFx : undefined;
+  const topFx = undefined;
 
   useEffect(() => {
     setHoveredTowerSequence(null);
@@ -8394,15 +8385,6 @@ export function MinimalVizSandbox({
     }
   }, [hoveredTowerSequence, hoverHud.visible]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setNowTick(Date.now());
-    }, 1000);
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, []);
-
   const hoveredTower = useMemo(
     () => (hoveredTowerSequence == null ? null : towers.find((tower) => tower.sequence === hoveredTowerSequence) ?? null),
     [hoveredTowerSequence, towers]
@@ -8411,10 +8393,9 @@ export function MinimalVizSandbox({
   const overlay = useMemo(
     () => ({
       mode,
-      latestSequence: latest?.sequence ?? 0,
-      topDebug
+      latestSequence: latest?.sequence ?? 0
     }),
-    [latest, mode, topDebug]
+    [latest, mode]
   );
 
   return (
@@ -8461,93 +8442,12 @@ export function MinimalVizSandbox({
           </div>
           <div className="minimal-viz__row">
             <span>Mode</span>
-            <span>{overlay.mode === 'top200' ? 'Top Coins Skyline' : 'BTC Spot Buys'}</span>
+            <span>BTC Spot Buys</span>
           </div>
-          {overlay.mode === 'top200' ? (
-            overlay.topDebug ? (
-              <>
-                {(() => {
-                  const asOfAgeSec =
-                    overlay.topDebug.asOfMs > 0 ? Math.max(0, Math.floor((nowTick - overlay.topDebug.asOfMs) / 1000)) : Number.POSITIVE_INFINITY;
-                  const nextUpdateSec = Math.max(0, Math.ceil((overlay.topDebug.nextUpdateAtMs - nowTick) / 1000));
-                  let status: 'ok' | 'STALE' | 'error' = 'ok';
-                  let statusColor = '#9fd8b2';
-                  let staleMessage = '';
-                  if (!overlay.topDebug.lastFetchOk && overlay.topDebug.lastError) {
-                    status = 'error';
-                    statusColor = '#ff9f8f';
-                  } else if (asOfAgeSec > 600) {
-                    status = 'STALE';
-                    statusColor = '#ff8d6a';
-                    staleMessage = 'Snapshot not updating - check GitHub Actions.';
-                  } else if (asOfAgeSec > 120) {
-                    status = 'STALE';
-                    statusColor = '#ffbd75';
-                  }
-                  const lastFetchLabel = overlay.topDebug.lastFetchOk
-                    ? 'ok'
-                    : `fail${overlay.topDebug.lastError ? ` · ${fmtTopCoinsError(overlay.topDebug.lastError)}` : ''}`;
-
-                  return (
-                    <>
-                      <div className="minimal-viz__row">
-                        <span>Status</span>
-                        <span style={{ color: statusColor, fontWeight: 700 }}>{status}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>AsOf</span>
-                        <span>{overlay.topDebug.asOfIso || 'n/a'}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Age</span>
-                        <span>{Number.isFinite(asOfAgeSec) ? `${asOfAgeSec}s` : 'n/a'}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Next update in</span>
-                        <span>{nextUpdateSec}s</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Universe</span>
-                        <span>{`Top ${TOP_COINS_UNIVERSE_LIMIT} · ${TOP_COINS_QUOTE_ASSET} · ${TOP_COINS_CHANGE_TF_LABEL}`}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Top gainer</span>
-                        <span>{`${overlay.topDebug.topGainer.symbol} ${fmtSignedPct(overlay.topDebug.topGainer.pct)}`}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Top loser</span>
-                        <span>{`${overlay.topDebug.topLoser.symbol} ${fmtSignedPct(overlay.topDebug.topLoser.pct)}`}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Top volume</span>
-                        <span>{`${overlay.topDebug.topVolume.symbol} ${fmtUsdCompact(overlay.topDebug.topVolume.quoteVolume)}`}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Last fetch</span>
-                        <span>{lastFetchLabel}</span>
-                      </div>
-                      {staleMessage ? (
-                        <div className="minimal-viz__row" style={{ color: '#ff8d6a', fontWeight: 700 }}>
-                          <span>Notice</span>
-                          <span>{staleMessage}</span>
-                        </div>
-                      ) : null}
-                    </>
-                  );
-                })()}
-              </>
-            ) : (
-              <div className="minimal-viz__row">
-                <span>Status</span>
-                <span>loading...</span>
-              </div>
-            )
-          ) : (
-            <div className="minimal-viz__row">
-              <span>Latest Seq</span>
-              <span>{overlay.latestSequence}</span>
-            </div>
-          )}
+          <div className="minimal-viz__row">
+            <span>Latest Seq</span>
+            <span>{overlay.latestSequence}</span>
+          </div>
         </div>
       </div>
     </div>
