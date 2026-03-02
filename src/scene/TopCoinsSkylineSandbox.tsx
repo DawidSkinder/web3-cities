@@ -8030,7 +8030,8 @@ function FakeVignettePlane() {
 }
 
 function useTopGroundIntroBootAlpha() {
-  const [alpha, setAlpha] = useState(() => (BTC_GROUND_BOOT_MS <= 0 ? 1 : 0));
+  const startAtRef = useRef(performance.now());
+  const [alpha, setAlpha] = useState(() => (BTC_GROUND_BOOT_MS <= 0 ? 1 : 0.06));
 
   useEffect(() => {
     if (BTC_GROUND_BOOT_MS <= 0) {
@@ -8039,7 +8040,7 @@ function useTopGroundIntroBootAlpha() {
     }
 
     let raf = 0;
-    const startAt = performance.now();
+    const startAt = startAtRef.current;
 
     const tick = (now: number) => {
       const t = MathUtils.clamp((now - startAt) / BTC_GROUND_BOOT_MS, 0, 1);
@@ -8050,7 +8051,10 @@ function useTopGroundIntroBootAlpha() {
       }
     };
 
-    setAlpha(0);
+    const now = performance.now();
+    const initialT = MathUtils.clamp((now - startAt) / BTC_GROUND_BOOT_MS, 0, 1);
+    const initialAlpha = Math.max(0.06, easeOutCubic(initialT));
+    setAlpha(initialAlpha);
     raf = window.requestAnimationFrame(tick);
 
     return () => {
