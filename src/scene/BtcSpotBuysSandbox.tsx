@@ -325,6 +325,7 @@ const BIRTH_GLOW_RAMP_MS = 700;
 const BIRTH_OVERSHOOT = 1.18;
 const BTC_TOWER_BIRTH_PACE_MS = 3000;
 const BTC_BUILDING_SPACING_MULT = 1.2;
+const BTC_STRICT_ADJACENT_ROADS = true;
 const TRACE_BIRTH_FADE_MS = 260;
 const TRAFFIC_BIRTH_FADE_MS = 220;
 const GLOW_SHELL_SCALE = 1.022;
@@ -880,6 +881,69 @@ function segmentFromPoints(ax: number, az: number, bx: number, bz: number) {
   };
 }
 
+function orient2d(ax: number, az: number, bx: number, bz: number, cx: number, cz: number) {
+  return (bx - ax) * (cz - az) - (bz - az) * (cx - ax);
+}
+
+function onSegment2d(ax: number, az: number, bx: number, bz: number, px: number, pz: number, eps = 1e-6) {
+  return (
+    px >= Math.min(ax, bx) - eps &&
+    px <= Math.max(ax, bx) + eps &&
+    pz >= Math.min(az, bz) - eps &&
+    pz <= Math.max(az, bz) + eps
+  );
+}
+
+function segmentsIntersect2d(
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  cx: number,
+  cz: number,
+  dx: number,
+  dz: number
+) {
+  const eps = 1e-6;
+  const o1 = orient2d(ax, az, bx, bz, cx, cz);
+  const o2 = orient2d(ax, az, bx, bz, dx, dz);
+  const o3 = orient2d(cx, cz, dx, dz, ax, az);
+  const o4 = orient2d(cx, cz, dx, dz, bx, bz);
+
+  if (Math.abs(o1) <= eps && onSegment2d(ax, az, bx, bz, cx, cz, eps)) return true;
+  if (Math.abs(o2) <= eps && onSegment2d(ax, az, bx, bz, dx, dz, eps)) return true;
+  if (Math.abs(o3) <= eps && onSegment2d(cx, cz, dx, dz, ax, az, eps)) return true;
+  if (Math.abs(o4) <= eps && onSegment2d(cx, cz, dx, dz, bx, bz, eps)) return true;
+
+  return (o1 > 0) !== (o2 > 0) && (o3 > 0) !== (o4 > 0);
+}
+
+function traceCrossesExistingTrace(
+  state: AccumState,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  aSeq: number,
+  bSeq: number
+) {
+  for (let i = 0; i < state.traces.length; i++) {
+    const t = state.traces[i];
+    if (!t) continue;
+    // Touching at a shared tower endpoint is expected/valid.
+    if (t.aSequence === aSeq || t.aSequence === bSeq || t.bSequence === aSeq || t.bSequence === bSeq) continue;
+    const half = t.length * 0.5;
+    const dirX = Math.sin(t.yaw);
+    const dirZ = Math.cos(t.yaw);
+    const cx = t.midX - dirX * half;
+    const cz = t.midZ - dirZ * half;
+    const dx = t.midX + dirX * half;
+    const dz = t.midZ + dirZ * half;
+    if (segmentsIntersect2d(ax, az, bx, bz, cx, cz, dx, dz)) return true;
+  }
+  return false;
+}
+
 function buildTowerShapeParams(sequence: number, heightScore: number): {
   archetypeId: TowerArchetypeId;
   baseW: number;
@@ -1095,6 +1159,7 @@ function ensureDistrictForNextTower(state: AccumState, tower: TowerDatum) {
 }
 
 function appendArteriesForNewTower(state: AccumState, tower: TowerDatum) {
+  if (BTC_STRICT_ADJACENT_ROADS) return;
   if (!ENABLE_SPECTACLE_LAYER || !ENABLE_ARTERIALS) return;
   if (state.arterialTraces.length >= ARTERY_MAX_COUNT) return;
   const trigger = tower.isHero || tower.heightScore >= ARTERY_SCORE_TRIGGER;
@@ -1614,10 +1679,24 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
   if (state.towers.length <= 1) return;
 
   const existing = state.towers.slice(0, -1);
-  const maxLinkDistance =
-    RUNTIME_QUALITY_CONFIG.tier === 'low' ? 20 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 24 : 28;
-  const desiredLinks =
-    RUNTIME_QUALITY_CONFIG.tier === 'low' ? 2 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 3 : 4;
+  const maxLinkDistance = BTC_STRICT_ADJACENT_ROADS
+    ? RUNTIME_QUALITY_CONFIG.tier === 'low'
+      ? 14
+      : RUNTIME_QUALITY_CONFIG.tier === 'medium'
+        ? 16
+        : 18
+    : RUNTIME_QUALITY_CONFIG.tier === 'low'
+      ? 20
+      : RUNTIME_QUALITY_CONFIG.tier === 'medium'
+        ? 24
+        : 28;
+  const desiredLinks = BTC_STRICT_ADJACENT_ROADS
+    ? 1
+    : RUNTIME_QUALITY_CONFIG.tier === 'low'
+      ? 2
+      : RUNTIME_QUALITY_CONFIG.tier === 'medium'
+        ? 3
+        : 4;
 
   const candidates = existing
     .map((other) => {
@@ -1627,9 +1706,10 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
     .filter((item) => item.dist > 0.001 && item.dist <= maxLinkDistance)
     .sort((a, b) => a.dist - b.dist);
 
-  const picked = candidates.slice(0, Math.min(desiredLinks, candidates.length));
-  for (let i = 0; i < picked.length; i++) {
-    const neighbor = picked[i].other;
+  const picked: TowerDatum[] = [];
+  for (let i = 0; i < candidates.length && picked.length < desiredLinks; i++) {
+    const neighbor = candidates[i]?.other;
+    if (!neighbor) continue;
     const aSeq = Math.min(tower.sequence, neighbor.sequence);
     const bSeq = Math.max(tower.sequence, neighbor.sequence);
     const traceKey = `${aSeq}:${bSeq}`;
@@ -1638,6 +1718,17 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
     const seg = segmentFromPoints(tower.x, tower.z, neighbor.x, neighbor.z);
     if (!Number.isFinite(seg.length) || seg.length < 0.8) continue;
     if (traceCrossesPark(state, tower.x, tower.z, neighbor.x, neighbor.z)) continue;
+    if (traceCrossesExistingTrace(state, tower.x, tower.z, neighbor.x, neighbor.z, aSeq, bSeq)) continue;
+
+    picked.push(neighbor);
+  }
+
+  for (let i = 0; i < picked.length; i++) {
+    const neighbor = picked[i]!;
+    const aSeq = Math.min(tower.sequence, neighbor.sequence);
+    const bSeq = Math.max(tower.sequence, neighbor.sequence);
+    const traceKey = `${aSeq}:${bSeq}`;
+    const seg = segmentFromPoints(tower.x, tower.z, neighbor.x, neighbor.z);
 
     state.traceKeySet.add(traceKey);
     const warmBias = hash01(aSeq, bSeq, seg.length);
