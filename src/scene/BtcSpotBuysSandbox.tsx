@@ -103,6 +103,7 @@ type TraceDatum = {
   glowWidth: number;
   coreColor: string;
   glowColor: string;
+  emittedAt?: number;
   isArtery?: boolean;
   scanSeed?: number;
 };
@@ -122,6 +123,7 @@ type TrafficParticleDatum = {
   sizeX: number;
   sizeY: number;
   sizeZ: number;
+  emittedAt?: number;
   isArtery?: boolean;
 };
 
@@ -323,6 +325,8 @@ const BIRTH_GLOW_RAMP_MS = 700;
 const BIRTH_OVERSHOOT = 1.18;
 const BTC_TOWER_BIRTH_PACE_MS = 3000;
 const BTC_BUILDING_SPACING_MULT = 1.2;
+const TRACE_BIRTH_FADE_MS = 260;
+const TRAFFIC_BIRTH_FADE_MS = 220;
 const GLOW_SHELL_SCALE = 1.022;
 const GLOW_EDGE_SCALE = 1.034;
 const GLOW_SHELL_OPACITY = 0.24;
@@ -1158,6 +1162,7 @@ function appendArteriesForNewTower(state: AccumState, tower: TowerDatum) {
     const width = 0.14 + hash01(aSeq, bSeq, 9907) * 0.045;
     const glowWidth = width * 3.05;
     const traceId = `A-${key}`;
+    const connectionEmittedAt = tower.emittedAt;
     state.arterialTraces.push({
       id: traceId,
       aSequence: aSeq,
@@ -1171,6 +1176,7 @@ function appendArteriesForNewTower(state: AccumState, tower: TowerDatum) {
       glowWidth,
       coreColor: `#${core.getHexString()}`,
       glowColor: `#${glow.getHexString()}`,
+      emittedAt: connectionEmittedAt,
       isArtery: true,
       scanSeed: hash01(aSeq, bSeq, 9913)
     });
@@ -1208,6 +1214,7 @@ function appendArteriesForNewTower(state: AccumState, tower: TowerDatum) {
         sizeX: 0.11 + hash01(aSeq, bSeq, p, 9937) * 0.04,
         sizeY: 0.03,
         sizeZ: 0.26 + hash01(aSeq, bSeq, p, 9941) * 0.12,
+        emittedAt: connectionEmittedAt,
         isArtery: true
       });
     }
@@ -1643,6 +1650,7 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
 
     const traceId = `T-${traceKey}`;
     const visibleTraceLen = Math.max(0.9, seg.length - TOWER_FOOTPRINT * 0.7);
+    const connectionEmittedAt = tower.emittedAt;
     state.traces.push({
       id: traceId,
       aSequence: aSeq,
@@ -1655,7 +1663,8 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
       width,
       glowWidth,
       coreColor: `#${core.getHexString()}`,
-      glowColor: `#${glow.getHexString()}`
+      glowColor: `#${glow.getHexString()}`,
+      emittedAt: connectionEmittedAt
     });
 
     const densityScale =
@@ -1705,7 +1714,8 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
         color: `#${particleColor.getHexString()}`,
         sizeX: 0.085 + hash01(aSeq, bSeq, p, 47) * 0.03,
         sizeY: 0.024,
-        sizeZ: 0.18 + hash01(aSeq, bSeq, p, 59) * 0.08
+        sizeZ: 0.18 + hash01(aSeq, bSeq, p, 59) * 0.08,
+        emittedAt: connectionEmittedAt
       });
     }
   }
@@ -7262,22 +7272,28 @@ function TraceStrips({
     const introAlpha = MathUtils.clamp(introLifeAlpha, 0, 1);
     const finalGlowOpacity = glowOpacity * clutterFade * introAlpha;
     const finalCoreOpacity = coreOpacity * clutterFade * introAlpha;
+    const perfNowMs = performance.now();
+    const wallNowMs = Date.now();
     for (let i = 0; i < traces.length; i++) {
+      const trace = traces[i];
+      const birthAt = trace?.emittedAt;
+      const traceNowMs = birthAt != null ? resolveClockNowForEmittedAt(birthAt, perfNowMs, wallNowMs) : perfNowMs;
+      const birthElapsed = birthAt != null ? traceNowMs - birthAt : TRACE_BIRTH_FADE_MS;
+      const birthAlpha = easeOutCubic(MathUtils.clamp(birthElapsed / TRACE_BIRTH_FADE_MS, 0, 1));
       const glow = glowRefs.current[i];
       const core = coreRefs.current[i];
       const scan = scanRefs.current[i];
       if (glow) {
         glow.scale.set(glowWidthScale, 1, 1);
         const mat = glow.material as { opacity?: number } | undefined;
-        if (mat) mat.opacity = finalGlowOpacity;
+        if (mat) mat.opacity = finalGlowOpacity * birthAlpha;
       }
       if (core) {
         core.scale.set(coreWidthScale, 1, 1);
         const mat = core.material as { opacity?: number } | undefined;
-        if (mat) mat.opacity = finalCoreOpacity;
+        if (mat) mat.opacity = finalCoreOpacity * birthAlpha;
       }
       if (scan && arterial) {
-        const trace = traces[i];
         if (!trace) continue;
         const scanT = (clock.getElapsedTime() * 0.08 + (trace.scanSeed ?? 0)) % 1;
         const z = MathUtils.lerp(-trace.length * 0.42, trace.length * 0.42, scanT);
@@ -7285,7 +7301,7 @@ function TraceStrips({
         const mat = scan.material as { opacity?: number } | undefined;
         if (mat) {
           const envelope = 0.35 + 0.65 * Math.sin(scanT * Math.PI);
-          mat.opacity = MathUtils.clamp(0.07 * envelope * dimScale * clutterFade * introAlpha, 0, 0.12);
+          mat.opacity = MathUtils.clamp(0.07 * envelope * dimScale * clutterFade * introAlpha * birthAlpha, 0, 0.12);
         }
       }
     }
@@ -7312,7 +7328,7 @@ function TraceStrips({
             <meshBasicMaterial
               color={trace.glowColor}
               transparent
-              opacity={0.11}
+              opacity={0}
               toneMapped={false}
               depthWrite={false}
               depthTest
@@ -7333,7 +7349,7 @@ function TraceStrips({
             <meshBasicMaterial
               color={trace.coreColor}
               transparent
-              opacity={0.58}
+              opacity={0}
               toneMapped={false}
               depthWrite={false}
               depthTest
@@ -7354,7 +7370,7 @@ function TraceStrips({
               <meshBasicMaterial
                 color="#fff4dc"
                 transparent
-                opacity={0.06}
+                opacity={0}
                 toneMapped={false}
                 depthWrite={false}
                 depthTest
@@ -7411,12 +7427,12 @@ function TrafficParticles({
     if (!body || !cabin || !bodyWire || !cabinWire || !light || !glow) return;
     const capacity = Math.max(1, body.instanceMatrix.count);
     const count = Math.min(particles.length, capacity);
-    body.count = count;
-    cabin.count = count;
-    bodyWire.count = count;
-    cabinWire.count = count;
-    light.count = count;
-    glow.count = count;
+    body.count = 0;
+    cabin.count = 0;
+    bodyWire.count = 0;
+    cabinWire.count = 0;
+    light.count = 0;
+    glow.count = 0;
     for (let i = 0; i < count; i++) {
       const p = particles[i];
       if (!p) continue;
@@ -7437,6 +7453,8 @@ function TrafficParticles({
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
     const introGate = MathUtils.clamp(introLifeAlpha, 0, 1) > 0.01;
+    const perfNowMs = performance.now();
+    const wallNowMs = Date.now();
     focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 7.5, delta);
     const sizeScale = MathUtils.lerp(1.15, 1.95, visCurve);
     const body = bodyRef.current;
@@ -7447,13 +7465,7 @@ function TrafficParticles({
     const glow = glowRef.current;
     if (!body || !cabin || !bodyWire || !cabinWire || !light || !glow) return;
     const capacity = Math.max(1, body.instanceMatrix.count);
-    const instanceCount = introGate ? Math.min(particles.length, capacity) : 0;
-    body.count = instanceCount;
-    cabin.count = instanceCount;
-    bodyWire.count = instanceCount;
-    cabinWire.count = instanceCount;
-    light.count = instanceCount;
-    glow.count = instanceCount;
+    const srcCount = introGate ? Math.min(particles.length, capacity) : 0;
     const matrix = tempMatrixRef.current;
     const pos = tempPosRef.current;
     const pos2 = tempPos2Ref.current;
@@ -7463,9 +7475,18 @@ function TrafficParticles({
     const quat = trafficQuatRef.current;
     const up = trafficUpRef.current;
     const localOffset = tempOffsetRef.current;
-    for (let i = 0; i < instanceCount; i++) {
-      const p = particles[i];
+    let visibleCount = 0;
+    for (let src = 0; src < srcCount; src++) {
+      const p = particles[src];
       if (!p) continue;
+      const birthAt = p.emittedAt;
+      const particleNowMs = birthAt != null ? resolveClockNowForEmittedAt(birthAt, perfNowMs, wallNowMs) : perfNowMs;
+      const birthElapsed = birthAt != null ? particleNowMs - birthAt : TRAFFIC_BIRTH_FADE_MS;
+      if (birthElapsed <= 0) continue;
+      const birthAlpha = easeOutCubic(MathUtils.clamp(birthElapsed / TRAFFIC_BIRTH_FADE_MS, 0, 1));
+      const birthScale = MathUtils.lerp(0.56, 1, birthAlpha);
+      const i = visibleCount;
+      visibleCount += 1;
       const dx = p.bx - p.ax;
       const dz = p.bz - p.az;
       const segLen = Math.hypot(dx, dz);
@@ -7487,9 +7508,9 @@ function TrafficParticles({
       const cx = MathUtils.lerp(ax, bx, u);
       const cz = MathUtils.lerp(az, bz, u);
       // Sit just above the orange trace core so cars appear attached to streets, not floating.
-      const bodyH = Math.max(0.034, p.sizeY * 1.34) * MathUtils.lerp(1, 1.07, visCurve);
-      const bodyLen = Math.max(0.26, p.sizeZ * 1.05) * MathUtils.lerp(1.0, 1.35, visCurve);
-      const bodyW = Math.max(0.060, p.sizeX * 0.44) * MathUtils.lerp(1.0, 1.05, visCurve);
+      const bodyH = Math.max(0.034, p.sizeY * 1.34) * MathUtils.lerp(1, 1.07, visCurve) * birthScale;
+      const bodyLen = Math.max(0.26, p.sizeZ * 1.05) * MathUtils.lerp(1.0, 1.35, visCurve) * birthScale;
+      const bodyW = Math.max(0.060, p.sizeX * 0.44) * MathUtils.lerp(1.0, 1.05, visCurve) * birthScale;
       const carBaseY = Math.max(TRACE_BASE_Y + 0.0118, p.y + 0.003);
       pos.set(cx, carBaseY + bodyH * 0.5, cz);
       // Car forward axis is +Z to match trace strips, so scale [width, height, length].
@@ -7526,7 +7547,11 @@ function TrafficParticles({
       scl.set(barW, barH, barLen);
       matrix.compose(pos3, quat, scl);
       light.setMatrixAt(i, matrix);
-      light.setColorAt(i, tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : '#fffdf0'));
+      if (DEBUG_FORCE_TRAFFIC_VIS) {
+        light.setColorAt(i, tempColorRef.current.set('#ff3cf0'));
+      } else {
+        light.setColorAt(i, tempColorRef.current.set('#fffdf0').multiplyScalar(MathUtils.lerp(0.28, 1, birthAlpha)));
+      }
 
       // Soft glow shell around the body for visibility (like the old bright cards), but subtle.
       pos4.copy(pos);
@@ -7536,8 +7561,18 @@ function TrafficParticles({
       scl.set(glowW, glowH, glowLen);
       matrix.compose(pos4, quat, scl);
       glow.setMatrixAt(i, matrix);
-      glow.setColorAt(i, tempColorRef.current.set(DEBUG_FORCE_TRAFFIC_VIS ? '#ff3cf0' : '#fff2cf'));
+      if (DEBUG_FORCE_TRAFFIC_VIS) {
+        glow.setColorAt(i, tempColorRef.current.set('#ff3cf0'));
+      } else {
+        glow.setColorAt(i, tempColorRef.current.set('#fff2cf').multiplyScalar(MathUtils.lerp(0.24, 1, birthAlpha)));
+      }
     }
+    body.count = visibleCount;
+    cabin.count = visibleCount;
+    bodyWire.count = visibleCount;
+    cabinWire.count = visibleCount;
+    light.count = visibleCount;
+    glow.count = visibleCount;
     body.instanceMatrix.needsUpdate = true;
     cabin.instanceMatrix.needsUpdate = true;
     bodyWire.instanceMatrix.needsUpdate = true;
