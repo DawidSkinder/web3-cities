@@ -6423,6 +6423,7 @@ function CircuitBoardGround({
 
   useFrame((_, delta) => {
     const introBoot = MathUtils.clamp(introBootAlpha, 0, 1);
+    const introVisual = MathUtils.lerp(0.62, 1, introBoot);
     const introScaleTarget = MathUtils.lerp(BTC_GROUND_BOOT_START_SCALE, 1, easeOutCubic(introBoot));
     introScaleRef.current = MathUtils.damp(introScaleRef.current, introScaleTarget, 9, delta);
     if (graphicsGroupRef.current) {
@@ -6443,15 +6444,15 @@ function CircuitBoardGround({
       glowUniforms.uOpacity.value =
         MathUtils.lerp(1.08, 0.8, focusMixRef.current) *
         MathUtils.lerp(1 - MARKET_PULSE_GROUND_OPACITY_BREATH, 1 + MARKET_PULSE_GROUND_OPACITY_BREATH, mood) *
-        introBoot;
+        introVisual;
     }
     const slabMat = slabRef.current?.material as { opacity?: number } | undefined;
-    if (slabMat) slabMat.opacity = MathUtils.damp(slabMat.opacity ?? 1, MathUtils.lerp(0.2, 1, introBoot), 7, delta);
+    if (slabMat) slabMat.opacity = MathUtils.damp(slabMat.opacity ?? 1, MathUtils.lerp(0.2, 1, introVisual), 7, delta);
     const deckMat = deckRef.current?.material as { opacity?: number; emissiveIntensity?: number } | undefined;
     if (deckMat) {
-      deckMat.opacity = MathUtils.damp(deckMat.opacity ?? 1, introBoot, 7, delta);
+      deckMat.opacity = MathUtils.damp(deckMat.opacity ?? 1, introVisual, 7, delta);
       if (typeof deckMat.emissiveIntensity === 'number') {
-        deckMat.emissiveIntensity = MathUtils.damp(deckMat.emissiveIntensity, 0.05 * introBoot, 7, delta);
+        deckMat.emissiveIntensity = MathUtils.damp(deckMat.emissiveIntensity, 0.05 * introVisual, 7, delta);
       }
     }
     glowUniforms.uCenterColor.value.copy(tempColorA.set('#F0D0A7').lerp(tempColorB.set('#FFD8A1'), mood * 0.35));
@@ -6459,7 +6460,7 @@ function CircuitBoardGround({
   });
 
   const focusStaticScale = focusMode ? FOCUS_GROUND_DIM : 1;
-  const intro = MathUtils.clamp(introBootAlpha, 0, 1);
+  const intro = MathUtils.lerp(0.62, 1, MathUtils.clamp(introBootAlpha, 0, 1));
 
   return (
     <group>
