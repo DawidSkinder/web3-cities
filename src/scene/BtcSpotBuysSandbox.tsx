@@ -452,6 +452,8 @@ const TOP_INTRO_TOTAL_MS = Math.max(
 const TOP_INTRO_CAMERA_BEAT_MS = scaleTopIntroMs(10_500);
 const TOP_INTRO_DISC_STAGGER_STEP_MS = scaleTopIntroMs(3);
 const TOP_INTRO_DISC_STAGGER_MAX_MS = scaleTopIntroMs(360);
+const BTC_GROUND_BOOT_MS = RUNTIME_QUALITY_CONFIG.reducedMotion ? 0 : 1300;
+const BTC_GROUND_BOOT_START_SCALE = 0.62;
 const TOP_UPDATE_THRESHOLD_PCT = 0.1;
 const TOP_UPDATE_THRESHOLD_VOLUME = 0.05;
 const TOP_REPLAY_SCRUB_MS = 1200;
@@ -6357,7 +6359,9 @@ function CircuitBoardGround({
   const glowMeshRef = useRef<Mesh>(null);
   const slabRef = useRef<Mesh>(null);
   const deckRef = useRef<Mesh>(null);
+  const graphicsGroupRef = useRef<Group>(null);
   const smoothGlowRadiusRef = useRef(targetGlowRadius);
+  const introScaleRef = useRef(1);
   const focusMixRef = useRef(0);
   const moodRef = useRef(marketPulse);
   const glowGeometry = useMemo(() => new PlaneGeometry(1, 1, 1, 1), []);
@@ -6398,6 +6402,13 @@ function CircuitBoardGround({
   }, [glowGeometry, glowMaterial]);
 
   useFrame((_, delta) => {
+    const introBoot = MathUtils.clamp(introBootAlpha, 0, 1);
+    const introScaleTarget = MathUtils.lerp(BTC_GROUND_BOOT_START_SCALE, 1, easeOutCubic(introBoot));
+    introScaleRef.current = MathUtils.damp(introScaleRef.current, introScaleTarget, 9, delta);
+    if (graphicsGroupRef.current) {
+      graphicsGroupRef.current.scale.set(introScaleRef.current, 1, introScaleRef.current);
+    }
+
     focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 6.5, delta);
     moodRef.current = MathUtils.damp(moodRef.current, marketPulse, MARKET_PULSE_DAMP, delta);
     const mood = ENABLE_MARKET_PULSE ? moodRef.current : 0;
@@ -6408,13 +6419,12 @@ function CircuitBoardGround({
     smoothGlowRadiusRef.current = MathUtils.damp(smoothGlowRadiusRef.current, safeTarget, RADIAL_GLOW_DAMP, delta);
     const r = MathUtils.clamp(smoothGlowRadiusRef.current, 30, boardSize * 0.48);
     if (glowMeshRef.current) {
-      glowMeshRef.current.scale.set(r * 2.2, r * 2.2, 1);
+      glowMeshRef.current.scale.set(r * 2.2 * introScaleRef.current, r * 2.2 * introScaleRef.current, 1);
       glowUniforms.uOpacity.value =
         MathUtils.lerp(1.08, 0.8, focusMixRef.current) *
         MathUtils.lerp(1 - MARKET_PULSE_GROUND_OPACITY_BREATH, 1 + MARKET_PULSE_GROUND_OPACITY_BREATH, mood) *
-        MathUtils.clamp(introBootAlpha, 0, 1);
+        introBoot;
     }
-    const introBoot = MathUtils.clamp(introBootAlpha, 0, 1);
     const slabMat = slabRef.current?.material as { opacity?: number } | undefined;
     if (slabMat) slabMat.opacity = MathUtils.damp(slabMat.opacity ?? 1, MathUtils.lerp(0.2, 1, introBoot), 7, delta);
     const deckMat = deckRef.current?.material as { opacity?: number; emissiveIntensity?: number } | undefined;
@@ -6474,126 +6484,128 @@ function CircuitBoardGround({
         />
       </mesh>
 
-      {gridLinePairs.map((points, i) => (
+      <group ref={graphicsGroupRef}>
+        {gridLinePairs.map((points, i) => (
+          <ScreenSpaceGroundLine
+            key={`grid-${i}`}
+            points={points}
+            y={groundGraphicY + 0.0005}
+            color={i % 2 === 0 ? '#d2b788' : '#bca173'}
+            opacity={(i % 4 === 0 ? 0.085 : 0.05) * intro}
+            lineWidth={i % 4 === 0 ? 1.25 : 0.95}
+            renderOrder={2.02}
+            focusMode={focusMode}
+            focusDim={FOCUS_GROUND_DIM}
+          />
+        ))}
+        {windRoseDiagonalLines.map((points, i) => (
+          <ScreenSpaceGroundLine
+            key={`wr-diag-${i}`}
+            points={points}
+            y={groundGraphicY + 0.0007}
+            color="#d7c09a"
+            opacity={0.24 * intro}
+            lineWidth={2.6}
+            renderOrder={2.08}
+            additive
+            focusMode={focusMode}
+            focusDim={FOCUS_GROUND_DIM}
+          />
+        ))}
+        {windRoseAxisLines.map((points, i) => (
+          <ScreenSpaceGroundLine
+            key={`wr-axis-${i}`}
+            points={points}
+            y={groundGraphicY + 0.0009}
+            color={i % 2 === 0 ? '#F4D3A2' : '#F7931A'}
+            opacity={(i % 2 === 0 ? 0.33 : 0.3) * intro}
+            lineWidth={3.6}
+            renderOrder={2.1}
+            additive
+            focusMode={focusMode}
+            focusDim={FOCUS_GROUND_DIM}
+          />
+        ))}
+        {windRoseCrosshairLines.map((points, i) => (
+          <ScreenSpaceGroundLine
+            key={`wr-cross-${i}`}
+            points={points}
+            y={groundGraphicY + 0.001}
+            color="#f6ead7"
+            opacity={0.2 * intro}
+            lineWidth={2.4}
+            renderOrder={2.12}
+            focusMode={focusMode}
+            focusDim={FOCUS_GROUND_DIM}
+          />
+        ))}
         <ScreenSpaceGroundLine
-          key={`grid-${i}`}
-          points={points}
-          y={groundGraphicY + 0.0005}
-          color={i % 2 === 0 ? '#d2b788' : '#bca173'}
-          opacity={(i % 4 === 0 ? 0.085 : 0.05) * intro}
-          lineWidth={i % 4 === 0 ? 1.25 : 0.95}
-          renderOrder={2.02}
-          focusMode={focusMode}
-          focusDim={FOCUS_GROUND_DIM}
-        />
-      ))}
-      {windRoseDiagonalLines.map((points, i) => (
-        <ScreenSpaceGroundLine
-          key={`wr-diag-${i}`}
-          points={points}
-          y={groundGraphicY + 0.0007}
-          color="#d7c09a"
+          points={outerRingPoints}
+          y={groundGraphicY + 0.0011}
+          color="#F7931A"
           opacity={0.24 * intro}
-          lineWidth={2.6}
-          renderOrder={2.08}
+          lineWidth={3.0}
+          renderOrder={2.16}
           additive
           focusMode={focusMode}
           focusDim={FOCUS_GROUND_DIM}
         />
-      ))}
-      {windRoseAxisLines.map((points, i) => (
         <ScreenSpaceGroundLine
-          key={`wr-axis-${i}`}
-          points={points}
-          y={groundGraphicY + 0.0009}
-          color={i % 2 === 0 ? '#F4D3A2' : '#F7931A'}
-          opacity={(i % 2 === 0 ? 0.33 : 0.3) * intro}
-          lineWidth={3.6}
-          renderOrder={2.1}
-          additive
+          points={innerRingPoints}
+          y={groundGraphicY + 0.00115}
+          color="#f2e4cf"
+          opacity={0.14 * intro}
+          lineWidth={2.0}
+          renderOrder={2.14}
           focusMode={focusMode}
           focusDim={FOCUS_GROUND_DIM}
         />
-      ))}
-      {windRoseCrosshairLines.map((points, i) => (
-        <ScreenSpaceGroundLine
-          key={`wr-cross-${i}`}
-          points={points}
-          y={groundGraphicY + 0.001}
-          color="#f6ead7"
-          opacity={0.2 * intro}
-          lineWidth={2.4}
-          renderOrder={2.12}
-          focusMode={focusMode}
-          focusDim={FOCUS_GROUND_DIM}
-        />
-      ))}
-      <ScreenSpaceGroundLine
-        points={outerRingPoints}
-        y={groundGraphicY + 0.0011}
-        color="#F7931A"
-        opacity={0.24 * intro}
-        lineWidth={3.0}
-        renderOrder={2.16}
-        additive
-        focusMode={focusMode}
-        focusDim={FOCUS_GROUND_DIM}
-      />
-      <ScreenSpaceGroundLine
-        points={innerRingPoints}
-        y={groundGraphicY + 0.00115}
-        color="#f2e4cf"
-        opacity={0.14 * intro}
-        lineWidth={2.0}
-        renderOrder={2.14}
-        focusMode={focusMode}
-        focusDim={FOCUS_GROUND_DIM}
-      />
 
-      <mesh position={[0, groundGraphicY + 0.002, 0]} renderOrder={3}>
-        <boxGeometry args={[0.18, 0.01, arteryLen]} />
-        <meshBasicMaterial
-          color="#F7931A"
-          transparent
-          opacity={0.34 * focusStaticScale * intro}
-          toneMapped={false}
-          depthWrite={false}
-          depthTest
-        />
-      </mesh>
-      <mesh position={[0, groundGraphicY + 0.0025, 0]} renderOrder={3}>
-        <boxGeometry args={[arteryLen * 0.72, 0.01, 0.16]} />
-        <meshBasicMaterial
-          color="#f4e8d6"
-          transparent
-          opacity={0.18 * focusStaticScale * intro}
-          toneMapped={false}
-          depthWrite={false}
-          depthTest
-        />
-      </mesh>
-      <mesh rotation={[0, Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
-        <boxGeometry args={[0.12, 0.008, arteryLen * 0.8]} />
-        <meshBasicMaterial
-          color="#F7931A"
-          transparent
-          opacity={0.2 * focusStaticScale * intro}
-          toneMapped={false}
-          depthWrite={false}
-          depthTest
-        />
-      </mesh>
-      <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
-        <boxGeometry args={[0.12, 0.008, arteryLen * 0.62]} />
-        <meshBasicMaterial
-          color="#ffe7c4"
-          transparent
-          opacity={0.15 * focusStaticScale * intro}
-          toneMapped={false}
-          depthWrite={false}
-          depthTest
-        />
-      </mesh>
+        <mesh position={[0, groundGraphicY + 0.002, 0]} renderOrder={3}>
+          <boxGeometry args={[0.18, 0.01, arteryLen]} />
+          <meshBasicMaterial
+            color="#F7931A"
+            transparent
+            opacity={0.34 * focusStaticScale * intro}
+            toneMapped={false}
+            depthWrite={false}
+            depthTest
+          />
+        </mesh>
+        <mesh position={[0, groundGraphicY + 0.0025, 0]} renderOrder={3}>
+          <boxGeometry args={[arteryLen * 0.72, 0.01, 0.16]} />
+          <meshBasicMaterial
+            color="#f4e8d6"
+            transparent
+            opacity={0.18 * focusStaticScale * intro}
+            toneMapped={false}
+            depthWrite={false}
+            depthTest
+          />
+        </mesh>
+        <mesh rotation={[0, Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
+          <boxGeometry args={[0.12, 0.008, arteryLen * 0.8]} />
+          <meshBasicMaterial
+            color="#F7931A"
+            transparent
+            opacity={0.2 * focusStaticScale * intro}
+            toneMapped={false}
+            depthWrite={false}
+            depthTest
+          />
+        </mesh>
+        <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
+          <boxGeometry args={[0.12, 0.008, arteryLen * 0.62]} />
+          <meshBasicMaterial
+            color="#ffe7c4"
+            transparent
+            opacity={0.15 * focusStaticScale * intro}
+            toneMapped={false}
+            depthWrite={false}
+            depthTest
+          />
+        </mesh>
+      </group>
     </group>
   );
 }
@@ -7999,6 +8011,40 @@ function FakeVignettePlane() {
   );
 }
 
+function useBtcGroundIntroBootAlpha() {
+  const [alpha, setAlpha] = useState(() =>
+    RUNTIME_QUALITY_CONFIG.reducedMotion || BTC_GROUND_BOOT_MS <= 0 ? 1 : 0
+  );
+
+  useEffect(() => {
+    if (RUNTIME_QUALITY_CONFIG.reducedMotion || BTC_GROUND_BOOT_MS <= 0) {
+      setAlpha(1);
+      return;
+    }
+
+    let raf = 0;
+    const startAt = performance.now();
+
+    const tick = (now: number) => {
+      const t = MathUtils.clamp((now - startAt) / BTC_GROUND_BOOT_MS, 0, 1);
+      const next = easeOutCubic(t);
+      setAlpha((prev) => (Math.abs(prev - next) > 0.001 ? next : prev));
+      if (t < 1) {
+        raf = window.requestAnimationFrame(tick);
+      }
+    };
+
+    setAlpha(0);
+    raf = window.requestAnimationFrame(tick);
+
+    return () => {
+      window.cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  return alpha;
+}
+
 function MarketMoodLightRig({ mood = 0.5 }: { mood?: number }) {
   const ambientRef = useRef<{ intensity: number; color: Color } | null>(null);
   const hemiRef = useRef<{ intensity: number; color: Color } | null>(null);
@@ -8066,6 +8112,7 @@ function SandboxScene({
   bounds,
   marketMoodTarget,
   topFx,
+  groundIntroBootAlpha,
   hoveredTowerSequence,
   selectedTowerSequence,
   tallestTowerSequence,
@@ -8095,6 +8142,7 @@ function SandboxScene({
     clutter: number;
     transitionLoad: number;
   };
+  groundIntroBootAlpha?: number;
   hoveredTowerSequence: number | null;
   selectedTowerSequence: number | null;
   tallestTowerSequence: number | null;
@@ -8280,7 +8328,12 @@ function SandboxScene({
         storyBeatUntilMs={fx.storyBeatUntilMs}
       />
 
-      <CircuitBoardGround bounds={bounds} focusMode={focusMode} marketPulse={marketMoodTarget} introBootAlpha={fx.introBootAlpha} />
+      <CircuitBoardGround
+        bounds={bounds}
+        focusMode={focusMode}
+        marketPulse={marketMoodTarget}
+        introBootAlpha={groundIntroBootAlpha ?? fx.introBootAlpha}
+      />
       <DistrictBoundariesLayer districts={districts} focusMode={focusMode} />
       <ShockwaveLayer shockwaves={shockwaves} focusMode={focusMode} />
       {showParksLayer ? <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} showFireflies={showParkFireflies} /> : null}
@@ -8358,6 +8411,7 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
   const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
   const [selectedTowerSequence, setSelectedTowerSequence] = useState<number | null>(null);
   const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
+  const btcGroundIntroBootAlpha = useBtcGroundIntroBootAlpha();
   const topFx = undefined;
 
   useEffect(() => {
@@ -8414,6 +8468,7 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
         bounds={bounds}
         marketMoodTarget={marketMoodTarget}
         topFx={topFx}
+        groundIntroBootAlpha={btcGroundIntroBootAlpha}
         hoveredTowerSequence={hoveredTowerSequence}
         selectedTowerSequence={selectedTowerSequence}
         tallestTowerSequence={tallestTowerSequence}
