@@ -3042,7 +3042,7 @@ function topCoinBaseScale({
   return MathUtils.clamp(scale, 0.85, 2.65);
 }
 
-function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
+function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: boolean) {
   const statesRef = useRef<Map<string, TopCoinSymbolState>>(new Map());
   const tracesRef = useRef<TraceDatum[]>([]);
   const arterialTracesRef = useRef<TraceDatum[]>([]);
@@ -3065,6 +3065,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
   const introRef = useRef({
     hasRun: false,
     active: false,
+    awaitingLayer2Start: false,
+    firstUsableSnapshotApplied: false,
     startPending: false,
     startedAtMs: 0,
     elapsedMs: 0,
@@ -3243,6 +3245,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       }
       introRef.current.hasRun = false;
       introRef.current.active = false;
+      introRef.current.awaitingLayer2Start = false;
+      introRef.current.firstUsableSnapshotApplied = false;
       introRef.current.startPending = false;
       introRef.current.progress = 0;
       introRef.current.bootAlpha = 0;
@@ -3324,10 +3328,23 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       sizeScoreBySymbol
     });
 
-    const shouldStartIntro = !replayEnabled && selected.hashChanged && !introRef.current.hasRun;
+    const firstUsableSnapshotApply =
+      !replayEnabled &&
+      !introRef.current.hasRun &&
+      !introRef.current.firstUsableSnapshotApplied &&
+      selected.items.length > 0 &&
+      !metadataOnly;
+    if (firstUsableSnapshotApply) {
+      introRef.current.firstUsableSnapshotApplied = true;
+      introRef.current.awaitingLayer2Start = true;
+    }
+
+    const shouldStartIntro =
+      !replayEnabled && !introRef.current.hasRun && introRef.current.awaitingLayer2Start && layer2Ready;
     if (shouldStartIntro) {
       introRef.current.hasRun = true;
       introRef.current.active = true;
+      introRef.current.awaitingLayer2Start = false;
       introRef.current.startPending = true;
       introRef.current.startedAtMs = 0;
       introRef.current.elapsedMs = 0;
@@ -3337,7 +3354,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
       introRef.current.storyBeatUntilMs = 0;
     }
 
-    const isIntroApply = introRef.current.active && states.size === 0 && !replayEnabled;
+    const isIntroApply =
+      !replayEnabled && states.size === 0 && (introRef.current.active || introRef.current.awaitingLayer2Start);
     const introDelayByRank = (rank: number) => {
       if (!isIntroApply) return 0;
       if (rank <= 20) return TOP_INTRO_WAVE_A_START_MS + (rank - 1) * TOP_INTRO_WAVE_A_STEP_MS;
@@ -3499,7 +3517,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         updateWaveUntilRef.current = animNowMs + stagedWindowMs;
       }
 
-      if (!replayEnabled && selected.hashChanged && !shouldStartIntro) {
+      if (!replayEnabled && selected.hashChanged && !shouldStartIntro && !introRef.current.awaitingLayer2Start) {
         const breadth = selected.stats.breadth ?? 0;
         pushShockwave(0, 0, breadth >= 0 ? '#f8b46a' : '#8eb1de', 950, Math.max(14, layout.cityRadius * 0.24), 0.2);
       }
@@ -3846,7 +3864,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
     } else {
       setVersion((v) => v + 1);
     }
-  }, [activeSnapshot, historyVersion, replayEnabled, replayIndex, replayMax, replayOffset, snapshot]);
+  }, [activeSnapshot, historyVersion, layer2Ready, replayEnabled, replayIndex, replayMax, replayOffset, snapshot]);
 
   useEffect(() => {
     let raf = 0;
@@ -8388,7 +8406,9 @@ function SandboxScene({
 export function TopCoinsSkylineSandbox({ onModeChange }: { onModeChange?: (nextMode: CityMode) => void }) {
   const mode: CityMode = 'top200';
   const { latest: topSnapshot } = useTopCoinsStore();
-  const topData = useTopCoinsSkyline(topSnapshot);
+  const topGroundIntroBootAlpha = useTopGroundIntroBootAlpha();
+  const topLayer2Ready = topGroundIntroBootAlpha >= 0.999;
+  const topData = useTopCoinsSkyline(topSnapshot, topLayer2Ready);
   const active = topData;
   const {
     towers,
@@ -8409,7 +8429,6 @@ export function TopCoinsSkylineSandbox({ onModeChange }: { onModeChange?: (nextM
   const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
   const [selectedTowerSequence, setSelectedTowerSequence] = useState<number | null>(null);
   const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
-  const topGroundIntroBootAlpha = useTopGroundIntroBootAlpha();
   const [nowTick, setNowTick] = useState(() => Date.now());
   const topDebug = topData.topCoinsDebug;
   const topFx = topData.topFx;
