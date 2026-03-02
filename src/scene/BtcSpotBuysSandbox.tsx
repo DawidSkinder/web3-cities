@@ -454,7 +454,7 @@ const TOP_INTRO_TOTAL_MS = Math.max(
 const TOP_INTRO_CAMERA_BEAT_MS = scaleTopIntroMs(10_500);
 const TOP_INTRO_DISC_STAGGER_STEP_MS = scaleTopIntroMs(3);
 const TOP_INTRO_DISC_STAGGER_MAX_MS = scaleTopIntroMs(360);
-const BTC_GROUND_BOOT_MS = RUNTIME_QUALITY_CONFIG.reducedMotion ? 0 : 2400;
+const BTC_GROUND_BOOT_MS = 2400;
 const BTC_GROUND_BOOT_START_SCALE = 0.34;
 const TOP_UPDATE_THRESHOLD_PCT = 0.1;
 const TOP_UPDATE_THRESHOLD_VOLUME = 0.05;
@@ -8022,12 +8022,10 @@ function FakeVignettePlane() {
 }
 
 function useBtcGroundIntroBootAlpha() {
-  const [alpha, setAlpha] = useState(() =>
-    RUNTIME_QUALITY_CONFIG.reducedMotion || BTC_GROUND_BOOT_MS <= 0 ? 1 : 0
-  );
+  const [alpha, setAlpha] = useState(() => (BTC_GROUND_BOOT_MS <= 0 ? 1 : 0));
 
   useEffect(() => {
-    if (RUNTIME_QUALITY_CONFIG.reducedMotion || BTC_GROUND_BOOT_MS <= 0) {
+    if (BTC_GROUND_BOOT_MS <= 0) {
       setAlpha(1);
       return;
     }
