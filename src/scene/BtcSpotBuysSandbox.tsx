@@ -541,15 +541,15 @@ const BTC_MOUNTAIN_SEED = 58_031;
 const BTC_MOUNTAIN_LAYER_FAR_COUNT = 56;
 const BTC_MOUNTAIN_LAYER_MID_COUNT = 38;
 const BTC_MOUNTAIN_LAYER_PEAK_COUNT = 24;
-const BTC_MOUNTAIN_RING_MULT = 5.4;
-const BTC_MOUNTAIN_RING_MIN = 380;
-const BTC_MOUNTAIN_RING_MAX = 620;
+const BTC_MOUNTAIN_RING_MULT = 6.2;
+const BTC_MOUNTAIN_RING_MIN = 520;
+const BTC_MOUNTAIN_RING_MAX = 680;
 const BTC_MOUNTAIN_METRIC_UPDATE_MS = 1000;
 const BTC_MOUNTAIN_RENDER_ORDER = -5;
 const BTC_MOUNTAIN_REVEAL_MID_DELAY_S = 0.34;
 const BTC_MOUNTAIN_REVEAL_PEAK_DELAY_S = 0.66;
 const BTC_MOUNTAIN_REVEAL_LAYER_DUR_S = 1.05;
-const BTC_MOUNTAIN_REVEAL_FALLBACK_S = BTC_GROUND_BOOT_MS * 0.001 + 0.45;
+const BTC_MOUNTAIN_REVEAL_FALLBACK_S = BTC_GROUND_BOOT_MS * 0.001 + 0.2;
 const BTC_MOUNTAIN_EMISSIVE_FAR_CORE = 0.072;
 const BTC_MOUNTAIN_EMISSIVE_FAR_SHOULDER = 0.05;
 const BTC_MOUNTAIN_EMISSIVE_FAR_FOOTHILL = 0.03;
@@ -8246,7 +8246,7 @@ function MountainsBackdrop({
       BTC_MOUNTAIN_RING_MAX
     )
   );
-  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 4.8 + cityRadius * 0.45, 220, 340));
+  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 3.6 + cityRadius * 0.35, 170, 260));
   const smoothRingRef = useRef(targetRingRef.current);
   const smoothScaleRef = useRef(targetScaleRef.current);
   const revealTimeRef = useRef(0);
@@ -8295,7 +8295,7 @@ function MountainsBackdrop({
       const scaleFromRadius = cityRadiusRef.current * 0.45;
       const scaleFromHeights = cityScaleMetricRef.current * 4.8;
       targetRingRef.current = nextRing;
-      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 220, 340);
+      targetScaleRef.current = MathUtils.clamp(scaleFromRadius * 0.78 + scaleFromHeights * 0.78, 170, 260);
     };
     updateTargets();
     const timer = window.setInterval(updateTargets, BTC_MOUNTAIN_METRIC_UPDATE_MS);
@@ -8454,35 +8454,35 @@ function MountainsBackdrop({
       !!peakShoulderRef.current &&
       !!peakFoothillRef.current;
     if (!meshesReady) return;
-    if (farGroupRef.current) farGroupRef.current.visible = farReveal > 0.001;
-    if (midGroupRef.current) midGroupRef.current.visible = midReveal > 0.001;
-    if (peakGroupRef.current) peakGroupRef.current.visible = peakReveal > 0.001;
-    const farY = GROUND_DECK_Y - scale * 0.24 - (1 - farReveal) * scale * 0.05;
-    const midY = GROUND_DECK_Y - scale * 0.29 - (1 - midReveal) * scale * 0.05;
-    const peakY = GROUND_DECK_Y - scale * 0.34 - (1 - peakReveal) * scale * 0.045;
-    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.01, scale * (0.96 * MathUtils.lerp(0.93, 1, farReveal)), farY, 1.0, 0.98);
+    if (farGroupRef.current) farGroupRef.current.visible = farReveal > 0.0002;
+    if (midGroupRef.current) midGroupRef.current.visible = midReveal > 0.0002;
+    if (peakGroupRef.current) peakGroupRef.current.visible = peakReveal > 0.0002;
+    const farY = GROUND_DECK_Y - scale * 0.26 - (1 - farReveal) * scale * 0.035;
+    const midY = GROUND_DECK_Y - scale * 0.3 - (1 - midReveal) * scale * 0.034;
+    const peakY = GROUND_DECK_Y - scale * 0.33 - (1 - peakReveal) * scale * 0.03;
+    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.01, scale * (0.74 * MathUtils.lerp(0.82, 1, farReveal)), farY, 1.0, 0.98);
     applyShoulderLayer(
       farShoulderRef.current,
       farUnits,
       ring * 1.01,
-      scale * (0.72 * MathUtils.lerp(0.95, 1, farReveal)),
+      scale * (0.56 * MathUtils.lerp(0.84, 1, farReveal)),
       farY
     );
-    applyFoothillLayer(farFoothillRef.current, farUnits, ring * 1.01, scale * (0.52 * MathUtils.lerp(0.95, 1, farReveal)), farY);
-    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.91, scale * (0.88 * MathUtils.lerp(0.94, 1, midReveal)), midY, 1.08, 1.02);
+    applyFoothillLayer(farFoothillRef.current, farUnits, ring * 1.01, scale * (0.42 * MathUtils.lerp(0.84, 1, farReveal)), farY);
+    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.91, scale * (0.68 * MathUtils.lerp(0.84, 1, midReveal)), midY, 1.08, 1.02);
     applyShoulderLayer(
       midShoulderRef.current,
       midUnits,
       ring * 0.91,
-      scale * (0.64 * MathUtils.lerp(0.95, 1, midReveal)),
+      scale * (0.5 * MathUtils.lerp(0.86, 1, midReveal)),
       midY
     );
-    applyFoothillLayer(midFoothillRef.current, midUnits, ring * 0.91, scale * (0.48 * MathUtils.lerp(0.95, 1, midReveal)), midY);
+    applyFoothillLayer(midFoothillRef.current, midUnits, ring * 0.91, scale * (0.38 * MathUtils.lerp(0.86, 1, midReveal)), midY);
     applyCoreLayer(
       peakCoreRef.current,
       peakUnits,
       ring * 1.14,
-      scale * (0.8 * MathUtils.lerp(0.95, 1, peakReveal)),
+      scale * (0.62 * MathUtils.lerp(0.86, 1, peakReveal)),
       peakY,
       0.92,
       0.9
@@ -8491,10 +8491,10 @@ function MountainsBackdrop({
       peakShoulderRef.current,
       peakUnits,
       ring * 1.14,
-      scale * (0.58 * MathUtils.lerp(0.95, 1, peakReveal)),
+      scale * (0.44 * MathUtils.lerp(0.88, 1, peakReveal)),
       peakY
     );
-    applyFoothillLayer(peakFoothillRef.current, peakUnits, ring * 1.14, scale * (0.42 * MathUtils.lerp(0.95, 1, peakReveal)), peakY);
+    applyFoothillLayer(peakFoothillRef.current, peakUnits, ring * 1.14, scale * (0.32 * MathUtils.lerp(0.88, 1, peakReveal)), peakY);
 
     const farCoreMat = farCoreRef.current.material as { emissiveIntensity?: number } | undefined;
     if (farCoreMat) farCoreMat.emissiveIntensity = BTC_MOUNTAIN_EMISSIVE_FAR_CORE * farReveal;
