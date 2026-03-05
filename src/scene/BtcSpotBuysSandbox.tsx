@@ -549,12 +549,12 @@ const BTC_MOUNTAIN_RENDER_ORDER = -5;
 const BTC_MOUNTAIN_REVEAL_MID_DELAY_S = 0.34;
 const BTC_MOUNTAIN_REVEAL_PEAK_DELAY_S = 0.66;
 const BTC_MOUNTAIN_REVEAL_LAYER_DUR_S = 1.05;
-const BTC_MOUNTAIN_EMISSIVE_FAR_CORE = 0.028;
-const BTC_MOUNTAIN_EMISSIVE_FAR_SHOULDER = 0.018;
-const BTC_MOUNTAIN_EMISSIVE_MID_CORE = 0.034;
-const BTC_MOUNTAIN_EMISSIVE_MID_SHOULDER = 0.022;
-const BTC_MOUNTAIN_EMISSIVE_PEAK_CORE = 0.031;
-const BTC_MOUNTAIN_EMISSIVE_PEAK_SHOULDER = 0.02;
+const BTC_MOUNTAIN_EMISSIVE_FAR_CORE = 0.052;
+const BTC_MOUNTAIN_EMISSIVE_FAR_SHOULDER = 0.036;
+const BTC_MOUNTAIN_EMISSIVE_MID_CORE = 0.064;
+const BTC_MOUNTAIN_EMISSIVE_MID_SHOULDER = 0.042;
+const BTC_MOUNTAIN_EMISSIVE_PEAK_CORE = 0.058;
+const BTC_MOUNTAIN_EMISSIVE_PEAK_SHOULDER = 0.038;
 const BTC_BIRD_START_TOWER_COUNT = 6;
 const BTC_BIRD_MIN_COUNT = 10;
 const BTC_BIRD_MAX_COUNT = 220;
@@ -8316,9 +8316,9 @@ function MountainsBackdrop({
       const x = Math.sin(unit.angle) * radial;
       const z = Math.cos(unit.angle) * radial;
       const yaw = unit.angle + Math.PI + unit.yawJitter;
-      const h = layerScale * MathUtils.lerp(0.62, 1.08, unit.hT);
-      const sx = h * MathUtils.lerp(0.58, 1.24, unit.wT) * sxMult;
-      const sz = h * MathUtils.lerp(0.56, 1.2, unit.dT) * szMult;
+      const h = layerScale * MathUtils.lerp(0.42, 0.82, unit.hT);
+      const sx = h * MathUtils.lerp(0.65, 1.36, unit.wT) * sxMult;
+      const sz = h * MathUtils.lerp(0.62, 1.32, unit.dT) * szMult;
       quat.setFromAxisAngle(up, yaw);
       pos.set(x, yBase, z);
       scale.set(sx, h, sz);
@@ -8350,11 +8350,11 @@ function MountainsBackdrop({
       const z = Math.cos(unit.angle) * radial;
       const coreYaw = unit.angle + Math.PI + unit.yawJitter;
       const sideYaw = coreYaw + MathUtils.lerp(-1.05, 1.05, unit.shoulderDirT);
-      const hBase = layerScale * MathUtils.lerp(0.52, 0.94, unit.hT);
-      const h = hBase * MathUtils.lerp(0.22, 0.42, unit.shoulderScaleT);
-      const offset = hBase * MathUtils.lerp(0.56, 1.24, unit.shoulderSpreadT);
-      const sx = hBase * MathUtils.lerp(1.2, 2.6, unit.wT) * MathUtils.lerp(1.0, 1.16, unit.shoulderScaleT);
-      const sz = hBase * MathUtils.lerp(1.18, 2.5, unit.dT) * MathUtils.lerp(1.0, 1.14, 1 - unit.shoulderScaleT);
+      const hBase = layerScale * MathUtils.lerp(0.38, 0.76, unit.hT);
+      const h = hBase * MathUtils.lerp(0.24, 0.45, unit.shoulderScaleT);
+      const offset = hBase * MathUtils.lerp(0.74, 1.48, unit.shoulderSpreadT);
+      const sx = hBase * MathUtils.lerp(1.25, 2.9, unit.wT) * MathUtils.lerp(1.0, 1.16, unit.shoulderScaleT);
+      const sz = hBase * MathUtils.lerp(1.22, 2.8, unit.dT) * MathUtils.lerp(1.0, 1.14, 1 - unit.shoulderScaleT);
       quat.setFromAxisAngle(up, sideYaw);
       pos.set(
         x + Math.sin(sideYaw + Math.PI * 0.5) * offset,
@@ -8406,9 +8406,9 @@ function MountainsBackdrop({
     if (farGroupRef.current) farGroupRef.current.visible = farReveal > 0.001;
     if (midGroupRef.current) midGroupRef.current.visible = midReveal > 0.001;
     if (peakGroupRef.current) peakGroupRef.current.visible = peakReveal > 0.001;
-    const farY = GROUND_DECK_Y - scale * 0.18 - (1 - farReveal) * scale * 0.08;
-    const midY = GROUND_DECK_Y - scale * 0.24 - (1 - midReveal) * scale * 0.08;
-    const peakY = GROUND_DECK_Y - scale * 0.29 - (1 - peakReveal) * scale * 0.07;
+    const farY = GROUND_DECK_Y - scale * 0.62 - (1 - farReveal) * scale * 0.06;
+    const midY = GROUND_DECK_Y - scale * 0.68 - (1 - midReveal) * scale * 0.06;
+    const peakY = GROUND_DECK_Y - scale * 0.74 - (1 - peakReveal) * scale * 0.05;
     applyCoreLayer(farCoreRef.current, farUnits, ring * 1.02, scale * (1.28 * MathUtils.lerp(0.94, 1, farReveal)), farY, 1.0, 0.98);
     applyShoulderLayer(
       farShoulderRef.current,
