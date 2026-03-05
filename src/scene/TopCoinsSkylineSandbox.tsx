@@ -3126,8 +3126,6 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
   const introRef = useRef({
     hasRun: false,
     active: false,
-    awaitingLayer2Start: false,
-    firstUsableSnapshotApplied: false,
     startPending: false,
     startedAtMs: 0,
     elapsedMs: 0,
@@ -3306,8 +3304,6 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
       }
       introRef.current.hasRun = false;
       introRef.current.active = false;
-      introRef.current.awaitingLayer2Start = false;
-      introRef.current.firstUsableSnapshotApplied = false;
       deferredDecorativeBuildPendingRef.current = false;
       introRef.current.startPending = false;
       introRef.current.progress = 0;
@@ -3399,23 +3395,10 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
       sizeScoreBySymbol
     });
 
-    const firstUsableSnapshotApply =
-      !replayEnabled &&
-      !introRef.current.hasRun &&
-      !introRef.current.firstUsableSnapshotApplied &&
-      selected.items.length > 0 &&
-      !metadataOnly;
-    if (firstUsableSnapshotApply) {
-      introRef.current.firstUsableSnapshotApplied = true;
-      introRef.current.awaitingLayer2Start = true;
-    }
-
-    const shouldStartIntro =
-      !replayEnabled && !introRef.current.hasRun && introRef.current.awaitingLayer2Start && layer2Ready;
+    const shouldStartIntro = !replayEnabled && !introRef.current.hasRun && states.size === 0 && selected.items.length > 0 && !metadataOnly;
     if (shouldStartIntro) {
       introRef.current.hasRun = true;
       introRef.current.active = true;
-      introRef.current.awaitingLayer2Start = false;
       introRef.current.startPending = true;
       introRef.current.startedAtMs = 0;
       introRef.current.elapsedMs = 0;
@@ -3425,8 +3408,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
       introRef.current.storyBeatUntilMs = 0;
     }
 
-    const isIntroApply =
-      !replayEnabled && states.size === 0 && (introRef.current.active || introRef.current.awaitingLayer2Start);
+    const isIntroApply = !replayEnabled && states.size === 0 && introRef.current.active;
     const introDelayByRank = (rank: number) => {
       if (!isIntroApply) return 0;
       if (rank <= 20) return TOP_INTRO_WAVE_A_START_MS + (rank - 1) * TOP_INTRO_WAVE_A_STEP_MS;
@@ -3588,7 +3570,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
         updateWaveUntilRef.current = animNowMs + stagedWindowMs;
       }
 
-      if (!replayEnabled && selected.hashChanged && !shouldStartIntro && !introRef.current.awaitingLayer2Start) {
+      if (!replayEnabled && selected.hashChanged && !shouldStartIntro) {
         const breadth = selected.stats.breadth ?? 0;
         pushShockwave(0, 0, breadth >= 0 ? '#f8b46a' : '#8eb1de', 950, Math.max(14, layout.cityRadius * 0.24), 0.2);
       }
@@ -8943,36 +8925,40 @@ function FakeVignettePlane() {
 }
 
 function useTopGroundIntroBoot() {
-  const startAtRef = useRef(performance.now());
+  const [introBootAlpha, setIntroBootAlpha] = useState(() => (BTC_GROUND_BOOT_MS <= 0 ? 1 : 0));
   const [layer2Ready, setLayer2Ready] = useState(() => BTC_GROUND_BOOT_MS <= 0);
 
   useEffect(() => {
     if (BTC_GROUND_BOOT_MS <= 0) {
+      setIntroBootAlpha(1);
       setLayer2Ready(true);
       return;
     }
-    const startAt = startAtRef.current;
-    const now = performance.now();
-    const elapsed = Math.max(0, now - startAt);
-    if (elapsed >= BTC_GROUND_BOOT_MS) {
-      setLayer2Ready(true);
-      return;
-    }
-    const leftMs = Math.max(0, BTC_GROUND_BOOT_MS - elapsed);
+
+    let raf = 0;
+    const startAt = performance.now();
+
+    const tick = (now: number) => {
+      const t = MathUtils.clamp((now - startAt) / BTC_GROUND_BOOT_MS, 0, 1);
+      const next = easeOutCubic(t);
+      setIntroBootAlpha((prev) => (Math.abs(prev - next) > 0.001 ? next : prev));
+      if (t < 1) {
+        raf = window.requestAnimationFrame(tick);
+      }
+    };
+
+    setIntroBootAlpha(0);
+    setLayer2Ready(false);
+    raf = window.requestAnimationFrame(tick);
     const timer = window.setTimeout(() => {
       setLayer2Ready(true);
-    }, leftMs);
+    }, BTC_GROUND_BOOT_MS);
 
     return () => {
+      window.cancelAnimationFrame(raf);
       window.clearTimeout(timer);
     };
   }, []);
-
-  const initialT =
-    BTC_GROUND_BOOT_MS <= 0
-      ? 1
-      : MathUtils.clamp((performance.now() - startAtRef.current) / BTC_GROUND_BOOT_MS, 0, 1);
-  const introBootAlpha = BTC_GROUND_BOOT_MS <= 0 ? 1 : Math.max(0.18, easeOutCubic(initialT));
 
   return {
     introBootAlpha,

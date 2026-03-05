@@ -1,0 +1,127 @@
+name: Top Coins Watchdog
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_run:
+    workflows:
+      - Generate Top Coins Snapshot
+    types:
+      - completed
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: top-coins-watchdog
+  cancel-in-progress: true
+
+jobs:
+  restart-if-needed:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.head_branch == 'main' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Evaluate worker health
+        id: evaluate
+        uses: actions/github-script@v7
+        env:
+          WORKFLOW_FILE: generate-top-coins-snapshot.yml
+          WORKER_BRANCH: main
+          MAX_IDLE_SECONDS: "480"
+        with:
+          script: |
+            const workflowId = process.env.WORKFLOW_FILE;
+            const branch = process.env.WORKER_BRANCH;
+            const maxIdleSeconds = Number(process.env.MAX_IDLE_SECONDS || "480");
+            const { owner, repo } = context.repo;
+
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: workflowId,
+              branch,
+              per_page: 20
+            });
+
+            const runs = Array.isArray(data.workflow_runs) ? data.workflow_runs : [];
+            const triggerRunId =
+              context.eventName === "workflow_run" ? Number(context.payload.workflow_run?.id || 0) : 0;
+            const activeRuns = runs.filter((run) => run.status === "queued" || run.status === "in_progress");
+            const otherActiveRuns = activeRuns.filter((run) => Number(run.id) !== triggerRunId);
+            const latestCompleted = runs.find((run) => run.status === "completed") || null;
+
+            let shouldDispatch = false;
+            let reason = "healthy";
+
+            if (otherActiveRuns.length > 0) {
+              reason = `worker-active-${otherActiveRuns.length}`;
+            } else if (context.eventName === "workflow_run") {
+              const conclusion = String(context.payload.workflow_run?.conclusion || "");
+              if (conclusion && conclusion !== "success") {
+                shouldDispatch = true;
+                reason = `worker-${conclusion}`;
+              }
+            }
+
+            if (!shouldDispatch && otherActiveRuns.length === 0) {
+              if (!latestCompleted) {
+                shouldDispatch = true;
+                reason = "no-worker-runs";
+              } else {
+                const updatedAt = Date.parse(latestCompleted.updated_at || latestCompleted.created_at || "");
+                const ageSeconds = Number.isFinite(updatedAt)
+                  ? Math.max(0, Math.floor((Date.now() - updatedAt) / 1000))
+                  : Number.POSITIVE_INFINITY;
+
+                core.setOutput("latest_age_seconds", String(ageSeconds));
+                core.setOutput("latest_conclusion", String(latestCompleted.conclusion || "unknown"));
+                core.setOutput("latest_run_id", String(latestCompleted.id || ""));
+
+                if (ageSeconds >= maxIdleSeconds) {
+                  shouldDispatch = true;
+                  reason = `worker-idle-${ageSeconds}s`;
+                } else if (reason === "healthy") {
+                  reason = `worker-healthy-${ageSeconds}s`;
+                }
+              }
+            }
+
+            core.setOutput("should_dispatch", shouldDispatch ? "true" : "false");
+            core.setOutput("reason", reason);
+            core.setOutput("active_count", String(otherActiveRuns.length));
+
+            core.info(
+              [
+                `event=${context.eventName}`,
+                `branch=${branch}`,
+                `active=${otherActiveRuns.length}`,
+                `latestCompleted=${latestCompleted ? latestCompleted.id : "none"}`,
+                `reason=${reason}`,
+                `dispatch=${shouldDispatch}`
+              ].join(" ")
+            );
+
+      - name: Queue recovery run
+        if: ${{ steps.evaluate.outputs.should_dispatch == 'true' }}
+        uses: actions/github-script@v7
+        env:
+          RESTART_REASON: ${{ steps.evaluate.outputs.reason }}
+        with:
+          script: |
+            const reason = process.env.RESTART_REASON || "watchdog-restart";
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              event_type: "top-coins-loop",
+              client_payload: {
+                source: "top-coins-watchdog",
+                reason,
+                triggered_by: context.eventName,
+                watchdog_run_id: String(context.runId)
+              }
+            });
+
+            core.info(`Queued top-coins-loop recovery run: ${reason}`);
