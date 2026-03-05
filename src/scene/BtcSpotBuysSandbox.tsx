@@ -12,7 +12,6 @@ import {
   Color,
   DoubleSide,
   EdgesGeometry,
-  FrontSide,
   LinearFilter,
   LineBasicMaterial,
   Matrix4,
@@ -539,9 +538,9 @@ const BTC_MOUNTAIN_SEED = 58_031;
 const BTC_MOUNTAIN_LAYER_FAR_COUNT = 18;
 const BTC_MOUNTAIN_LAYER_MID_COUNT = 12;
 const BTC_MOUNTAIN_LAYER_PEAK_COUNT = 7;
-const BTC_MOUNTAIN_RING_MULT = 5.0;
-const BTC_MOUNTAIN_RING_MIN = 340;
-const BTC_MOUNTAIN_RING_MAX = 380;
+const BTC_MOUNTAIN_RING_MULT = 7.2;
+const BTC_MOUNTAIN_RING_MIN = 520;
+const BTC_MOUNTAIN_RING_MAX = 760;
 const BTC_MOUNTAIN_METRIC_UPDATE_MS = 1000;
 const BTC_MOUNTAIN_RENDER_ORDER = -5;
 const BTC_BIRD_START_TOWER_COUNT = 6;
@@ -8196,12 +8195,9 @@ function MountainsBackdrop({
       BTC_MOUNTAIN_RING_MAX
     )
   );
-  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 4.8 + cityRadius * 0.45, 150, 250));
+  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 4.8 + cityRadius * 0.45, 220, 340));
   const smoothRingRef = useRef(targetRingRef.current);
   const smoothScaleRef = useRef(targetScaleRef.current);
-  const lastAppliedRingRef = useRef(-1);
-  const lastAppliedScaleRef = useRef(-1);
-  const appliedOnceRef = useRef(false);
   const matrixRef = useRef(new Matrix4());
   const quatRef = useRef(new Quaternion());
   const posRef = useRef(new Vector3());
@@ -8245,7 +8241,7 @@ function MountainsBackdrop({
       const scaleFromRadius = cityRadiusRef.current * 0.45;
       const scaleFromHeights = cityScaleMetricRef.current * 4.8;
       targetRingRef.current = nextRing;
-      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 150, 250);
+      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 220, 340);
     };
     updateTargets();
     const timer = window.setInterval(updateTargets, BTC_MOUNTAIN_METRIC_UPDATE_MS);
@@ -8274,9 +8270,9 @@ function MountainsBackdrop({
       const x = Math.sin(unit.angle) * radial;
       const z = Math.cos(unit.angle) * radial;
       const yaw = unit.angle + Math.PI + unit.yawJitter;
-      const h = layerScale * MathUtils.lerp(0.95, 1.75, unit.hT);
-      const sx = h * MathUtils.lerp(0.22, 0.46, unit.wT) * sxMult;
-      const sz = h * MathUtils.lerp(0.22, 0.48, unit.dT) * szMult;
+      const h = layerScale * MathUtils.lerp(0.78, 1.4, unit.hT);
+      const sx = h * MathUtils.lerp(0.35, 0.82, unit.wT) * sxMult;
+      const sz = h * MathUtils.lerp(0.34, 0.84, unit.dT) * szMult;
       quat.setFromAxisAngle(up, yaw);
       pos.set(x, yBase, z);
       scale.set(sx, h, sz);
@@ -8308,15 +8304,15 @@ function MountainsBackdrop({
       const z = Math.cos(unit.angle) * radial;
       const coreYaw = unit.angle + Math.PI + unit.yawJitter;
       const sideYaw = coreYaw + MathUtils.lerp(-1.05, 1.05, unit.shoulderDirT);
-      const hBase = layerScale * MathUtils.lerp(0.78, 1.55, unit.hT);
-      const h = hBase * MathUtils.lerp(0.22, 0.44, unit.shoulderScaleT);
-      const offset = hBase * MathUtils.lerp(0.26, 0.66, unit.shoulderSpreadT);
-      const sx = hBase * MathUtils.lerp(0.34, 0.96, unit.wT) * MathUtils.lerp(1.0, 1.22, unit.shoulderScaleT);
-      const sz = hBase * MathUtils.lerp(0.36, 1.0, unit.dT) * MathUtils.lerp(1.0, 1.2, 1 - unit.shoulderScaleT);
+      const hBase = layerScale * MathUtils.lerp(0.66, 1.18, unit.hT);
+      const h = hBase * MathUtils.lerp(0.13, 0.26, unit.shoulderScaleT);
+      const offset = hBase * MathUtils.lerp(0.32, 0.78, unit.shoulderSpreadT);
+      const sx = hBase * MathUtils.lerp(0.82, 1.88, unit.wT) * MathUtils.lerp(1.0, 1.16, unit.shoulderScaleT);
+      const sz = hBase * MathUtils.lerp(0.8, 1.9, unit.dT) * MathUtils.lerp(1.0, 1.14, 1 - unit.shoulderScaleT);
       quat.setFromAxisAngle(up, sideYaw);
       pos.set(
         x + Math.sin(sideYaw + Math.PI * 0.5) * offset,
-        yBase - hBase * MathUtils.lerp(0.24, 0.44, unit.shoulderScaleT) - h * MathUtils.lerp(0.1, 0.24, unit.shoulderScaleT),
+        yBase - hBase * MathUtils.lerp(0.16, 0.32, unit.shoulderScaleT) - h * MathUtils.lerp(0.08, 0.2, unit.shoulderScaleT),
         z + Math.cos(sideYaw + Math.PI * 0.5) * offset
       );
       scale.set(sx, h, sz);
@@ -8345,22 +8341,15 @@ function MountainsBackdrop({
       !!peakCoreRef.current &&
       !!peakShoulderRef.current;
     if (!meshesReady) return;
-    const changed = Math.abs(ring - lastAppliedRingRef.current) > 0.28 || Math.abs(scale - lastAppliedScaleRef.current) > 0.12;
-    if (!appliedOnceRef.current || changed) {
-      lastAppliedRingRef.current = ring;
-      lastAppliedScaleRef.current = scale;
-      appliedOnceRef.current = true;
-
-      const farY = GROUND_DECK_Y - scale * 0.64;
-      const midY = GROUND_DECK_Y - scale * 0.72;
-      const peakY = GROUND_DECK_Y - scale * 0.8;
-      applyCoreLayer(farCoreRef.current, farUnits, ring * 1.02, scale * 1.34, farY, 1.0, 0.98);
-      applyShoulderLayer(farShoulderRef.current, farUnits, ring * 1.02, scale * 1.24, farY);
-      applyCoreLayer(midCoreRef.current, midUnits, ring * 0.9, scale * 1.15, midY, 1.08, 1.02);
-      applyShoulderLayer(midShoulderRef.current, midUnits, ring * 0.9, scale * 1.04, midY);
-      applyCoreLayer(peakCoreRef.current, peakUnits, ring * 1.16, scale * 1.06, peakY, 0.92, 0.9);
-      applyShoulderLayer(peakShoulderRef.current, peakUnits, ring * 1.16, scale * 0.94, peakY);
-    }
+    const farY = GROUND_DECK_Y - scale * 0.18;
+    const midY = GROUND_DECK_Y - scale * 0.24;
+    const peakY = GROUND_DECK_Y - scale * 0.29;
+    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.02, scale * 1.28, farY, 1.0, 0.98);
+    applyShoulderLayer(farShoulderRef.current, farUnits, ring * 1.02, scale * 1.06, farY);
+    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.9, scale * 1.14, midY, 1.08, 1.02);
+    applyShoulderLayer(midShoulderRef.current, midUnits, ring * 0.9, scale * 0.92, midY);
+    applyCoreLayer(peakCoreRef.current, peakUnits, ring * 1.16, scale * 1.02, peakY, 0.92, 0.9);
+    applyShoulderLayer(peakShoulderRef.current, peakUnits, ring * 1.16, scale * 0.84, peakY);
   });
 
   return (
@@ -8372,14 +8361,12 @@ function MountainsBackdrop({
           frustumCulled={false}
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER}
         >
-          <meshStandardMaterial
-            color="#2f3849"
-            emissive="#8f6b47"
-            emissiveIntensity={0.21}
-            roughness={0.98}
-            metalness={0.02}
-            flatShading
-            side={FrontSide}
+          <meshBasicMaterial
+            color="#2e3749"
+            transparent
+            opacity={0.62}
+            toneMapped={false}
+            side={DoubleSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8388,14 +8375,12 @@ function MountainsBackdrop({
           frustumCulled={false}
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.01}
         >
-          <meshStandardMaterial
-            color="#252d3d"
-            emissive="#75573e"
-            emissiveIntensity={0.16}
-            roughness={0.97}
-            metalness={0.03}
-            flatShading
-            side={FrontSide}
+          <meshBasicMaterial
+            color="#253042"
+            transparent
+            opacity={0.52}
+            toneMapped={false}
+            side={DoubleSide}
           />
         </instancedMesh>
       </group>
@@ -8406,14 +8391,12 @@ function MountainsBackdrop({
           frustumCulled={false}
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.02}
         >
-          <meshStandardMaterial
-            color="#3a455b"
-            emissive="#a97b50"
-            emissiveIntensity={0.23}
-            roughness={0.97}
-            metalness={0.03}
-            flatShading
-            side={FrontSide}
+          <meshBasicMaterial
+            color="#3b465d"
+            transparent
+            opacity={0.66}
+            toneMapped={false}
+            side={DoubleSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8422,14 +8405,12 @@ function MountainsBackdrop({
           frustumCulled={false}
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.03}
         >
-          <meshStandardMaterial
-            color="#2a354b"
-            emissive="#806041"
-            emissiveIntensity={0.17}
-            roughness={0.96}
-            metalness={0.04}
-            flatShading
-            side={FrontSide}
+          <meshBasicMaterial
+            color="#2c364b"
+            transparent
+            opacity={0.56}
+            toneMapped={false}
+            side={DoubleSide}
           />
         </instancedMesh>
       </group>
@@ -8440,14 +8421,12 @@ function MountainsBackdrop({
           frustumCulled={false}
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER - 0.02}
         >
-          <meshStandardMaterial
-            color="#344057"
-            emissive="#936d48"
-            emissiveIntensity={0.2}
-            roughness={0.97}
-            metalness={0.03}
-            flatShading
-            side={FrontSide}
+          <meshBasicMaterial
+            color="#323e54"
+            transparent
+            opacity={0.58}
+            toneMapped={false}
+            side={DoubleSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8456,14 +8435,12 @@ function MountainsBackdrop({
           frustumCulled={false}
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.04}
         >
-          <meshStandardMaterial
-            color="#232d41"
-            emissive="#795840"
-            emissiveIntensity={0.15}
-            roughness={0.98}
-            metalness={0.02}
-            flatShading
-            side={FrontSide}
+          <meshBasicMaterial
+            color="#273147"
+            transparent
+            opacity={0.48}
+            toneMapped={false}
+            side={DoubleSide}
           />
         </instancedMesh>
       </group>
