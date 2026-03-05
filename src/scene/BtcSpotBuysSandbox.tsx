@@ -557,10 +557,18 @@ const BTC_BIRD_CLEARANCE_Y = 1.35;
 const BTC_BIRD_AVOID_PAD = 1.25;
 const BTC_BIRD_AVOID_RADIUS_MAX = 9.5;
 const BTC_BIRD_REPEL_STRENGTH = 2.15;
-const BTC_BIRD_SIZE_MIN = 0.38;
-const BTC_BIRD_SIZE_MAX = 0.74;
-const BTC_BIRD_CITY_SIZE_GAIN = 0.012;
-const BTC_BIRD_MIN_SCREEN_PX = 4.8;
+const BTC_BIRD_SIZE_MIN = 0.28;
+const BTC_BIRD_SIZE_MAX = 0.5;
+const BTC_BIRD_CITY_SIZE_GAIN = 0.0035;
+const BTC_BIRD_MIN_SCREEN_PX = 1.9;
+const BTC_BIRD_SIZE_DYNAMIC_MAX = 0.62;
+const BTC_BIRD_ALTITUDE_LIFT_HEIGHT_GAIN = 0.16;
+const BTC_BIRD_ALTITUDE_LIFT_PROX_GAIN = 0.5;
+const BTC_BIRD_ALTITUDE_DAMP_BASE = 1.6;
+const BTC_BIRD_ALTITUDE_DAMP_LIFT = 2.1;
+const BTC_BIRD_MAX_ALTITUDE_STEP_BASE = 1.15;
+const BTC_BIRD_MAX_ALTITUDE_STEP_LIFT = 1.85;
+const BTC_BIRD_PITCH_SCALE_GAIN = 1.2;
 const BTC_BIRD_OPACITY = 0.24;
 const BTC_BIRD_DEBUG_ROW = true;
 
@@ -8728,7 +8736,8 @@ function BirdFlock({
         if (altitudeRef.current[i] < cols.height[c] + BTC_BIRD_CLEARANCE_Y) {
           altitudeLift = Math.max(
             altitudeLift,
-            (cols.height[c] + BTC_BIRD_CLEARANCE_Y - altitudeRef.current[i]) * 0.35 + k * 1.2
+            (cols.height[c] + BTC_BIRD_CLEARANCE_Y - altitudeRef.current[i]) * BTC_BIRD_ALTITUDE_LIFT_HEIGHT_GAIN +
+              k * BTC_BIRD_ALTITUDE_LIFT_PROX_GAIN
           );
         }
       }
@@ -8745,9 +8754,17 @@ function BirdFlock({
       angleRef.current[i] = dampAngleRad(angleRef.current[i], Math.atan2(x, z), 2.4, delta);
 
       const bandAlt = bandRef.current[i] === 0 ? low : bandRef.current[i] === 1 ? mid : high;
-      const altitudeWave = Math.sin(nowSec * (0.42 + radiusFreqRef.current[i] * 0.38) + flapPhaseRef.current[i]) * 0.78;
+      const altitudeWave = Math.sin(nowSec * (0.42 + radiusFreqRef.current[i] * 0.38) + flapPhaseRef.current[i]) * 0.52;
       const targetAltitude = MathUtils.clamp(bandAlt + altitudeWave + altitudeLift, floor, cap);
-      altitudeRef.current[i] = MathUtils.damp(altitudeRef.current[i], targetAltitude, altitudeLift > 0 ? 3.4 : 2.2, delta);
+      const dampedAltitude = MathUtils.damp(
+        altitudeRef.current[i],
+        targetAltitude,
+        altitudeLift > 0 ? BTC_BIRD_ALTITUDE_DAMP_LIFT : BTC_BIRD_ALTITUDE_DAMP_BASE,
+        delta
+      );
+      const maxAltitudeStep =
+        (altitudeLift > 0 ? BTC_BIRD_MAX_ALTITUDE_STEP_LIFT : BTC_BIRD_MAX_ALTITUDE_STEP_BASE) * Math.max(0, delta);
+      altitudeRef.current[i] += MathUtils.clamp(dampedAltitude - altitudeRef.current[i], -maxAltitudeStep, maxAltitudeStep);
       altitudeRef.current[i] = MathUtils.clamp(altitudeRef.current[i], floor, cap);
 
       if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(altitudeRef.current[i])) {
@@ -8768,8 +8785,8 @@ function BirdFlock({
       const distToCam = Math.hypot(camPos.x - x, camPos.y - altitudeRef.current[i], camPos.z - z);
       const worldPerPx = (2 * Math.max(1, distToCam) * tanHalfFov) / viewportHeight;
       const minSizeForScreen = worldPerPx * BTC_BIRD_MIN_SCREEN_PX;
-      const birdSize = Math.max(sizeRef.current[i] * citySizeBoost, minSizeForScreen);
-      const pitchScale = 1 + MathUtils.clamp(vy * 2.2, -0.12, 0.13);
+      const birdSize = Math.min(BTC_BIRD_SIZE_DYNAMIC_MAX, Math.max(sizeRef.current[i] * citySizeBoost, minSizeForScreen));
+      const pitchScale = 1 + MathUtils.clamp(vy * BTC_BIRD_PITCH_SCALE_GAIN, -0.06, 0.07);
       pos.set(x, altitudeRef.current[i], z);
       scale.set(birdSize * 1.05, birdSize * (0.63 + flap * 0.1) * pitchScale, birdSize * (1.22 + flap * 0.05));
       matrix.compose(pos, quat, scale);
@@ -9165,7 +9182,7 @@ function SandboxScene({
 
   return (
     <Canvas
-      camera={{ position: [20, 12, 20], fov: 50, near: 0.15, far: 420 }}
+      camera={{ position: [20, 12, 20], fov: 50, near: 0.15, far: 1200 }}
       dpr={[1, RUNTIME_QUALITY_CONFIG.dprCap]}
       gl={{ antialias: RUNTIME_QUALITY_CONFIG.antialias, alpha: false, powerPreference: 'high-performance' }}
       onPointerMissed={() => {
