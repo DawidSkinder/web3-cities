@@ -8362,9 +8362,9 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER}
         >
           <meshBasicMaterial
-            color="#2e3749"
+            color="#c8b59a"
             transparent
-            opacity={0.62}
+            opacity={0.21}
             toneMapped={false}
             side={DoubleSide}
           />
@@ -8376,9 +8376,9 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.01}
         >
           <meshBasicMaterial
-            color="#253042"
+            color="#a98c6e"
             transparent
-            opacity={0.52}
+            opacity={0.14}
             toneMapped={false}
             side={DoubleSide}
           />
@@ -8392,9 +8392,9 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.02}
         >
           <meshBasicMaterial
-            color="#3b465d"
+            color="#d4c3ab"
             transparent
-            opacity={0.66}
+            opacity={0.24}
             toneMapped={false}
             side={DoubleSide}
           />
@@ -8406,9 +8406,9 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.03}
         >
           <meshBasicMaterial
-            color="#2c364b"
+            color="#b69673"
             transparent
-            opacity={0.56}
+            opacity={0.17}
             toneMapped={false}
             side={DoubleSide}
           />
@@ -8422,9 +8422,9 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER - 0.02}
         >
           <meshBasicMaterial
-            color="#323e54"
+            color="#bda88d"
             transparent
-            opacity={0.58}
+            opacity={0.2}
             toneMapped={false}
             side={DoubleSide}
           />
@@ -8436,9 +8436,9 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.04}
         >
           <meshBasicMaterial
-            color="#273147"
+            color="#9c8166"
             transparent
-            opacity={0.48}
+            opacity={0.13}
             toneMapped={false}
             side={DoubleSide}
           />
