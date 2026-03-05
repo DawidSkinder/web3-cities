@@ -439,9 +439,9 @@ const TOP_COINS_CHANGE_TF_LABEL = '24h';
 const TOP_INTRO_TIME_SCALE = RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.45 : 1;
 const scaleTopIntroMs = (ms: number) => Math.max(90, Math.round(ms * TOP_INTRO_TIME_SCALE));
 const TOP_INTRO_BOOT_MS = scaleTopIntroMs(2100);
-const TOP_INTRO_WAVE_A_START_MS = TOP_INTRO_BOOT_MS;
-const TOP_INTRO_WAVE_B_START_MS = scaleTopIntroMs(6400);
-const TOP_INTRO_WAVE_C_START_MS = scaleTopIntroMs(11_100);
+const TOP_INTRO_WAVE_A_START_MS = 0;
+const TOP_INTRO_WAVE_B_START_MS = scaleTopIntroMs(4300);
+const TOP_INTRO_WAVE_C_START_MS = scaleTopIntroMs(9000);
 const TOP_INTRO_WAVE_A_STEP_MS = scaleTopIntroMs(120);
 const TOP_INTRO_WAVE_B_STEP_MS = scaleTopIntroMs(76);
 const TOP_INTRO_WAVE_C_STEP_MS = scaleTopIntroMs(46);
@@ -456,6 +456,7 @@ const TOP_INTRO_TOTAL_MS = Math.max(
 const TOP_INTRO_CAMERA_BEAT_MS = scaleTopIntroMs(10_500);
 const TOP_INTRO_DISC_STAGGER_STEP_MS = scaleTopIntroMs(3);
 const TOP_INTRO_DISC_STAGGER_MAX_MS = scaleTopIntroMs(360);
+const TOP_LAYER2_MOUNT_LEAD_MS = scaleTopIntroMs(280);
 const BTC_GROUND_BOOT_MS = 2400;
 const BTC_GROUND_BOOT_START_SCALE = 0.34;
 const TOP_UPDATE_THRESHOLD_PCT = 0.1;
@@ -3314,84 +3315,12 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
       return;
     }
 
-    const shouldHoldLayer2 = !replayEnabled && !layer2Ready && states.size === 0 && selected.items.length > 0;
-    if (shouldHoldLayer2) {
-      tracesRef.current = [];
-      arterialTracesRef.current = [];
-      trafficRef.current = [];
-      arterialTrafficRef.current = [];
-      parksRef.current = [];
-      parkTreesRef.current = [];
-      districtsRef.current = [];
-      boundsRef.current = { radius: 36, maxY: 42 };
-      moodTargetRef.current = 0.5;
-      volatilityRef.current = 0.25;
-      clutterRef.current = 0;
-
-      const meta = liveSnapshotRef.current ?? selected;
-      const asOfMs = meta.asOf;
-      const pollSec = Math.max(1, Math.floor((meta.debug.pollMs || 60_000) / 1000));
-      const nowDebug = Date.now();
-      const asOfAgeSec = asOfMs > 0 ? Math.max(0, (nowDebug - asOfMs) / 1000) : 0;
-      const nextUpdateInSec = Math.max(0, (meta.debug.nextUpdateAt - nowDebug) / 1000);
-      debugRef.current = {
-        ...debugRef.current,
-        snapshotSeq: meta.sequence,
-        asOfMs,
-        asOfIso: meta.asOfIso || (asOfMs > 0 ? new Date(asOfMs).toISOString() : ''),
-        asOfAgeSec,
-        asOfAgeLabel: fmtAgeFriendly(asOfAgeSec),
-        staleData: asOfAgeSec > pollSec * 2,
-        symbols: meta.debug.symbols,
-        fetchedAt: meta.debug.fetchedAt,
-        lastFetchAt: meta.debug.lastFetchAt,
-        lastSuccessAt: meta.debug.lastSuccessAt,
-        pollSec,
-        nextUpdateAtMs: meta.debug.nextUpdateAt,
-        nextUpdateInSec,
-        nextUpdateInLabel: fmtMmSs(nextUpdateInSec),
-        lastHash: meta.debug.lastHash,
-        hashChanged: meta.debug.hashChanged,
-        refreshAgeSec: meta.debug.refreshAgeSec,
-        lastError: meta.debug.lastError,
-        lastFetchOk: meta.debug.lastFetchOk,
-        logosMissing: meta.debug.logosMissing,
-        logosAttempted: meta.debug.logosAttempted,
-        logosDownloaded: meta.debug.logosDownloaded,
-        introActive: false,
-        introBootAlpha: 0,
-        introLifeAlpha: 0,
-        introProgress: 0,
-        clutter: 0,
-        discVisible: 0,
-        discMode: replayEnabled ? 'replay' : 'live',
-        replayEnabled,
-        replayOffset,
-        replayMax,
-        replayAsOfIso: replayEnabled && activeSnapshot ? activeSnapshot.asOfIso : '',
-        topGainer: meta.stats.topGainer,
-        topLoser: meta.stats.topLoser,
-        topVolume: meta.stats.topVolume
-      };
-      setVersion((v) => v + 1);
-      return;
-    }
-
-    const shouldDeferDecorativeBuild = !replayEnabled && !layer2Ready && states.size === 0 && selected.items.length > 0;
-    if (shouldDeferDecorativeBuild) {
-      deferredDecorativeBuildPendingRef.current = true;
-    }
-    const forceDecorativeBuild = !replayEnabled && layer2Ready && deferredDecorativeBuildPendingRef.current;
-    if (forceDecorativeBuild) {
-      deferredDecorativeBuildPendingRef.current = false;
-    }
-
-    const metadataOnly = !forceDecorativeBuild && !replayEnabled && states.size > 0 && !selected.hashChanged;
+    const metadataOnly = !replayEnabled && states.size > 0 && !selected.hashChanged;
     const applyKey = replayEnabled ? `replay:${replayIndex}:${selected.hash}` : `live:${selected.hash}:${selected.hashChanged ? 1 : 0}`;
-    if (!metadataOnly && !forceDecorativeBuild && lastAppliedKeyRef.current === applyKey) {
+    if (!metadataOnly && lastAppliedKeyRef.current === applyKey) {
       return;
     }
-    if (!metadataOnly && !forceDecorativeBuild) {
+    if (!metadataOnly) {
       lastAppliedKeyRef.current = applyKey;
     }
 
@@ -3458,7 +3387,8 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
       sizeScoreBySymbol
     });
 
-    const shouldStartIntro = !replayEnabled && !introRef.current.hasRun && states.size === 0 && selected.items.length > 0 && !metadataOnly;
+    const isInitialLiveSceneApply = !replayEnabled && !introRef.current.hasRun && states.size === 0 && selected.items.length > 0 && !metadataOnly;
+    const shouldStartIntro = isInitialLiveSceneApply && layer2Ready;
     if (shouldStartIntro) {
       introRef.current.hasRun = true;
       introRef.current.active = true;
@@ -3471,7 +3401,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
       introRef.current.storyBeatUntilMs = 0;
     }
 
-    const isIntroApply = !replayEnabled && states.size === 0 && introRef.current.active;
+    const isIntroApply = isInitialLiveSceneApply;
     const introDelayByRank = (rank: number) => {
       if (!isIntroApply) return 0;
       if (rank <= 20) return TOP_INTRO_WAVE_A_START_MS + (rank - 1) * TOP_INTRO_WAVE_A_STEP_MS;
@@ -3680,7 +3610,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
         }
       }
 
-      const shouldBuildDecorativeNow = forceDecorativeBuild || replayEnabled || layer2Ready;
+      const shouldBuildDecorativeNow = true;
       if (!shouldBuildDecorativeNow) {
         tracesRef.current = [];
         arterialTracesRef.current = [];
@@ -4013,6 +3943,35 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
       setVersion((v) => v + 1);
     }
   }, [activeSnapshot, historyVersion, layer2Ready, replayEnabled, replayIndex, replayMax, replayOffset, snapshot]);
+
+  useEffect(() => {
+    if (replayEnabled || !layer2Ready || introRef.current.hasRun || statesRef.current.size === 0) return;
+
+    let hasPendingIntro = false;
+    for (const state of statesRef.current.values()) {
+      if (
+        state.introDelayMs != null ||
+        state.discRevealDelayMs != null ||
+        !Number.isFinite(state.emittedAt) ||
+        !Number.isFinite(state.discRevealAt)
+      ) {
+        hasPendingIntro = true;
+        break;
+      }
+    }
+    if (!hasPendingIntro) return;
+
+    introRef.current.hasRun = true;
+    introRef.current.active = true;
+    introRef.current.startPending = true;
+    introRef.current.startedAtMs = 0;
+    introRef.current.elapsedMs = 0;
+    introRef.current.progress = 0;
+    introRef.current.bootAlpha = 0;
+    introRef.current.lifeAlpha = 0;
+    introRef.current.storyBeatUntilMs = 0;
+    setVersion((v) => v + 1);
+  }, [activeSnapshot, layer2Ready, replayEnabled]);
 
   useEffect(() => {
     let raf = 0;
@@ -9111,6 +9070,7 @@ function SandboxScene({
   bounds,
   marketMoodTarget,
   topFx,
+  layer2Visible = true,
   groundIntroBootAlpha,
   hoveredTowerSequence,
   selectedTowerSequence,
@@ -9141,6 +9101,7 @@ function SandboxScene({
     clutter: number;
     transitionLoad: number;
   };
+  layer2Visible?: boolean;
   groundIntroBootAlpha?: number;
   hoveredTowerSequence: number | null;
   selectedTowerSequence: number | null;
@@ -9159,9 +9120,23 @@ function SandboxScene({
     clutter: 0,
     transitionLoad: 0
   };
+  const renderedTowers = useMemo(() => {
+    if (!layer2Visible) return [] as TowerDatum[];
+    const hasPendingIntroMount = topFx ? towers.some((tower) => !Number.isFinite(tower.emittedAt)) : false;
+    if (!topFx || (!fx.introActive && !hasPendingIntroMount)) return towers;
+    const mountReadyAt = performance.now() + TOP_LAYER2_MOUNT_LEAD_MS;
+    const staged = towers.filter(
+      (tower) =>
+        tower.sequence === hoveredTowerSequence ||
+        tower.sequence === selectedTowerSequence ||
+        !Number.isFinite(tower.emittedAt) ||
+        tower.emittedAt <= mountReadyAt
+    );
+    return staged.length > 0 ? staged : towers.slice(0, Math.min(3, towers.length));
+  }, [fx.introActive, fx.introProgress, hoveredTowerSequence, layer2Visible, selectedTowerSequence, topFx, towers]);
   const hoveredTower = useMemo(
-    () => (hoveredTowerSequence == null ? null : towers.find((tower) => tower.sequence === hoveredTowerSequence) ?? null),
-    [hoveredTowerSequence, towers]
+    () => (hoveredTowerSequence == null ? null : renderedTowers.find((tower) => tower.sequence === hoveredTowerSequence) ?? null),
+    [hoveredTowerSequence, renderedTowers]
   );
   const mountainScaleMetric = useMemo(() => {
     if (towers.length === 0) return 10;
@@ -9170,12 +9145,12 @@ function SandboxScene({
     return percentileFromSorted(heights, 0.75);
   }, [towers]);
   const tallestTower = useMemo(
-    () => (tallestTowerSequence == null ? null : towers.find((tower) => tower.sequence === tallestTowerSequence) ?? null),
-    [tallestTowerSequence, towers]
+    () => (tallestTowerSequence == null ? null : renderedTowers.find((tower) => tower.sequence === tallestTowerSequence) ?? null),
+    [tallestTowerSequence, renderedTowers]
   );
   const selectedTower = useMemo(
-    () => (selectedTowerSequence == null ? null : towers.find((tower) => tower.sequence === selectedTowerSequence) ?? null),
-    [selectedTowerSequence, towers]
+    () => (selectedTowerSequence == null ? null : renderedTowers.find((tower) => tower.sequence === selectedTowerSequence) ?? null),
+    [selectedTowerSequence, renderedTowers]
   );
   const focusTarget = useMemo<CameraFocusTarget | null>(
     () =>
@@ -9201,7 +9176,7 @@ function SandboxScene({
   const focusMode = hoveredTowerSequence != null;
   const introNetworkAlpha = topFx ? smoothstep01(remapClamped(fx.introLifeAlpha, 0.02, 0.98)) : 1;
   const transitionLoad = MathUtils.clamp(fx.transitionLoad ?? 0, 0, 1);
-  const transitionHideNetwork = transitionLoad > 0.08 || introNetworkAlpha <= 0.01;
+  const transitionHideNetwork = !layer2Visible || transitionLoad > 0.08 || introNetworkAlpha <= 0.01;
   const tracesRender = useMemo(() => {
     if (transitionHideNetwork) return [] as TraceDatum[];
     return traces;
@@ -9214,8 +9189,8 @@ function SandboxScene({
     if (transitionHideNetwork) return [] as TrafficParticleDatum[];
     return trafficParticles;
   }, [trafficParticles, transitionHideNetwork]);
-  const showParksLayer = !topFx || fx.introLifeAlpha > 0.001;
-  const showParkFireflies = !topFx || (!fx.introActive && fx.introProgress >= 0.995);
+  const showParksLayer = layer2Visible && (!topFx || fx.introLifeAlpha > 0.001);
+  const showParkFireflies = layer2Visible && (!topFx || (!fx.introActive && fx.introProgress >= 0.995));
   const hoverStableRef = useRef<number | null>(hoveredTowerSequence);
   const hoverIntentRef = useRef<number | null>(hoveredTowerSequence);
   const hoverCandidateRef = useRef<number | null>(null);
@@ -9344,8 +9319,8 @@ function SandboxScene({
         cityScaleMetric={mountainScaleMetric}
         introBootAlpha={groundIntroBootAlpha ?? fx.introBootAlpha}
       />
-      <DistrictBoundariesLayer districts={districts} focusMode={focusMode} />
-      <ShockwaveLayer shockwaves={shockwaves} focusMode={focusMode} />
+      {layer2Visible ? <DistrictBoundariesLayer districts={districts} focusMode={focusMode} /> : null}
+      {layer2Visible ? <ShockwaveLayer shockwaves={shockwaves} focusMode={focusMode} /> : null}
       {showParksLayer ? <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} showFireflies={showParkFireflies} /> : null}
       <TraceStrips
         traces={tracesRender}
@@ -9363,12 +9338,12 @@ function SandboxScene({
         clutter={fx.clutter}
       />
       <TrafficParticles particles={trafficRender} focusMode={focusMode} introLifeAlpha={fx.introLifeAlpha} clutter={fx.clutter} />
-      <TopBirdFlock towers={towers} cityRadius={bounds.radius} introLifeAlpha={fx.introLifeAlpha} />
+      {layer2Visible ? <TopBirdFlock towers={renderedTowers} cityRadius={bounds.radius} introLifeAlpha={fx.introLifeAlpha} /> : null}
       <HoverProjectionTracker tower={hoveredTower} onHudUpdate={onHoverHudUpdate} />
 
       {/* Render band 6: tower bodies and holo layers remain the top visual anchors */}
       <group renderOrder={6}>
-        {towers.map((tower) => (
+        {renderedTowers.map((tower) => (
           <AnimatedHoloTower
             key={tower.sequence}
             tower={tower}
@@ -9392,7 +9367,7 @@ function SandboxScene({
           isHovered={hoveredTowerSequence === tallestTower.sequence}
         />
       ) : null}
-      <RecordCeremonyLayer ceremonies={recordCeremonies} focusMode={focusMode} sceneMaxY={bounds.maxY} />
+      {layer2Visible ? <RecordCeremonyLayer ceremonies={recordCeremonies} focusMode={focusMode} sceneMaxY={bounds.maxY} /> : null}
       {ENABLE_FAKE_VIGNETTE ? <FakeVignettePlane /> : null}
     </Canvas>
   );
@@ -9491,6 +9466,7 @@ export function TopCoinsSkylineSandbox({ onModeChange }: { onModeChange?: (nextM
         bounds={bounds}
         marketMoodTarget={marketMoodTarget}
         topFx={topFx}
+        layer2Visible={topLayer2Ready}
         groundIntroBootAlpha={topGroundIntroBootAlpha}
         hoveredTowerSequence={hoveredTowerSequence}
         selectedTowerSequence={selectedTowerSequence}
