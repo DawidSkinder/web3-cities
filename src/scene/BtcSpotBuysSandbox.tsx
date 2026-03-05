@@ -8469,10 +8469,36 @@ function MountainsBackdrop({
     mesh.instanceMatrix.needsUpdate = true;
   };
 
+  const applyRevealToGroup = (group: Group | null, reveal: number, drop: number, swell = 1.04) => {
+    if (!group) return;
+    const eased = easeOutCubic(reveal);
+    group.visible = reveal > 0.001;
+    group.position.y = -drop * (1 - eased);
+    const sxz = MathUtils.lerp(swell, 1, eased);
+    const sy = MathUtils.lerp(0.72, 1, eased);
+    group.scale.set(sxz, sy, sxz);
+  };
+
   useFrame((_, delta) => {
     mountElapsedRef.current += delta;
     smoothRingRef.current = MathUtils.damp(smoothRingRef.current, targetRingRef.current, 0.92, delta);
     smoothScaleRef.current = MathUtils.damp(smoothScaleRef.current, targetScaleRef.current, 0.95, delta);
+
+    const introGate = smoothstep01(remapClamped(introBootAlphaRef.current, 0.82, 0.995));
+    if (introGate > 0.001) {
+      revealTimeRef.current += delta * MathUtils.lerp(0.45, 1, introGate);
+    } else {
+      revealTimeRef.current = 0;
+    }
+
+    const revealDur = RUNTIME_QUALITY_CONFIG.reducedMotion ? BTC_MOUNTAIN_REVEAL_FALLBACK_S * 0.7 : BTC_MOUNTAIN_REVEAL_LAYER_DUR_S;
+    const farReveal = smoothstep01(remapClamped(revealTimeRef.current, 0, revealDur));
+    const midReveal = smoothstep01(
+      remapClamped(revealTimeRef.current, BTC_MOUNTAIN_REVEAL_MID_DELAY_S, BTC_MOUNTAIN_REVEAL_MID_DELAY_S + revealDur)
+    );
+    const peakReveal = smoothstep01(
+      remapClamped(revealTimeRef.current, BTC_MOUNTAIN_REVEAL_PEAK_DELAY_S, BTC_MOUNTAIN_REVEAL_PEAK_DELAY_S + revealDur)
+    );
 
     farGroupRef.current?.rotateY(delta * 0.00018);
     midGroupRef.current?.rotateY(-delta * 0.00013);
@@ -8480,9 +8506,9 @@ function MountainsBackdrop({
 
     const ring = smoothRingRef.current;
     const scale = smoothScaleRef.current;
-    if (farGroupRef.current) farGroupRef.current.visible = true;
-    if (midGroupRef.current) midGroupRef.current.visible = true;
-    if (peakGroupRef.current) peakGroupRef.current.visible = true;
+    applyRevealToGroup(farGroupRef.current, farReveal, scale * 0.24, 1.035);
+    applyRevealToGroup(midGroupRef.current, midReveal, scale * 0.3, 1.05);
+    applyRevealToGroup(peakGroupRef.current, peakReveal, scale * 0.36, 1.06);
     const farY = GROUND_DECK_Y - scale * 0.56;
     const midY = GROUND_DECK_Y - scale * 0.6;
     const peakY = GROUND_DECK_Y - scale * 0.62;
