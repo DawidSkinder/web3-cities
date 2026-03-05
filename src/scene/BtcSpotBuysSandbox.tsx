@@ -8240,7 +8240,7 @@ function MountainsBackdrop({
       BTC_MOUNTAIN_RING_MAX
     )
   );
-  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 6.4 + cityRadius * 0.62, 280, 460));
+  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 2.4 + cityRadius * 0.28, 95, 185));
   const smoothRingRef = useRef(targetRingRef.current);
   const smoothScaleRef = useRef(targetScaleRef.current);
   const revealTimeRef = useRef(0);
@@ -8282,10 +8282,10 @@ function MountainsBackdrop({
         BTC_MOUNTAIN_RING_MIN,
         BTC_MOUNTAIN_RING_MAX
       );
-      const scaleFromRadius = cityRadiusRef.current * 0.62;
-      const scaleFromHeights = cityScaleMetricRef.current * 6.4;
+      const scaleFromRadius = cityRadiusRef.current * 0.28;
+      const scaleFromHeights = cityScaleMetricRef.current * 2.4;
       targetRingRef.current = nextRing;
-      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 280, 460);
+      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 95, 185);
     };
     updateTargets();
     const timer = window.setInterval(updateTargets, BTC_MOUNTAIN_METRIC_UPDATE_MS);
@@ -8424,32 +8424,32 @@ function MountainsBackdrop({
     if (farGroupRef.current) farGroupRef.current.visible = true;
     if (midGroupRef.current) midGroupRef.current.visible = true;
     if (peakGroupRef.current) peakGroupRef.current.visible = true;
-    const farY = GROUND_DECK_Y - scale * 0.11;
-    const midY = GROUND_DECK_Y - scale * 0.14;
-    const peakY = GROUND_DECK_Y - scale * 0.17;
-    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.01, scale * 1.1, farY, 1.0, 0.98);
+    const farY = GROUND_DECK_Y - scale * 0.06;
+    const midY = GROUND_DECK_Y - scale * 0.08;
+    const peakY = GROUND_DECK_Y - scale * 0.1;
+    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.01, scale * 0.52, farY, 1.0, 0.98);
     applyShoulderLayer(
       farShoulderRef.current,
       farUnits,
       ring * 1.01,
-      scale * 0.78,
+      scale * 0.36,
       farY
     );
-    applyFoothillLayer(farFoothillRef.current, farUnits, ring * 1.01, scale * 0.58, farY);
-    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.91, scale * 0.98, midY, 1.08, 1.02);
+    applyFoothillLayer(farFoothillRef.current, farUnits, ring * 1.01, scale * 0.26, farY);
+    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.91, scale * 0.48, midY, 1.08, 1.02);
     applyShoulderLayer(
       midShoulderRef.current,
       midUnits,
       ring * 0.91,
-      scale * 0.68,
+      scale * 0.32,
       midY
     );
-    applyFoothillLayer(midFoothillRef.current, midUnits, ring * 0.91, scale * 0.48, midY);
+    applyFoothillLayer(midFoothillRef.current, midUnits, ring * 0.91, scale * 0.23, midY);
     applyCoreLayer(
       peakCoreRef.current,
       peakUnits,
       ring * 1.14,
-      scale * 0.9,
+      scale * 0.44,
       peakY,
       0.92,
       0.9
@@ -8458,10 +8458,10 @@ function MountainsBackdrop({
       peakShoulderRef.current,
       peakUnits,
       ring * 1.14,
-      scale * 0.62,
+      scale * 0.28,
       peakY
     );
-    applyFoothillLayer(peakFoothillRef.current, peakUnits, ring * 1.14, scale * 0.44, peakY);
+    applyFoothillLayer(peakFoothillRef.current, peakUnits, ring * 1.14, scale * 0.2, peakY);
   });
 
   return (
