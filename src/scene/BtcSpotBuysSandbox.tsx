@@ -12,7 +12,6 @@ import {
   Color,
   DoubleSide,
   EdgesGeometry,
-  IcosahedronGeometry,
   LinearFilter,
   LineBasicMaterial,
   Matrix4,
@@ -21,7 +20,6 @@ import {
   Quaternion,
   ShaderMaterial,
   SRGBColorSpace,
-  TetrahedronGeometry,
   TextureLoader,
   TorusGeometry,
   Vector3
@@ -537,14 +535,25 @@ const DEBUG_FORCE_TRAFFIC_VIS = false;
 const MAX_TRAFFIC_INSTANCES = 4096;
 const TRAFFIC_PATH_TRIM = 0.9;
 const BTC_MOUNTAIN_SEED = 58_031;
-const BTC_MOUNTAIN_COUNT = 72;
-const BTC_BIRD_FLOCK_INTERVAL_MS = 15_000;
-const BTC_BIRD_FLOCK_MIN_SIZE = 3;
-const BTC_BIRD_FLOCK_MAX_SIZE = 8;
-const BTC_BIRD_LIFE_MIN_MS = 20_000;
-const BTC_BIRD_LIFE_MAX_MS = 45_000;
-const BTC_BIRD_MAX_INSTANCES = 120;
+const BTC_MOUNTAIN_LAYER_FAR_COUNT = 32;
+const BTC_MOUNTAIN_LAYER_MID_COUNT = 24;
+const BTC_MOUNTAIN_LAYER_PEAK_COUNT = 12;
+const BTC_MOUNTAIN_RING_MULT = 3.0;
+const BTC_MOUNTAIN_RING_MIN = 220;
+const BTC_MOUNTAIN_METRIC_UPDATE_MS = 1000;
+const BTC_MOUNTAIN_RENDER_ORDER = -5;
+const BTC_BIRD_MIN_COUNT = 6;
+const BTC_BIRD_MAX_COUNT = 60;
+const BTC_BIRD_BASE_COUNT = 6;
+const BTC_BIRD_GROWTH_BY_SQRT_TOWERS = 2.9;
+const BTC_BIRD_COUNT_ADJUST_PER_SEC = 4;
+const BTC_BIRD_METRIC_UPDATE_MS = 1000;
+const BTC_BIRD_MAX_INSTANCES = BTC_BIRD_MAX_COUNT;
 const BTC_BIRD_RENDER_ORDER = 5.56;
+const BTC_BIRD_CLEARANCE_Y = 1.35;
+const BTC_BIRD_AVOID_PAD = 1.25;
+const BTC_BIRD_AVOID_RADIUS_MAX = 9.5;
+const BTC_BIRD_REPEL_STRENGTH = 2.15;
 const BTC_BIRD_DEBUG_ROW = true;
 
 const RADIAL_GLOW_VERTEX = `
@@ -858,6 +867,17 @@ function distanceVisibilityCurve(cameraDistance: number) {
 function remapClamped(value: number, inMin: number, inMax: number) {
   if (inMax <= inMin) return 0;
   return MathUtils.clamp((value - inMin) / (inMax - inMin), 0, 1);
+}
+
+function percentileFromSorted(sorted: number[], p: number) {
+  if (sorted.length === 0) return 0;
+  if (sorted.length === 1) return sorted[0] ?? 0;
+  const safeP = MathUtils.clamp(p, 0, 1);
+  const raw = safeP * (sorted.length - 1);
+  const i0 = Math.floor(raw);
+  const i1 = Math.min(sorted.length - 1, i0 + 1);
+  const t = raw - i0;
+  return MathUtils.lerp(sorted[i0] ?? 0, sorted[i1] ?? 0, t);
 }
 
 function emaStd(variance: number) {
@@ -8104,198 +8124,240 @@ function RecordCeremonyLayer({
   );
 }
 
-type MountainTransform = {
-  x: number;
-  y: number;
-  z: number;
-  yaw: number;
-  sx: number;
-  sy: number;
-  sz: number;
+type MountainUnit = {
+  angle: number;
+  radialJitter: number;
+  yawJitter: number;
+  hT: number;
+  wT: number;
+  dT: number;
 };
 
-function DistantMountains({ cityRadius }: { cityRadius: number }) {
-  const baseARef = useRef<ThreeInstancedMesh>(null);
-  const baseBRef = useRef<ThreeInstancedMesh>(null);
-  const baseCRef = useRef<ThreeInstancedMesh>(null);
-  const accentARef = useRef<ThreeInstancedMesh>(null);
-  const accentBRef = useRef<ThreeInstancedMesh>(null);
-  const accentCRef = useRef<ThreeInstancedMesh>(null);
+function buildMountainUnits(seedOffset: number, count: number) {
+  const units: MountainUnit[] = [];
+  for (let i = 0; i < count; i++) {
+    units.push({
+      angle: ((i + 0.5) / count) * Math.PI * 2 + MathUtils.lerp(-0.16, 0.16, hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 11)),
+      radialJitter: MathUtils.lerp(-0.13, 0.13, hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 17)),
+      yawJitter: MathUtils.lerp(-0.52, 0.52, hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 19)),
+      hT: hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 23),
+      wT: hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 29),
+      dT: hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 31)
+    });
+  }
+  return units;
+}
+
+function MountainsBackdrop({
+  cityRadius,
+  cityScaleMetric
+}: {
+  cityRadius: number;
+  cityScaleMetric: number;
+}) {
+  const farRef = useRef<ThreeInstancedMesh>(null);
+  const midRef = useRef<ThreeInstancedMesh>(null);
+  const peakRef = useRef<ThreeInstancedMesh>(null);
+  const farGroupRef = useRef<Group>(null);
+  const midGroupRef = useRef<Group>(null);
+  const peakGroupRef = useRef<Group>(null);
+  const cityRadiusRef = useRef(cityRadius);
+  const cityScaleMetricRef = useRef(cityScaleMetric);
+  const targetRingRef = useRef(Math.max(cityRadius * BTC_MOUNTAIN_RING_MULT, BTC_MOUNTAIN_RING_MIN));
+  const targetScaleRef = useRef(Math.max(18, cityScaleMetric * 4.4 + cityRadius * 0.18));
+  const smoothRingRef = useRef(targetRingRef.current);
+  const smoothScaleRef = useRef(targetScaleRef.current);
+  const lastAppliedRingRef = useRef(-1);
+  const lastAppliedScaleRef = useRef(-1);
+  const matrixRef = useRef(new Matrix4());
+  const quatRef = useRef(new Quaternion());
+  const posRef = useRef(new Vector3());
+  const scaleRef = useRef(new Vector3());
   const upRef = useRef(new Vector3(0, 1, 0));
 
-  const geometries = useMemo(() => {
-    const cone = new ConeGeometry(1, 1, 5, 1);
-    cone.translate(0, 0.5, 0);
-    const tetra = new TetrahedronGeometry(0.88, 0);
-    tetra.translate(0, 0.5, 0);
-    const icosa = new IcosahedronGeometry(0.9, 0);
-    icosa.translate(0, 0.5, 0);
-    return [cone, tetra, icosa] as const;
+  const geometry = useMemo(() => {
+    const g = new ConeGeometry(1, 1, 5, 1);
+    g.translate(0, 0.5, 0);
+    return g;
   }, []);
+  useEffect(() => () => geometry.dispose(), [geometry]);
 
-  useEffect(
-    () => () => {
-      geometries.forEach((g) => g.dispose());
-    },
-    [geometries]
-  );
-
-  const transforms = useMemo(() => {
-    const safeRadius = Math.max(20, cityRadius);
-    const minRadius = safeRadius * 2.5;
-    const maxRadius = safeRadius * 4.0;
-    const minHeight = Math.max(8, safeRadius * 0.18);
-    const maxHeight = Math.max(minHeight + 4, safeRadius * 0.48);
-    const buckets: [MountainTransform[], MountainTransform[], MountainTransform[]] = [[], [], []];
-
-    for (let i = 0; i < BTC_MOUNTAIN_COUNT; i++) {
-      const angleJitter = MathUtils.lerp(-0.18, 0.18, hash01(BTC_MOUNTAIN_SEED, i, 11));
-      const angle = ((i + 0.5) / BTC_MOUNTAIN_COUNT) * Math.PI * 2 + angleJitter;
-      const radiusT = Math.pow(hash01(BTC_MOUNTAIN_SEED, i, 17), 0.58);
-      const radius = MathUtils.lerp(minRadius, maxRadius, radiusT);
-      const height = MathUtils.lerp(minHeight, maxHeight, Math.pow(hash01(BTC_MOUNTAIN_SEED, i, 19), 1.1));
-      const sx = height * MathUtils.lerp(0.34, 0.84, hash01(BTC_MOUNTAIN_SEED, i, 23));
-      const sz = height * MathUtils.lerp(0.36, 0.9, hash01(BTC_MOUNTAIN_SEED, i, 29));
-      const yaw = angle + Math.PI + MathUtils.lerp(-0.4, 0.4, hash01(BTC_MOUNTAIN_SEED, i, 31));
-      const y = GROUND_DECK_Y + MathUtils.lerp(-1.05, 0.95, hash01(BTC_MOUNTAIN_SEED, i, 37));
-      const variantPick = hash01(BTC_MOUNTAIN_SEED, i, 41);
-      const variant = variantPick < 0.4 ? 0 : variantPick < 0.74 ? 1 : 2;
-      buckets[variant].push({
-        x: Math.sin(angle) * radius,
-        y,
-        z: Math.cos(angle) * radius,
-        yaw,
-        sx,
-        sy: height,
-        sz
-      });
-    }
-
-    return buckets;
-  }, [cityRadius]);
+  const farUnits = useMemo(() => buildMountainUnits(101, BTC_MOUNTAIN_LAYER_FAR_COUNT), []);
+  const midUnits = useMemo(() => buildMountainUnits(211, BTC_MOUNTAIN_LAYER_MID_COUNT), []);
+  const peakUnits = useMemo(() => buildMountainUnits(307, BTC_MOUNTAIN_LAYER_PEAK_COUNT), []);
 
   useEffect(() => {
-    const matrix = new Matrix4();
-    const quat = new Quaternion();
-    const pos = new Vector3();
-    const scale = new Vector3();
-    const up = upRef.current;
+    cityRadiusRef.current = cityRadius;
+    cityScaleMetricRef.current = cityScaleMetric;
+  }, [cityRadius, cityScaleMetric]);
 
-    const applyTransforms = (
-      mesh: ThreeInstancedMesh | null,
-      items: MountainTransform[],
-      scaleMult: number,
-      yOffset: number
-    ) => {
-      if (!mesh) return;
-      const count = Math.min(items.length, mesh.instanceMatrix.count);
-      for (let i = 0; i < count; i++) {
-        const item = items[i];
-        quat.setFromAxisAngle(up, item.yaw);
-        pos.set(item.x, item.y + yOffset, item.z);
-        scale.set(item.sx * scaleMult, item.sy, item.sz * scaleMult);
-        matrix.compose(pos, quat, scale);
-        mesh.setMatrixAt(i, matrix);
-      }
-      mesh.count = count;
-      mesh.instanceMatrix.needsUpdate = true;
+  useEffect(() => {
+    const updateTargets = () => {
+      const nextRing = Math.max(cityRadiusRef.current * BTC_MOUNTAIN_RING_MULT, BTC_MOUNTAIN_RING_MIN);
+      const scaleFromRadius = cityRadiusRef.current * 0.2;
+      const scaleFromHeights = cityScaleMetricRef.current * 4.6;
+      targetRingRef.current = nextRing;
+      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 22, 92);
     };
+    updateTargets();
+    const timer = window.setInterval(updateTargets, BTC_MOUNTAIN_METRIC_UPDATE_MS);
+    return () => window.clearInterval(timer);
+  }, []);
 
-    applyTransforms(baseARef.current, transforms[0], 1, 0);
-    applyTransforms(baseBRef.current, transforms[1], 1, 0);
-    applyTransforms(baseCRef.current, transforms[2], 1, 0);
-    applyTransforms(accentARef.current, transforms[0], 1.025, 0.08);
-    applyTransforms(accentBRef.current, transforms[1], 1.025, 0.08);
-    applyTransforms(accentCRef.current, transforms[2], 1.025, 0.08);
-  }, [transforms]);
+  const applyLayer = (
+    mesh: ThreeInstancedMesh | null,
+    units: MountainUnit[],
+    ring: number,
+    layerScale: number,
+    yBase: number
+  ) => {
+    if (!mesh) return;
+    const matrix = matrixRef.current;
+    const quat = quatRef.current;
+    const pos = posRef.current;
+    const scale = scaleRef.current;
+    const up = upRef.current;
+    const count = Math.min(units.length, mesh.instanceMatrix.count);
+    for (let i = 0; i < count; i++) {
+      const unit = units[i];
+      const radial = ring * (1 + unit.radialJitter);
+      const x = Math.sin(unit.angle) * radial;
+      const z = Math.cos(unit.angle) * radial;
+      const yaw = unit.angle + Math.PI + unit.yawJitter;
+      const h = layerScale * MathUtils.lerp(0.7, 1.35, unit.hT);
+      const sx = h * MathUtils.lerp(0.4, 0.92, unit.wT);
+      const sz = h * MathUtils.lerp(0.42, 0.96, unit.dT);
+      quat.setFromAxisAngle(up, yaw);
+      pos.set(x, yBase, z);
+      scale.set(sx, h, sz);
+      matrix.compose(pos, quat, scale);
+      mesh.setMatrixAt(i, matrix);
+    }
+    mesh.count = count;
+    mesh.instanceMatrix.needsUpdate = true;
+  };
+
+  useFrame((_, delta) => {
+    smoothRingRef.current = MathUtils.damp(smoothRingRef.current, targetRingRef.current, 1.1, delta);
+    smoothScaleRef.current = MathUtils.damp(smoothScaleRef.current, targetScaleRef.current, 1.15, delta);
+
+    farGroupRef.current?.rotateY(delta * 0.0015);
+    midGroupRef.current?.rotateY(-delta * 0.0011);
+    peakGroupRef.current?.rotateY(delta * 0.0007);
+
+    const ring = smoothRingRef.current;
+    const scale = smoothScaleRef.current;
+    const changed = Math.abs(ring - lastAppliedRingRef.current) > 0.45 || Math.abs(scale - lastAppliedScaleRef.current) > 0.2;
+    if (!changed) return;
+    lastAppliedRingRef.current = ring;
+    lastAppliedScaleRef.current = scale;
+
+    applyLayer(farRef.current, farUnits, ring * 1.0, scale * 1.16, GROUND_DECK_Y - 2.6);
+    applyLayer(midRef.current, midUnits, ring * 0.82, scale * 0.9, GROUND_DECK_Y - 1.9);
+    applyLayer(peakRef.current, peakUnits, ring * 1.18, scale * 0.66, GROUND_DECK_Y - 3.4);
+  });
 
   return (
-    <group>
-      <instancedMesh ref={baseARef} args={[undefined, undefined, BTC_MOUNTAIN_COUNT]} frustumCulled={false}>
-        <primitive object={geometries[0]} attach="geometry" />
-        <meshStandardMaterial color="#0c1117" emissive="#5f4730" emissiveIntensity={0.045} roughness={0.97} metalness={0.03} flatShading />
-      </instancedMesh>
-      <instancedMesh ref={baseBRef} args={[undefined, undefined, BTC_MOUNTAIN_COUNT]} frustumCulled={false}>
-        <primitive object={geometries[1]} attach="geometry" />
-        <meshStandardMaterial color="#0b1016" emissive="#664a30" emissiveIntensity={0.042} roughness={0.97} metalness={0.03} flatShading />
-      </instancedMesh>
-      <instancedMesh ref={baseCRef} args={[undefined, undefined, BTC_MOUNTAIN_COUNT]} frustumCulled={false}>
-        <primitive object={geometries[2]} attach="geometry" />
-        <meshStandardMaterial color="#0a0f15" emissive="#6d5033" emissiveIntensity={0.04} roughness={0.96} metalness={0.04} flatShading />
-      </instancedMesh>
-      <instancedMesh ref={accentARef} args={[undefined, undefined, BTC_MOUNTAIN_COUNT]} frustumCulled={false}>
-        <primitive object={geometries[0]} attach="geometry" />
-        <meshBasicMaterial
-          color="#f2bf88"
-          transparent
-          opacity={0.055}
-          toneMapped={false}
-          depthWrite={false}
-          depthTest
-          blending={AdditiveBlending}
-        />
-      </instancedMesh>
-      <instancedMesh ref={accentBRef} args={[undefined, undefined, BTC_MOUNTAIN_COUNT]} frustumCulled={false}>
-        <primitive object={geometries[1]} attach="geometry" />
-        <meshBasicMaterial
-          color="#f4c58f"
-          transparent
-          opacity={0.05}
-          toneMapped={false}
-          depthWrite={false}
-          depthTest
-          blending={AdditiveBlending}
-        />
-      </instancedMesh>
-      <instancedMesh ref={accentCRef} args={[undefined, undefined, BTC_MOUNTAIN_COUNT]} frustumCulled={false}>
-        <primitive object={geometries[2]} attach="geometry" />
-        <meshBasicMaterial
-          color="#f0ba82"
-          transparent
-          opacity={0.045}
-          toneMapped={false}
-          depthWrite={false}
-          depthTest
-          blending={AdditiveBlending}
-        />
-      </instancedMesh>
+    <group renderOrder={BTC_MOUNTAIN_RENDER_ORDER}>
+      <group ref={farGroupRef} renderOrder={BTC_MOUNTAIN_RENDER_ORDER}>
+        <instancedMesh ref={farRef} args={[geometry, undefined, BTC_MOUNTAIN_LAYER_FAR_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER}>
+          <meshStandardMaterial
+            color="#080b10"
+            emissive="#4e3a27"
+            emissiveIntensity={0.032}
+            roughness={0.98}
+            metalness={0.02}
+            flatShading
+            transparent
+            opacity={0.88}
+          />
+        </instancedMesh>
+      </group>
+      <group ref={midGroupRef} renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.01}>
+        <instancedMesh ref={midRef} args={[geometry, undefined, BTC_MOUNTAIN_LAYER_MID_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.01}>
+          <meshStandardMaterial
+            color="#0a0e14"
+            emissive="#5b432c"
+            emissiveIntensity={0.04}
+            roughness={0.97}
+            metalness={0.03}
+            flatShading
+            transparent
+            opacity={0.92}
+          />
+        </instancedMesh>
+      </group>
+      <group ref={peakGroupRef} renderOrder={BTC_MOUNTAIN_RENDER_ORDER - 0.02}>
+        <instancedMesh ref={peakRef} args={[geometry, undefined, BTC_MOUNTAIN_LAYER_PEAK_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER - 0.02}>
+          <meshBasicMaterial
+            color="#f0bc82"
+            transparent
+            opacity={0.035}
+            toneMapped={false}
+            depthWrite={false}
+            depthTest
+            blending={AdditiveBlending}
+          />
+        </instancedMesh>
+      </group>
     </group>
   );
 }
 
-function BirdFlocks({
+type BirdTowerColumns = {
+  x: Float32Array;
+  z: Float32Array;
+  radius: Float32Array;
+  height: Float32Array;
+  count: number;
+};
+
+function BirdFlock({
+  towers,
   cityRadius,
-  sceneMaxY,
   onBirdCountChange
 }: {
+  towers: TowerDatum[];
   cityRadius: number;
-  sceneMaxY: number;
   onBirdCountChange?: (count: number) => void;
 }) {
   const meshRef = useRef<ThreeInstancedMesh>(null);
-  const activeRef = useRef(new Uint8Array(BTC_BIRD_MAX_INSTANCES));
-  const bornAtRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
-  const dieAtRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const towersRef = useRef(towers);
+  const cityRadiusRef = useRef(cityRadius);
+  const columnsRef = useRef<BirdTowerColumns>({
+    x: new Float32Array(0),
+    z: new Float32Array(0),
+    radius: new Float32Array(0),
+    height: new Float32Array(0),
+    count: 0
+  });
+  const bandFloorRef = useRef(4.5);
+  const bandLowRef = useRef(7.2);
+  const bandMidRef = useRef(10.6);
+  const bandHighRef = useRef(13.2);
+  const bandCapRef = useRef(16.8);
+  const orbitMinRef = useRef(10);
+  const orbitMaxRef = useRef(26);
+  const targetCountRef = useRef(BTC_BIRD_MIN_COUNT);
+  const activeCountRef = useRef(0);
+  const reportedCountRef = useRef(-1);
+  const adjustBudgetRef = useRef(0);
+  const spawnSerialRef = useRef(0);
   const angleRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
-  const omegaRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
-  const radiusBaseRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
-  const radiusTargetRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const speedRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const orbitRadiusRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const orbitTargetRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
   const radiusAmpRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
   const radiusFreqRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
-  const radiusPhaseRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
-  const altitudeBaseRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
-  const altitudeTargetRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
-  const altitudeAmpRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
-  const altitudeFreqRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
-  const altitudePhaseRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const bandRef = useRef(new Uint8Array(BTC_BIRD_MAX_INSTANCES));
+  const altitudeRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const flapPhaseRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const flapSpeedRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
   const sizeRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const rerouteAtRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
   const prevXRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
   const prevYRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
   const prevZRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
-  const activeCountRef = useRef(0);
-  const reportedCountRef = useRef(-1);
-  const nextSpawnAtRef = useRef(0);
-  const spawnSerialRef = useRef(0);
   const matrixRef = useRef(new Matrix4());
   const posRef = useRef(new Vector3());
   const scaleRef = useRef(new Vector3());
@@ -8308,184 +8370,250 @@ function BirdFlocks({
     g.translate(0, 0, 0.14);
     return g;
   }, []);
-
   useEffect(() => () => geometry.dispose(), [geometry]);
 
   useEffect(() => {
-    activeRef.current.fill(0);
-    activeCountRef.current = 0;
+    towersRef.current = towers;
+  }, [towers]);
+  useEffect(() => {
+    cityRadiusRef.current = cityRadius;
+  }, [cityRadius]);
+
+  const ensureColumnCapacity = (count: number) => {
+    const cols = columnsRef.current;
+    if (cols.x.length >= count) return;
+    cols.x = new Float32Array(count);
+    cols.z = new Float32Array(count);
+    cols.radius = new Float32Array(count);
+    cols.height = new Float32Array(count);
+  };
+
+  const recomputeMetrics = () => {
+    const src = towersRef.current;
+    const towerCount = src.length;
+    const heights: number[] = [];
+    heights.length = towerCount;
+    for (let i = 0; i < towerCount; i++) {
+      heights[i] = Math.max(0, src[i]?.height ?? 0);
+    }
+    heights.sort((a, b) => a - b);
+    const p50 = percentileFromSorted(heights, 0.5);
+    const p75 = percentileFromSorted(heights, 0.75);
+    const maxH = heights.length > 0 ? heights[heights.length - 1] ?? 0 : 0;
+    const floor = Math.max(3.8, p50 * 0.48 + 2.3);
+    const low = MathUtils.clamp(p50 * 0.6 + 2.6, floor + 0.5, Math.max(floor + 2.8, maxH * 0.86));
+    const mid = MathUtils.clamp(p75 * 0.9 + 2.8, low + 0.75, Math.max(low + 2.2, maxH * 0.9));
+    const cap = Math.max(mid + 1.25, maxH * 0.95 + 0.9);
+    const high = MathUtils.clamp(Math.max(mid + 0.9, maxH * 0.82 + 2.2), mid + 0.9, cap - 0.45);
+    bandFloorRef.current = floor;
+    bandLowRef.current = low;
+    bandMidRef.current = mid;
+    bandHighRef.current = high;
+    bandCapRef.current = cap;
+
+    const orbitMin = Math.max(7.5, cityRadiusRef.current * 0.35);
+    const orbitMax = Math.max(orbitMin + 6, cityRadiusRef.current * 1.2);
+    orbitMinRef.current = orbitMin;
+    orbitMaxRef.current = orbitMax;
+
+    targetCountRef.current = MathUtils.clamp(
+      Math.floor(BTC_BIRD_BASE_COUNT + BTC_BIRD_GROWTH_BY_SQRT_TOWERS * Math.sqrt(Math.max(0, towerCount))),
+      BTC_BIRD_MIN_COUNT,
+      BTC_BIRD_MAX_COUNT
+    );
+
+    ensureColumnCapacity(towerCount);
+    const cols = columnsRef.current;
+    cols.count = towerCount;
+    for (let i = 0; i < towerCount; i++) {
+      const tower = src[i];
+      const radius = Math.min(
+        BTC_BIRD_AVOID_RADIUS_MAX,
+        Math.max(tower.baseW, tower.baseD, tower.footprintX, tower.footprintZ) * 0.58 + BTC_BIRD_AVOID_PAD
+      );
+      cols.x[i] = tower.x;
+      cols.z[i] = tower.z;
+      cols.radius[i] = radius;
+      cols.height[i] = Math.max(0, tower.height);
+    }
+  };
+
+  const reseedBird = (idx: number, nowMs: number, keepAngle = false) => {
+    const serial = spawnSerialRef.current++;
+    const orbitMin = orbitMinRef.current;
+    const orbitMax = orbitMaxRef.current;
+    const floor = bandFloorRef.current;
+    const cap = bandCapRef.current;
+    const low = bandLowRef.current;
+    const mid = bandMidRef.current;
+    const high = bandHighRef.current;
+    const dir = hash01(serial, idx, 11) < 0.5 ? -1 : 1;
+    const bandPick = hash01(serial, idx, 17);
+    bandRef.current[idx] = bandPick < 0.34 ? 0 : bandPick < 0.8 ? 1 : 2;
+    if (!keepAngle) {
+      angleRef.current[idx] = hash01(serial, idx, 23) * Math.PI * 2;
+    }
+    speedRef.current[idx] = dir * MathUtils.lerp(0.08, 0.17, hash01(serial, idx, 29));
+    orbitTargetRef.current[idx] = MathUtils.lerp(orbitMin * 1.02, orbitMax * 0.96, hash01(serial, idx, 31));
+    orbitRadiusRef.current[idx] = orbitTargetRef.current[idx];
+    radiusAmpRef.current[idx] = MathUtils.lerp(0.24, 1.1, hash01(serial, idx, 37));
+    radiusFreqRef.current[idx] = MathUtils.lerp(0.26, 0.88, hash01(serial, idx, 41));
+    flapPhaseRef.current[idx] = hash01(serial, idx, 43) * Math.PI * 2;
+    flapSpeedRef.current[idx] = MathUtils.lerp(5.6, 8.4, hash01(serial, idx, 47));
+    sizeRef.current[idx] = MathUtils.lerp(0.31, 0.56, hash01(serial, idx, 53));
+    const bandAlt = bandRef.current[idx] === 0 ? low : bandRef.current[idx] === 1 ? mid : high;
+    const alt = MathUtils.clamp(bandAlt + MathUtils.lerp(-0.7, 0.7, hash01(serial, idx, 59)), floor, cap);
+    altitudeRef.current[idx] = alt;
+    rerouteAtRef.current[idx] = nowMs + MathUtils.lerp(9000, 20000, hash01(serial, idx, 61));
+    const orbit = orbitRadiusRef.current[idx];
+    const x = Math.sin(angleRef.current[idx]) * orbit;
+    const z = Math.cos(angleRef.current[idx]) * orbit;
+    prevXRef.current[idx] = x;
+    prevYRef.current[idx] = alt;
+    prevZRef.current[idx] = z;
+  };
+
+  const rerouteBird = (idx: number, nowMs: number) => {
+    const serial = spawnSerialRef.current++;
+    const orbitMin = orbitMinRef.current;
+    const orbitMax = orbitMaxRef.current;
+    orbitTargetRef.current[idx] = MathUtils.lerp(orbitMin * 1.02, orbitMax * 0.96, hash01(serial, idx, 71));
+    radiusAmpRef.current[idx] = MathUtils.lerp(0.2, 1.05, hash01(serial, idx, 73));
+    radiusFreqRef.current[idx] = MathUtils.lerp(0.24, 0.9, hash01(serial, idx, 79));
+    const bandPick = hash01(serial, idx, 83);
+    bandRef.current[idx] = bandPick < 0.32 ? 0 : bandPick < 0.8 ? 1 : 2;
+    rerouteAtRef.current[idx] = nowMs + MathUtils.lerp(10_000, 22_000, hash01(serial, idx, 89));
+  };
+
+  useEffect(() => {
+    recomputeMetrics();
+    activeCountRef.current = BTC_BIRD_MIN_COUNT;
+    for (let i = 0; i < activeCountRef.current; i++) {
+      reseedBird(i, performance.now());
+    }
     reportedCountRef.current = -1;
-    spawnSerialRef.current = 0;
-    nextSpawnAtRef.current = performance.now() + 1400;
-    onBirdCountChange?.(0);
-    return () => onBirdCountChange?.(0);
+    onBirdCountChange?.(activeCountRef.current);
+    const timer = window.setInterval(recomputeMetrics, BTC_BIRD_METRIC_UPDATE_MS);
+    return () => {
+      window.clearInterval(timer);
+      onBirdCountChange?.(0);
+    };
   }, [onBirdCountChange]);
 
-  useFrame((_, delta) => {
+  useFrame(({ clock }, delta) => {
     const mesh = meshRef.current;
     if (!mesh) return;
-
-    const now = performance.now();
-    const minRadius = Math.max(4.5, cityRadius * 0.3);
-    const maxRadius = Math.max(minRadius + 3, cityRadius * 1.1);
-    const centerAvoidRadius = minRadius * 0.72;
-    const minAltitude = Math.max(3, Math.min(7.5, sceneMaxY * 0.15));
-    const maxAltitude = Math.max(minAltitude + 4, Math.min(18 + sceneMaxY * 0.1, sceneMaxY * 0.62));
-    const active = activeRef.current;
-    const bornAt = bornAtRef.current;
-    const dieAt = dieAtRef.current;
-    const angle = angleRef.current;
-    const omega = omegaRef.current;
-    const radiusBase = radiusBaseRef.current;
-    const radiusTarget = radiusTargetRef.current;
-    const radiusAmp = radiusAmpRef.current;
-    const radiusFreq = radiusFreqRef.current;
-    const radiusPhase = radiusPhaseRef.current;
-    const altitudeBase = altitudeBaseRef.current;
-    const altitudeTarget = altitudeTargetRef.current;
-    const altitudeAmp = altitudeAmpRef.current;
-    const altitudeFreq = altitudeFreqRef.current;
-    const altitudePhase = altitudePhaseRef.current;
-    const size = sizeRef.current;
-    const prevX = prevXRef.current;
-    const prevY = prevYRef.current;
-    const prevZ = prevZRef.current;
-
-    let spawnStep = 0;
-    while (now >= nextSpawnAtRef.current && spawnStep < 3) {
-      spawnStep += 1;
-      const serial = spawnSerialRef.current++;
-      const intervalJitter = MathUtils.lerp(0.86, 1.22, hash01(serial, 9707));
-      nextSpawnAtRef.current += BTC_BIRD_FLOCK_INTERVAL_MS * intervalJitter;
-
-      if (activeCountRef.current >= BTC_BIRD_MAX_INSTANCES) continue;
-      const flockSize = Math.min(
-        BTC_BIRD_MAX_INSTANCES - activeCountRef.current,
-        Math.max(
-          BTC_BIRD_FLOCK_MIN_SIZE,
-          Math.round(MathUtils.lerp(BTC_BIRD_FLOCK_MIN_SIZE, BTC_BIRD_FLOCK_MAX_SIZE, hash01(serial, 9713)))
-        )
-      );
-      if (flockSize <= 0) continue;
-
-      const flockLifeMs = MathUtils.lerp(BTC_BIRD_LIFE_MIN_MS, BTC_BIRD_LIFE_MAX_MS, hash01(serial, 9719));
-      const flockBornAt = now;
-      const flockDieAt = now + flockLifeMs;
-      const anchorAngle = hash01(serial, 9721) * Math.PI * 2;
-      const orbitDir = hash01(serial, 9727) < 0.5 ? -1 : 1;
-      const anchorRadius = MathUtils.lerp(minRadius * 1.04, maxRadius * 0.93, hash01(serial, 9733));
-      const anchorAltitude = MathUtils.lerp(minAltitude, maxAltitude, hash01(serial, 9739));
-
-      for (let b = 0; b < flockSize; b++) {
-        let slot = -1;
-        for (let i = 0; i < BTC_BIRD_MAX_INSTANCES; i++) {
-          if (active[i] === 0) {
-            slot = i;
-            break;
-          }
-        }
-        if (slot < 0) break;
-        active[slot] = 1;
+    const nowMs = performance.now();
+    const nowSec = clock.getElapsedTime();
+    const targetCount = targetCountRef.current;
+    adjustBudgetRef.current += delta * BTC_BIRD_COUNT_ADJUST_PER_SEC;
+    while (adjustBudgetRef.current >= 1) {
+      if (activeCountRef.current < targetCount) {
+        reseedBird(activeCountRef.current, nowMs);
         activeCountRef.current += 1;
-        bornAt[slot] = flockBornAt;
-        dieAt[slot] = flockDieAt;
-        const spread = MathUtils.lerp(-0.26, 0.26, hash01(serial, b, 9743));
-        angle[slot] = anchorAngle + spread;
-        omega[slot] = orbitDir * MathUtils.lerp(0.11, 0.2, hash01(serial, b, 9749));
-        radiusBase[slot] = anchorRadius + MathUtils.lerp(-1.5, 1.5, hash01(serial, b, 9751));
-        radiusTarget[slot] = anchorRadius + MathUtils.lerp(-2.1, 2.1, hash01(serial, b, 9757));
-        radiusAmp[slot] = MathUtils.lerp(0.28, 1.1, hash01(serial, b, 9763));
-        radiusFreq[slot] = MathUtils.lerp(0.35, 1.05, hash01(serial, b, 9767));
-        radiusPhase[slot] = hash01(serial, b, 9769) * Math.PI * 2;
-        altitudeBase[slot] = anchorAltitude + MathUtils.lerp(-0.95, 0.95, hash01(serial, b, 9773));
-        altitudeTarget[slot] = anchorAltitude + MathUtils.lerp(-1.4, 1.4, hash01(serial, b, 9779));
-        altitudeAmp[slot] = MathUtils.lerp(0.12, 0.7, hash01(serial, b, 9781));
-        altitudeFreq[slot] = MathUtils.lerp(0.4, 1.2, hash01(serial, b, 9787));
-        altitudePhase[slot] = hash01(serial, b, 9791) * Math.PI * 2;
-        size[slot] = MathUtils.lerp(0.36, 0.58, hash01(serial, b, 9797));
-        const sx = Math.sin(angle[slot]) * radiusBase[slot];
-        const sy = MathUtils.clamp(altitudeBase[slot], minAltitude, maxAltitude);
-        const sz = Math.cos(angle[slot]) * radiusBase[slot];
-        prevX[slot] = sx;
-        prevY[slot] = sy;
-        prevZ[slot] = sz;
+        adjustBudgetRef.current -= 1;
+        continue;
       }
+      if (activeCountRef.current > targetCount && activeCountRef.current > BTC_BIRD_MIN_COUNT) {
+        activeCountRef.current -= 1;
+        adjustBudgetRef.current -= 1;
+        continue;
+      }
+      break;
     }
 
+    const cols = columnsRef.current;
+    const floor = bandFloorRef.current;
+    const low = bandLowRef.current;
+    const mid = bandMidRef.current;
+    const high = bandHighRef.current;
+    const cap = bandCapRef.current;
+    const orbitMin = orbitMinRef.current;
+    const orbitMax = orbitMaxRef.current;
     const matrix = matrixRef.current;
     const pos = posRef.current;
-    const scl = scaleRef.current;
+    const scale = scaleRef.current;
     const quat = quatRef.current;
     const up = upRef.current;
-    let visibleCount = 0;
-    let countChanged = false;
 
-    for (let i = 0; i < BTC_BIRD_MAX_INSTANCES; i++) {
-      if (active[i] === 0) continue;
-      if (now >= dieAt[i]) {
-        active[i] = 0;
-        activeCountRef.current = Math.max(0, activeCountRef.current - 1);
-        countChanged = true;
+    for (let i = 0; i < activeCountRef.current; i++) {
+      if (nowMs >= rerouteAtRef.current[i]) {
+        rerouteBird(i, nowMs);
+      }
+      angleRef.current[i] += speedRef.current[i] * delta;
+      orbitRadiusRef.current[i] = MathUtils.damp(orbitRadiusRef.current[i], orbitTargetRef.current[i], 0.9, delta);
+      const weave = Math.sin(nowSec * radiusFreqRef.current[i] + flapPhaseRef.current[i] * 0.9) * radiusAmpRef.current[i];
+      let radius = orbitRadiusRef.current[i] + weave;
+      radius = MathUtils.clamp(radius, orbitMin, orbitMax);
+      let x = Math.sin(angleRef.current[i]) * radius;
+      let z = Math.cos(angleRef.current[i]) * radius;
+      let repelX = 0;
+      let repelZ = 0;
+      let altitudeLift = 0;
+
+      for (let c = 0; c < cols.count; c++) {
+        const dx = x - cols.x[c];
+        const dz = z - cols.z[c];
+        const avoidR = cols.radius[c];
+        const avoidRSq = avoidR * avoidR;
+        const dSq = dx * dx + dz * dz;
+        if (dSq >= avoidRSq) continue;
+        const d = Math.sqrt(Math.max(1e-6, dSq));
+        const k = (avoidR - d) / avoidR;
+        const invD = 1 / d;
+        repelX += dx * invD * k;
+        repelZ += dz * invD * k;
+        if (altitudeRef.current[i] < cols.height[c] + BTC_BIRD_CLEARANCE_Y) {
+          altitudeLift = Math.max(
+            altitudeLift,
+            (cols.height[c] + BTC_BIRD_CLEARANCE_Y - altitudeRef.current[i]) * 0.35 + k * 1.2
+          );
+        }
+      }
+
+      x += repelX * BTC_BIRD_REPEL_STRENGTH * delta;
+      z += repelZ * BTC_BIRD_REPEL_STRENGTH * delta;
+      const rNow = Math.hypot(x, z);
+      if (rNow > 1e-5) {
+        const clampedR = MathUtils.clamp(rNow, orbitMin, orbitMax);
+        const scaleR = clampedR / rNow;
+        x *= scaleR;
+        z *= scaleR;
+      }
+      angleRef.current[i] = dampAngleRad(angleRef.current[i], Math.atan2(x, z), 2.4, delta);
+
+      const bandAlt = bandRef.current[i] === 0 ? low : bandRef.current[i] === 1 ? mid : high;
+      const altitudeWave = Math.sin(nowSec * (0.42 + radiusFreqRef.current[i] * 0.38) + flapPhaseRef.current[i]) * 0.78;
+      const targetAltitude = MathUtils.clamp(bandAlt + altitudeWave + altitudeLift, floor, cap);
+      altitudeRef.current[i] = MathUtils.damp(altitudeRef.current[i], targetAltitude, altitudeLift > 0 ? 3.4 : 2.2, delta);
+      altitudeRef.current[i] = MathUtils.clamp(altitudeRef.current[i], floor, cap);
+
+      if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(altitudeRef.current[i])) {
+        reseedBird(i, nowMs, true);
         continue;
       }
 
-      const ageSec = Math.max(0, (now - bornAt[i]) * 0.001);
-      angle[i] += omega[i] * delta;
-      radiusBase[i] = MathUtils.damp(radiusBase[i], radiusTarget[i], 1.35, delta);
-      altitudeBase[i] = MathUtils.damp(altitudeBase[i], altitudeTarget[i], 1.55, delta);
-
-      let radius = radiusBase[i] + Math.sin(ageSec * radiusFreq[i] + radiusPhase[i]) * radiusAmp[i];
-      let altitude = altitudeBase[i] + Math.sin(ageSec * altitudeFreq[i] + altitudePhase[i]) * altitudeAmp[i];
-
-      if (radius < centerAvoidRadius) radiusTarget[i] = Math.max(radiusTarget[i], minRadius * 1.03);
-      if (radius < minRadius) {
-        radiusTarget[i] = Math.min(maxRadius, radiusTarget[i] + (minRadius - radius) * 0.55);
-        radius = minRadius;
-      } else if (radius > maxRadius) {
-        radiusTarget[i] = Math.max(minRadius, radiusTarget[i] - (radius - maxRadius) * 0.5);
-        radius = maxRadius;
-      }
-      if (altitude < minAltitude) {
-        altitudeTarget[i] = Math.min(maxAltitude, altitudeTarget[i] + (minAltitude - altitude) * 0.55);
-        altitude = minAltitude;
-      } else if (altitude > maxAltitude) {
-        altitudeTarget[i] = Math.max(minAltitude, altitudeTarget[i] - (altitude - maxAltitude) * 0.5);
-        altitude = maxAltitude;
-      }
-
-      const weave = Math.sin(ageSec * (0.28 + radiusFreq[i] * 0.22) + radiusPhase[i] * 0.45) * 0.08;
-      const theta = angle[i] + weave;
-      const x = Math.sin(theta) * radius;
-      const z = Math.cos(theta) * radius;
-
-      const vx = x - prevX[i];
-      const vy = altitude - prevY[i];
-      const vz = z - prevZ[i];
-      prevX[i] = x;
-      prevY[i] = altitude;
-      prevZ[i] = z;
-
-      const planar = Math.hypot(vx, vz);
-      const yaw = planar > 1e-6 ? Math.atan2(vx, vz) : theta + Math.PI * 0.5;
+      const vx = x - prevXRef.current[i];
+      const vy = altitudeRef.current[i] - prevYRef.current[i];
+      const vz = z - prevZRef.current[i];
+      prevXRef.current[i] = x;
+      prevYRef.current[i] = altitudeRef.current[i];
+      prevZRef.current[i] = z;
+      const yaw = Math.hypot(vx, vz) > 1e-6 ? Math.atan2(vx, vz) : angleRef.current[i] + Math.PI * 0.5;
       quat.setFromAxisAngle(up, yaw);
 
-      const ageIn = MathUtils.clamp((now - bornAt[i]) / 1300, 0, 1);
-      const ageOut = MathUtils.clamp((dieAt[i] - now) / 1800, 0, 1);
-      const lifeScale = easeOutCubic(Math.min(ageIn, ageOut));
-      const pitchScale = 1 + MathUtils.clamp(vy * 2.4, -0.12, 0.14);
-      const birdSize = size[i] * MathUtils.lerp(0.72, 1, lifeScale);
-
-      pos.set(x, altitude, z);
-      scl.set(birdSize * 1.05, birdSize * 0.68 * pitchScale, birdSize * 1.26);
-      matrix.compose(pos, quat, scl);
-      mesh.setMatrixAt(visibleCount, matrix);
-      visibleCount += 1;
+      const flap = Math.sin(nowSec * flapSpeedRef.current[i] + flapPhaseRef.current[i]);
+      const birdSize = sizeRef.current[i];
+      const pitchScale = 1 + MathUtils.clamp(vy * 2.2, -0.12, 0.13);
+      pos.set(x, altitudeRef.current[i], z);
+      scale.set(birdSize * 1.05, birdSize * (0.63 + flap * 0.1) * pitchScale, birdSize * (1.22 + flap * 0.05));
+      matrix.compose(pos, quat, scale);
+      mesh.setMatrixAt(i, matrix);
     }
 
-    mesh.count = visibleCount;
+    mesh.count = activeCountRef.current;
     mesh.instanceMatrix.needsUpdate = true;
-
-    if (countChanged || reportedCountRef.current !== activeCountRef.current) {
+    if (reportedCountRef.current !== activeCountRef.current) {
       reportedCountRef.current = activeCountRef.current;
       onBirdCountChange?.(activeCountRef.current);
     }
@@ -8493,12 +8621,11 @@ function BirdFlocks({
 
   return (
     <group>
-      <instancedMesh ref={meshRef} args={[undefined, undefined, BTC_BIRD_MAX_INSTANCES]} renderOrder={BTC_BIRD_RENDER_ORDER} frustumCulled={false}>
-        <primitive object={geometry} attach="geometry" />
+      <instancedMesh ref={meshRef} args={[geometry, undefined, BTC_BIRD_MAX_INSTANCES]} renderOrder={BTC_BIRD_RENDER_ORDER} frustumCulled={false}>
         <meshBasicMaterial
-          color="#fff2dc"
+          color="#fff0d7"
           transparent
-          opacity={0.18}
+          opacity={0.17}
           toneMapped={false}
           side={DoubleSide}
           depthTest
@@ -8738,6 +8865,12 @@ function SandboxScene({
     () => (hoveredTowerSequence == null ? null : towers.find((tower) => tower.sequence === hoveredTowerSequence) ?? null),
     [hoveredTowerSequence, towers]
   );
+  const mountainScaleMetric = useMemo(() => {
+    if (towers.length === 0) return 10;
+    const heights = towers.map((tower) => Math.max(0, tower.height));
+    heights.sort((a, b) => a - b);
+    return percentileFromSorted(heights, 0.75);
+  }, [towers]);
   const tallestTower = useMemo(
     () => (tallestTowerSequence == null ? null : towers.find((tower) => tower.sequence === tallestTowerSequence) ?? null),
     [tallestTowerSequence, towers]
@@ -8908,7 +9041,7 @@ function SandboxScene({
         marketPulse={marketMoodTarget}
         introBootAlpha={groundIntroBootAlpha ?? fx.introBootAlpha}
       />
-      {mode === 'btc' ? <DistantMountains cityRadius={bounds.radius} /> : null}
+      {mode === 'btc' ? <MountainsBackdrop cityRadius={bounds.radius} cityScaleMetric={mountainScaleMetric} /> : null}
       <DistrictBoundariesLayer districts={districts} focusMode={focusMode} />
       <ShockwaveLayer shockwaves={shockwaves} focusMode={focusMode} />
       {showParksLayer ? <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} showFireflies={showParkFireflies} /> : null}
@@ -8928,7 +9061,7 @@ function SandboxScene({
         clutter={fx.clutter}
       />
       <TrafficParticles particles={trafficRender} focusMode={focusMode} introLifeAlpha={fx.introLifeAlpha} clutter={fx.clutter} />
-      {mode === 'btc' ? <BirdFlocks cityRadius={bounds.radius} sceneMaxY={bounds.maxY} onBirdCountChange={onBirdCountChange} /> : null}
+      {mode === 'btc' ? <BirdFlock towers={towers} cityRadius={bounds.radius} onBirdCountChange={onBirdCountChange} /> : null}
       <HoverProjectionTracker tower={hoveredTower} onHudUpdate={onHoverHudUpdate} />
 
       {/* Render band 6: tower bodies and holo layers remain the top visual anchors */}
