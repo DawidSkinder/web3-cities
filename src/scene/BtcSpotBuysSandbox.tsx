@@ -5,6 +5,7 @@ import {
   AdditiveBlending,
   ACESFilmicToneMapping,
   BackSide,
+  BufferGeometry,
   BoxGeometry,
   CanvasTexture,
   CircleGeometry,
@@ -13,6 +14,7 @@ import {
   DoubleSide,
   EdgesGeometry,
   FrontSide,
+  Float32BufferAttribute,
   IcosahedronGeometry,
   LinearFilter,
   LineBasicMaterial,
@@ -538,9 +540,9 @@ const DEBUG_FORCE_TRAFFIC_VIS = false;
 const MAX_TRAFFIC_INSTANCES = 4096;
 const TRAFFIC_PATH_TRIM = 0.9;
 const BTC_MOUNTAIN_SEED = 58_031;
-const BTC_MOUNTAIN_LAYER_FAR_COUNT = 44;
-const BTC_MOUNTAIN_LAYER_MID_COUNT = 32;
-const BTC_MOUNTAIN_LAYER_PEAK_COUNT = 20;
+const BTC_MOUNTAIN_LAYER_FAR_COUNT = 24;
+const BTC_MOUNTAIN_LAYER_MID_COUNT = 18;
+const BTC_MOUNTAIN_LAYER_PEAK_COUNT = 12;
 const BTC_MOUNTAIN_RING_MULT = 4.4;
 const BTC_MOUNTAIN_RING_MIN = 320;
 const BTC_MOUNTAIN_RING_MAX = 520;
@@ -8181,41 +8183,92 @@ function buildMountainUnits(seedOffset: number, count: number) {
 }
 
 function buildFacetMountainGeometry(kind: 'core' | 'shoulder') {
-  const base =
-    kind === 'core' ? new ConeGeometry(1, 1.65, 8, 2, false) : new ConeGeometry(1, 1.1, 7, 1, false);
-  const geometry = base.toNonIndexed();
-  base.dispose();
-  const position = geometry.attributes.position;
-  const geoHeight = kind === 'core' ? 1.65 : 1.1;
-  const halfHeight = geoHeight * 0.5;
-  for (let i = 0; i < position.count; i++) {
-    const x = position.getX(i);
-    const y = position.getY(i);
-    const z = position.getZ(i);
-    const up = MathUtils.clamp((y + halfHeight) / Math.max(0.0001, geoHeight), 0, 1);
-    const azimuth = Math.atan2(z, x);
-    const ridgePhase = hash01(BTC_MOUNTAIN_SEED, kind === 'core' ? 701 : 719, i, 13) * Math.PI * 2;
-    const ridgeA = Math.sin(azimuth * (kind === 'core' ? 3.3 : 2.7) + ridgePhase);
-    const ridgeB = Math.sin(azimuth * (kind === 'core' ? 5.8 : 4.2) - ridgePhase * 0.62);
-    const radialBase =
-      kind === 'core'
-        ? MathUtils.lerp(2.2, 0.28, Math.pow(up, 0.78))
-        : MathUtils.lerp(2.9, 0.56, Math.pow(up, 0.85));
-    const radialNoise = (ridgeA * 0.24 + ridgeB * 0.15) * (1 - Math.pow(up, 0.74));
-    const jag = (hash01(BTC_MOUNTAIN_SEED, kind === 'core' ? 733 : 757, i, 17) * 2 - 1) * (kind === 'core' ? 0.15 : 0.22) * (1 - up);
-    const radial = radialBase + radialNoise + jag;
-    const nx = x * radial;
-    const nz = z * radial;
-    const crown = Math.pow(up, kind === 'core' ? 1.28 : 1.1) * (kind === 'core' ? 2.42 : 1.7);
-    const terrace = Math.sin((nx * 0.84 + nz * 0.72 + ridgePhase) * 2.2) * (1 - up) * (kind === 'core' ? 0.08 : 0.06);
-    const ny = crown + terrace;
-    position.setXYZ(i, nx, ny, nz);
+  const xCount = kind === 'core' ? 10 : 8;
+  const zCount = kind === 'core' ? 6 : 5;
+  const xSpan = kind === 'core' ? 2.75 : 3.15;
+  const zSpan = kind === 'core' ? 1.75 : 1.95;
+  const heightGain = kind === 'core' ? 1 : 0.62;
+  const footprintGrow = kind === 'core' ? 1.2 : 1.28;
+  const topVerts: Array<[number, number, number]> = [];
+  const positions: number[] = [];
+
+  const vertexAt = (xi: number, zi: number) => topVerts[zi * xCount + xi];
+  const pushTri = (a: [number, number, number], b: [number, number, number], c: [number, number, number]) => {
+    positions.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+  };
+
+  for (let zi = 0; zi < zCount; zi++) {
+    const zn = zCount <= 1 ? 0 : zi / (zCount - 1);
+    const z = MathUtils.lerp(-zSpan, zSpan, zn);
+    for (let xi = 0; xi < xCount; xi++) {
+      const xn = xCount <= 1 ? 0 : xi / (xCount - 1);
+      const x = MathUtils.lerp(-xSpan, xSpan, xn);
+      const edgeFadeX = Math.pow(Math.sin(xn * Math.PI), 0.64);
+      const edgeFadeZ = Math.pow(Math.sin(zn * Math.PI), 0.82);
+      const peakLeft = 1.2 * Math.exp(-((x + xSpan * 0.58) ** 2) / 1.4 - ((z + 0.24) ** 2) / 2.2);
+      const peakMid = 1.82 * Math.exp(-((x - 0.18) ** 2) / 0.92 - ((z - 0.08) ** 2) / 1.16);
+      const peakRight = 1.34 * Math.exp(-((x - xSpan * 0.54) ** 2) / 1.18 - ((z + 0.28) ** 2) / 1.86);
+      const spine = 0.46 * Math.exp(-(z * z) / 3.4) * (0.84 + 0.16 * Math.cos((x + 0.45) * 1.5));
+      const shoulderLeft = 0.42 * Math.exp(-((x + xSpan * 0.92) ** 2) / 2.8 - ((z - 0.34) ** 2) / 4.8);
+      const shoulderRight = 0.38 * Math.exp(-((x - xSpan * 0.94) ** 2) / 2.4 - ((z + 0.18) ** 2) / 4.1);
+      const saddleCut = 0.24 * Math.exp(-((x + 0.82) ** 2) / 0.52 - ((z + 0.02) ** 2) / 0.78);
+      const frontBreak = 0.15 * Math.exp(-((x - 0.92) ** 2) / 0.44 - ((z - 0.72) ** 2) / 0.36);
+      const terrace = Math.sin((x * 1.12 - z * 0.72) * Math.PI) * 0.06 * (0.35 + edgeFadeZ * 0.65);
+      const warpX = x + Math.sin(z * 1.45) * 0.12 + Math.sin(x * 0.8 + z * 0.55) * 0.06;
+      const warpZ = z + Math.sin(x * 0.72) * 0.14 - Math.cos(z * 1.22) * 0.05;
+      const h = Math.max(
+        0,
+        (peakLeft + peakMid + peakRight + spine + shoulderLeft + shoulderRight - saddleCut - frontBreak + terrace) *
+          heightGain *
+          (0.58 + edgeFadeX * 0.42) *
+          (0.62 + edgeFadeZ * 0.38)
+      );
+      topVerts.push([warpX, h, warpZ]);
+    }
   }
+
+  for (let zi = 0; zi < zCount - 1; zi++) {
+    for (let xi = 0; xi < xCount - 1; xi++) {
+      const a = vertexAt(xi, zi);
+      const b = vertexAt(xi + 1, zi);
+      const c = vertexAt(xi + 1, zi + 1);
+      const d = vertexAt(xi, zi + 1);
+      pushTri(a, b, c);
+      pushTri(a, c, d);
+    }
+  }
+
+  const perimeter: Array<[number, number]> = [];
+  for (let xi = 0; xi < xCount; xi++) perimeter.push([xi, 0]);
+  for (let zi = 1; zi < zCount; zi++) perimeter.push([xCount - 1, zi]);
+  for (let xi = xCount - 2; xi >= 0; xi--) perimeter.push([xi, zCount - 1]);
+  for (let zi = zCount - 2; zi > 0; zi--) perimeter.push([0, zi]);
+
+  const skirtVerts = perimeter.map(([xi, zi]) => {
+    const top = vertexAt(xi, zi);
+    const outwardX = top[0] * footprintGrow;
+    const outwardZ = top[2] * footprintGrow;
+    return [outwardX, 0, outwardZ] as [number, number, number];
+  });
+  const bottomCenter: [number, number, number] = [0, 0, 0];
+
+  for (let i = 0; i < perimeter.length; i++) {
+    const j = (i + 1) % perimeter.length;
+    const topA = vertexAt(perimeter[i][0], perimeter[i][1]);
+    const topB = vertexAt(perimeter[j][0], perimeter[j][1]);
+    const skirtA = skirtVerts[i];
+    const skirtB = skirtVerts[j];
+    pushTri(topA, topB, skirtB);
+    pushTri(topA, skirtB, skirtA);
+    pushTri(skirtA, skirtB, bottomCenter);
+  }
+
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
   geometry.computeBoundingBox();
   const bb = geometry.boundingBox;
   if (bb) geometry.translate(0, -bb.min.y, 0);
-  position.needsUpdate = true;
-  geometry.computeVertexNormals();
   return geometry;
 }
 
@@ -8433,41 +8486,41 @@ function MountainsBackdrop({
     const farY = GROUND_DECK_Y - scale * 0.56;
     const midY = GROUND_DECK_Y - scale * 0.6;
     const peakY = GROUND_DECK_Y - scale * 0.62;
-    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.01, scale * 0.78, farY, 1.0, 0.98);
+    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.01, scale * 0.72, farY, 1.3, 1.08);
     applyShoulderLayer(
       farShoulderRef.current,
       farUnits,
       ring * 1.01,
-      scale * 0.5,
+      scale * 0.54,
       farY
     );
-    applyFoothillLayer(farFoothillRef.current, farUnits, ring * 1.01, scale * 0.36, farY);
-    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.9, scale * 0.7, midY, 1.08, 1.02);
+    applyFoothillLayer(farFoothillRef.current, farUnits, ring * 1.01, scale * 0.44, farY);
+    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.9, scale * 0.64, midY, 1.24, 1.06);
     applyShoulderLayer(
       midShoulderRef.current,
       midUnits,
       ring * 0.9,
-      scale * 0.45,
+      scale * 0.48,
       midY
     );
-    applyFoothillLayer(midFoothillRef.current, midUnits, ring * 0.9, scale * 0.32, midY);
+    applyFoothillLayer(midFoothillRef.current, midUnits, ring * 0.9, scale * 0.4, midY);
     applyCoreLayer(
       peakCoreRef.current,
       peakUnits,
       ring * 1.14,
-      scale * 0.86,
+      scale * 0.74,
       peakY,
-      0.92,
-      0.9
+      1.18,
+      1.02
     );
     applyShoulderLayer(
       peakShoulderRef.current,
       peakUnits,
       ring * 1.14,
-      scale * 0.52,
+      scale * 0.56,
       peakY
     );
-    applyFoothillLayer(peakFoothillRef.current, peakUnits, ring * 1.14, scale * 0.38, peakY);
+    applyFoothillLayer(peakFoothillRef.current, peakUnits, ring * 1.14, scale * 0.46, peakY);
   });
 
   return (
@@ -8486,7 +8539,7 @@ function MountainsBackdrop({
             emissive="#1f130c"
             emissiveIntensity={0.05}
             flatShading
-            side={FrontSide}
+            side={DoubleSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8502,7 +8555,7 @@ function MountainsBackdrop({
             emissive="#170e09"
             emissiveIntensity={0.04}
             flatShading
-            side={FrontSide}
+            side={DoubleSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8518,7 +8571,7 @@ function MountainsBackdrop({
             emissive="#120b07"
             emissiveIntensity={0.035}
             flatShading
-            side={FrontSide}
+            side={DoubleSide}
           />
         </instancedMesh>
       </group>
@@ -8536,7 +8589,7 @@ function MountainsBackdrop({
             emissive="#24160d"
             emissiveIntensity={0.06}
             flatShading
-            side={FrontSide}
+            side={DoubleSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8552,7 +8605,7 @@ function MountainsBackdrop({
             emissive="#1c110a"
             emissiveIntensity={0.05}
             flatShading
-            side={FrontSide}
+            side={DoubleSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8568,7 +8621,7 @@ function MountainsBackdrop({
             emissive="#150d08"
             emissiveIntensity={0.04}
             flatShading
-            side={FrontSide}
+            side={DoubleSide}
           />
         </instancedMesh>
       </group>
@@ -8586,7 +8639,7 @@ function MountainsBackdrop({
             emissive="#2d1b10"
             emissiveIntensity={0.07}
             flatShading
-            side={FrontSide}
+            side={DoubleSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8602,7 +8655,7 @@ function MountainsBackdrop({
             emissive="#21140c"
             emissiveIntensity={0.06}
             flatShading
-            side={FrontSide}
+            side={DoubleSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8618,7 +8671,7 @@ function MountainsBackdrop({
             emissive="#180f09"
             emissiveIntensity={0.05}
             flatShading
-            side={FrontSide}
+            side={DoubleSide}
           />
         </instancedMesh>
       </group>
