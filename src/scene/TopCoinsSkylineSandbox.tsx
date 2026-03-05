@@ -5,6 +5,7 @@ import {
   AdditiveBlending,
   ACESFilmicToneMapping,
   BackSide,
+  BufferGeometry,
   BoxGeometry,
   CanvasTexture,
   CircleGeometry,
@@ -12,6 +13,7 @@ import {
   Color,
   DoubleSide,
   EdgesGeometry,
+  Float32BufferAttribute,
   LinearFilter,
   LinearMipmapLinearFilter,
   LineBasicMaterial,
@@ -548,6 +550,19 @@ const TOWER_DETAIL_BAND_Y_EPS = 0.0006;
 const DEBUG_FORCE_TRAFFIC_VIS = false;
 const MAX_TRAFFIC_INSTANCES = 4096;
 const TRAFFIC_PATH_TRIM = 0.9;
+const BTC_MOUNTAIN_SEED = 58_031;
+const BTC_MOUNTAIN_LAYER_FAR_COUNT = 24;
+const BTC_MOUNTAIN_LAYER_MID_COUNT = 18;
+const BTC_MOUNTAIN_LAYER_PEAK_COUNT = 12;
+const BTC_MOUNTAIN_RING_MULT = 4.4;
+const BTC_MOUNTAIN_RING_MIN = 320;
+const BTC_MOUNTAIN_RING_MAX = 520;
+const BTC_MOUNTAIN_METRIC_UPDATE_MS = 1000;
+const BTC_MOUNTAIN_RENDER_ORDER = 1.3;
+const BTC_MOUNTAIN_REVEAL_MID_DELAY_S = 0.34;
+const BTC_MOUNTAIN_REVEAL_PEAK_DELAY_S = 0.66;
+const BTC_MOUNTAIN_REVEAL_LAYER_DUR_S = 1.05;
+const BTC_MOUNTAIN_REVEAL_FALLBACK_S = 0.95;
 
 const RADIAL_GLOW_VERTEX = `
 varying vec2 vUv;
@@ -8099,6 +8114,415 @@ function RecordCeremonyLayer({
   );
 }
 
+type MountainUnit = {
+  angle: number;
+  radialJitter: number;
+  yawJitter: number;
+  hT: number;
+  wT: number;
+  dT: number;
+  shoulderDirT: number;
+  shoulderScaleT: number;
+  shoulderSpreadT: number;
+};
+
+function buildMountainUnits(seedOffset: number, count: number) {
+  const units: MountainUnit[] = [];
+  for (let i = 0; i < count; i++) {
+    units.push({
+      angle: ((i + 0.5) / count) * Math.PI * 2 + MathUtils.lerp(-0.11, 0.11, hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 11)),
+      radialJitter: MathUtils.lerp(-0.09, 0.09, hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 17)),
+      yawJitter: MathUtils.lerp(-0.3, 0.3, hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 19)),
+      hT: hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 23),
+      wT: hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 29),
+      dT: hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 31),
+      shoulderDirT: hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 37),
+      shoulderScaleT: hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 41),
+      shoulderSpreadT: hash01(BTC_MOUNTAIN_SEED, seedOffset, i, 43)
+    });
+  }
+  return units;
+}
+
+function buildFacetMountainGeometry(kind: 'core' | 'shoulder') {
+  const xCount = kind === 'core' ? 10 : 8;
+  const zCount = kind === 'core' ? 6 : 5;
+  const xSpan = kind === 'core' ? 2.75 : 3.15;
+  const zSpan = kind === 'core' ? 1.75 : 1.95;
+  const heightGain = kind === 'core' ? 1 : 0.62;
+  const footprintGrow = kind === 'core' ? 1.2 : 1.28;
+  const topVerts: Array<[number, number, number]> = [];
+  const positions: number[] = [];
+
+  const vertexAt = (xi: number, zi: number) => topVerts[zi * xCount + xi];
+  const pushTri = (a: [number, number, number], b: [number, number, number], c: [number, number, number]) => {
+    positions.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+  };
+
+  for (let zi = 0; zi < zCount; zi++) {
+    const zn = zCount <= 1 ? 0 : zi / (zCount - 1);
+    const z = MathUtils.lerp(-zSpan, zSpan, zn);
+    for (let xi = 0; xi < xCount; xi++) {
+      const xn = xCount <= 1 ? 0 : xi / (xCount - 1);
+      const x = MathUtils.lerp(-xSpan, xSpan, xn);
+      const edgeFadeX = Math.pow(Math.sin(xn * Math.PI), 0.64);
+      const edgeFadeZ = Math.pow(Math.sin(zn * Math.PI), 0.82);
+      const peakLeft = 1.2 * Math.exp(-((x + xSpan * 0.58) ** 2) / 1.4 - ((z + 0.24) ** 2) / 2.2);
+      const peakMid = 1.82 * Math.exp(-((x - 0.18) ** 2) / 0.92 - ((z - 0.08) ** 2) / 1.16);
+      const peakRight = 1.34 * Math.exp(-((x - xSpan * 0.54) ** 2) / 1.18 - ((z + 0.28) ** 2) / 1.86);
+      const spine = 0.46 * Math.exp(-(z * z) / 3.4) * (0.84 + 0.16 * Math.cos((x + 0.45) * 1.5));
+      const shoulderLeft = 0.42 * Math.exp(-((x + xSpan * 0.92) ** 2) / 2.8 - ((z - 0.34) ** 2) / 4.8);
+      const shoulderRight = 0.38 * Math.exp(-((x - xSpan * 0.94) ** 2) / 2.4 - ((z + 0.18) ** 2) / 4.1);
+      const saddleCut = 0.24 * Math.exp(-((x + 0.82) ** 2) / 0.52 - ((z + 0.02) ** 2) / 0.78);
+      const frontBreak = 0.15 * Math.exp(-((x - 0.92) ** 2) / 0.44 - ((z - 0.72) ** 2) / 0.36);
+      const terrace = Math.sin((x * 1.12 - z * 0.72) * Math.PI) * 0.06 * (0.35 + edgeFadeZ * 0.65);
+      const warpX = x + Math.sin(z * 1.45) * 0.12 + Math.sin(x * 0.8 + z * 0.55) * 0.06;
+      const warpZ = z + Math.sin(x * 0.72) * 0.14 - Math.cos(z * 1.22) * 0.05;
+      const h = Math.max(
+        0,
+        (peakLeft + peakMid + peakRight + spine + shoulderLeft + shoulderRight - saddleCut - frontBreak + terrace) *
+          heightGain *
+          (0.58 + edgeFadeX * 0.42) *
+          (0.62 + edgeFadeZ * 0.38)
+      );
+      topVerts.push([warpX, h, warpZ]);
+    }
+  }
+
+  for (let zi = 0; zi < zCount - 1; zi++) {
+    for (let xi = 0; xi < xCount - 1; xi++) {
+      const a = vertexAt(xi, zi);
+      const b = vertexAt(xi + 1, zi);
+      const c = vertexAt(xi + 1, zi + 1);
+      const d = vertexAt(xi, zi + 1);
+      pushTri(a, b, c);
+      pushTri(a, c, d);
+    }
+  }
+
+  const perimeter: Array<[number, number]> = [];
+  for (let xi = 0; xi < xCount; xi++) perimeter.push([xi, 0]);
+  for (let zi = 1; zi < zCount; zi++) perimeter.push([xCount - 1, zi]);
+  for (let xi = xCount - 2; xi >= 0; xi--) perimeter.push([xi, zCount - 1]);
+  for (let zi = zCount - 2; zi > 0; zi--) perimeter.push([0, zi]);
+
+  const skirtVerts = perimeter.map(([xi, zi]) => {
+    const top = vertexAt(xi, zi);
+    const outwardX = top[0] * footprintGrow;
+    const outwardZ = top[2] * footprintGrow;
+    return [outwardX, 0, outwardZ] as [number, number, number];
+  });
+  const bottomCenter: [number, number, number] = [0, 0, 0];
+
+  for (let i = 0; i < perimeter.length; i++) {
+    const j = (i + 1) % perimeter.length;
+    const topA = vertexAt(perimeter[i][0], perimeter[i][1]);
+    const topB = vertexAt(perimeter[j][0], perimeter[j][1]);
+    const skirtA = skirtVerts[i];
+    const skirtB = skirtVerts[j];
+    pushTri(topA, topB, skirtB);
+    pushTri(topA, skirtB, skirtA);
+    pushTri(skirtA, skirtB, bottomCenter);
+  }
+
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
+  geometry.computeBoundingBox();
+  const bb = geometry.boundingBox;
+  if (bb) geometry.translate(0, -bb.min.y, 0);
+  return geometry;
+}
+
+function MountainsBackdrop({
+  cityRadius,
+  cityScaleMetric,
+  introBootAlpha
+}: {
+  cityRadius: number;
+  cityScaleMetric: number;
+  introBootAlpha: number;
+}) {
+  const farCoreRef = useRef<ThreeInstancedMesh>(null);
+  const farShoulderRef = useRef<ThreeInstancedMesh>(null);
+  const farFoothillRef = useRef<ThreeInstancedMesh>(null);
+  const midCoreRef = useRef<ThreeInstancedMesh>(null);
+  const midShoulderRef = useRef<ThreeInstancedMesh>(null);
+  const midFoothillRef = useRef<ThreeInstancedMesh>(null);
+  const peakCoreRef = useRef<ThreeInstancedMesh>(null);
+  const peakShoulderRef = useRef<ThreeInstancedMesh>(null);
+  const peakFoothillRef = useRef<ThreeInstancedMesh>(null);
+  const farGroupRef = useRef<Group>(null);
+  const midGroupRef = useRef<Group>(null);
+  const peakGroupRef = useRef<Group>(null);
+  const cityRadiusRef = useRef(cityRadius);
+  const cityScaleMetricRef = useRef(cityScaleMetric);
+  const introBootAlphaRef = useRef(introBootAlpha);
+  const targetRingRef = useRef(
+    MathUtils.clamp(
+      Math.max(cityRadius * BTC_MOUNTAIN_RING_MULT, BTC_MOUNTAIN_RING_MIN),
+      BTC_MOUNTAIN_RING_MIN,
+      BTC_MOUNTAIN_RING_MAX
+    )
+  );
+  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 1.1 + cityRadius * 0.11, 46, 86));
+  const smoothRingRef = useRef(targetRingRef.current);
+  const smoothScaleRef = useRef(targetScaleRef.current);
+  const revealTimeRef = useRef(0);
+  const mountElapsedRef = useRef(0);
+  const matrixRef = useRef(new Matrix4());
+  const quatRef = useRef(new Quaternion());
+  const posRef = useRef(new Vector3());
+  const scaleRef = useRef(new Vector3());
+  const upRef = useRef(new Vector3(0, 1, 0));
+
+  const coreGeometry = useMemo(() => buildFacetMountainGeometry('core'), []);
+  const shoulderGeometry = useMemo(() => buildFacetMountainGeometry('shoulder'), []);
+  useEffect(
+    () => () => {
+      coreGeometry.dispose();
+      shoulderGeometry.dispose();
+    },
+    [coreGeometry, shoulderGeometry]
+  );
+
+  const farUnits = useMemo(() => buildMountainUnits(101, BTC_MOUNTAIN_LAYER_FAR_COUNT), []);
+  const midUnits = useMemo(() => buildMountainUnits(211, BTC_MOUNTAIN_LAYER_MID_COUNT), []);
+  const peakUnits = useMemo(() => buildMountainUnits(307, BTC_MOUNTAIN_LAYER_PEAK_COUNT), []);
+
+  useEffect(() => {
+    cityRadiusRef.current = cityRadius;
+    cityScaleMetricRef.current = cityScaleMetric;
+  }, [cityRadius, cityScaleMetric]);
+
+  useEffect(() => {
+    introBootAlphaRef.current = introBootAlpha;
+  }, [introBootAlpha]);
+
+  useEffect(() => {
+    const updateTargets = () => {
+      const nextRing = MathUtils.clamp(
+        Math.max(cityRadiusRef.current * BTC_MOUNTAIN_RING_MULT, BTC_MOUNTAIN_RING_MIN),
+        BTC_MOUNTAIN_RING_MIN,
+        BTC_MOUNTAIN_RING_MAX
+      );
+      const scaleFromRadius = cityRadiusRef.current * 0.16;
+      const scaleFromHeights = cityScaleMetricRef.current * 1.1;
+      targetRingRef.current = nextRing;
+      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 46, 86);
+    };
+    updateTargets();
+    const timer = window.setInterval(updateTargets, BTC_MOUNTAIN_METRIC_UPDATE_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const applyCoreLayer = (
+    mesh: ThreeInstancedMesh | null,
+    units: MountainUnit[],
+    ring: number,
+    layerScale: number,
+    yBase: number,
+    sxMult: number,
+    szMult: number
+  ) => {
+    if (!mesh) return;
+    const matrix = matrixRef.current;
+    const quat = quatRef.current;
+    const pos = posRef.current;
+    const scale = scaleRef.current;
+    const up = upRef.current;
+    const count = Math.min(units.length, mesh.instanceMatrix.count);
+    for (let i = 0; i < count; i++) {
+      const unit = units[i];
+      const radial = ring * (1 + unit.radialJitter);
+      const x = Math.sin(unit.angle) * radial;
+      const z = Math.cos(unit.angle) * radial;
+      const yaw = unit.angle + Math.PI + unit.yawJitter;
+      const h = layerScale * MathUtils.lerp(0.56, 1.12, unit.hT);
+      const sx = h * MathUtils.lerp(0.82, 1.62, unit.wT) * sxMult;
+      const sz = h * MathUtils.lerp(0.8, 1.58, unit.dT) * szMult;
+      quat.setFromAxisAngle(up, yaw);
+      pos.set(x, yBase, z);
+      scale.set(sx, h, sz);
+      matrix.compose(pos, quat, scale);
+      mesh.setMatrixAt(i, matrix);
+    }
+    mesh.count = count;
+    mesh.instanceMatrix.needsUpdate = true;
+  };
+
+  const applyShoulderLayer = (
+    mesh: ThreeInstancedMesh | null,
+    units: MountainUnit[],
+    ring: number,
+    layerScale: number,
+    yBase: number
+  ) => {
+    if (!mesh) return;
+    const matrix = matrixRef.current;
+    const quat = quatRef.current;
+    const pos = posRef.current;
+    const scale = scaleRef.current;
+    const up = upRef.current;
+    const count = Math.min(units.length, mesh.instanceMatrix.count);
+    for (let i = 0; i < count; i++) {
+      const unit = units[i];
+      const radial = ring * (1 + unit.radialJitter * 0.86);
+      const x = Math.sin(unit.angle) * radial;
+      const z = Math.cos(unit.angle) * radial;
+      const coreYaw = unit.angle + Math.PI + unit.yawJitter;
+      const sideYaw = coreYaw + MathUtils.lerp(-1.05, 1.05, unit.shoulderDirT);
+      const hBase = layerScale * MathUtils.lerp(0.44, 0.9, unit.hT);
+      const h = hBase * MathUtils.lerp(0.24, 0.42, unit.shoulderScaleT);
+      const offset = hBase * MathUtils.lerp(0.52, 1.04, unit.shoulderSpreadT);
+      const sx = hBase * MathUtils.lerp(1.72, 3.8, unit.wT) * MathUtils.lerp(1.0, 1.18, unit.shoulderScaleT);
+      const sz = hBase * MathUtils.lerp(1.68, 3.6, unit.dT) * MathUtils.lerp(1.0, 1.16, 1 - unit.shoulderScaleT);
+      quat.setFromAxisAngle(up, sideYaw);
+      pos.set(
+        x + Math.sin(sideYaw + Math.PI * 0.5) * offset,
+        yBase - hBase * MathUtils.lerp(0.18, 0.32, unit.shoulderScaleT) - h * MathUtils.lerp(0.06, 0.14, unit.shoulderScaleT),
+        z + Math.cos(sideYaw + Math.PI * 0.5) * offset
+      );
+      scale.set(sx, h, sz);
+      matrix.compose(pos, quat, scale);
+      mesh.setMatrixAt(i, matrix);
+    }
+    mesh.count = count;
+    mesh.instanceMatrix.needsUpdate = true;
+  };
+
+  const applyFoothillLayer = (
+    mesh: ThreeInstancedMesh | null,
+    units: MountainUnit[],
+    ring: number,
+    layerScale: number,
+    yBase: number
+  ) => {
+    if (!mesh) return;
+    const matrix = matrixRef.current;
+    const quat = quatRef.current;
+    const pos = posRef.current;
+    const scale = scaleRef.current;
+    const up = upRef.current;
+    const count = Math.min(units.length, mesh.instanceMatrix.count);
+    for (let i = 0; i < count; i++) {
+      const unit = units[i];
+      const radial = ring * (1 + unit.radialJitter * 0.96);
+      const x = Math.sin(unit.angle) * radial;
+      const z = Math.cos(unit.angle) * radial;
+      const yaw = unit.angle + Math.PI + unit.yawJitter * 0.42;
+      const hBase = layerScale * MathUtils.lerp(0.3, 0.58, unit.hT);
+      const h = hBase * MathUtils.lerp(0.2, 0.36, unit.shoulderScaleT);
+      const spread = hBase * MathUtils.lerp(0.7, 1.3, unit.shoulderSpreadT);
+      const sx = hBase * MathUtils.lerp(2.6, 5.8, unit.wT);
+      const sz = hBase * MathUtils.lerp(2.5, 5.6, unit.dT);
+      quat.setFromAxisAngle(up, yaw);
+      pos.set(
+        x + Math.sin(yaw + Math.PI * 0.5) * spread * 0.32,
+        yBase - hBase * MathUtils.lerp(0.42, 0.72, unit.shoulderScaleT),
+        z + Math.cos(yaw + Math.PI * 0.5) * spread * 0.32
+      );
+      scale.set(sx, h, sz);
+      matrix.compose(pos, quat, scale);
+      mesh.setMatrixAt(i, matrix);
+    }
+    mesh.count = count;
+    mesh.instanceMatrix.needsUpdate = true;
+  };
+
+  const applyRevealToGroup = (group: Group | null, reveal: number, drop: number, swell = 1.04) => {
+    if (!group) return;
+    const eased = easeOutCubic(reveal);
+    group.visible = reveal > 0.001;
+    group.position.y = -drop * (1 - eased);
+    const sxz = MathUtils.lerp(swell, 1, eased);
+    const sy = MathUtils.lerp(0.72, 1, eased);
+    group.scale.set(sxz, sy, sxz);
+  };
+
+  useFrame((_, delta) => {
+    mountElapsedRef.current += delta;
+    smoothRingRef.current = MathUtils.damp(smoothRingRef.current, targetRingRef.current, 0.92, delta);
+    smoothScaleRef.current = MathUtils.damp(smoothScaleRef.current, targetScaleRef.current, 0.95, delta);
+
+    const introGate = smoothstep01(remapClamped(introBootAlphaRef.current, 0.82, 0.995));
+    if (introGate > 0.001) {
+      revealTimeRef.current += delta * MathUtils.lerp(0.45, 1, introGate);
+    } else {
+      revealTimeRef.current = 0;
+    }
+
+    const revealDur = RUNTIME_QUALITY_CONFIG.reducedMotion ? BTC_MOUNTAIN_REVEAL_FALLBACK_S * 0.7 : BTC_MOUNTAIN_REVEAL_LAYER_DUR_S;
+    const farReveal = smoothstep01(remapClamped(revealTimeRef.current, 0, revealDur));
+    const midReveal = smoothstep01(
+      remapClamped(revealTimeRef.current, BTC_MOUNTAIN_REVEAL_MID_DELAY_S, BTC_MOUNTAIN_REVEAL_MID_DELAY_S + revealDur)
+    );
+    const peakReveal = smoothstep01(
+      remapClamped(revealTimeRef.current, BTC_MOUNTAIN_REVEAL_PEAK_DELAY_S, BTC_MOUNTAIN_REVEAL_PEAK_DELAY_S + revealDur)
+    );
+
+    farGroupRef.current?.rotateY(delta * 0.00018);
+    midGroupRef.current?.rotateY(-delta * 0.00013);
+    peakGroupRef.current?.rotateY(delta * 0.00009);
+
+    const ring = smoothRingRef.current;
+    const scale = smoothScaleRef.current;
+    applyRevealToGroup(farGroupRef.current, farReveal, scale * 0.24, 1.035);
+    applyRevealToGroup(midGroupRef.current, midReveal, scale * 0.3, 1.05);
+    applyRevealToGroup(peakGroupRef.current, peakReveal, scale * 0.36, 1.06);
+    const farY = GROUND_DECK_Y - scale * 0.56;
+    const midY = GROUND_DECK_Y - scale * 0.6;
+    const peakY = GROUND_DECK_Y - scale * 0.62;
+    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.01, scale * 0.72, farY, 1.3, 1.08);
+    applyShoulderLayer(farShoulderRef.current, farUnits, ring * 1.01, scale * 0.54, farY);
+    applyFoothillLayer(farFoothillRef.current, farUnits, ring * 1.01, scale * 0.44, farY);
+    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.9, scale * 0.64, midY, 1.24, 1.06);
+    applyShoulderLayer(midShoulderRef.current, midUnits, ring * 0.9, scale * 0.48, midY);
+    applyFoothillLayer(midFoothillRef.current, midUnits, ring * 0.9, scale * 0.4, midY);
+    applyCoreLayer(peakCoreRef.current, peakUnits, ring * 1.14, scale * 0.74, peakY, 1.18, 1.02);
+    applyShoulderLayer(peakShoulderRef.current, peakUnits, ring * 1.14, scale * 0.56, peakY);
+    applyFoothillLayer(peakFoothillRef.current, peakUnits, ring * 1.14, scale * 0.46, peakY);
+  });
+
+  return (
+    <group renderOrder={BTC_MOUNTAIN_RENDER_ORDER}>
+      <group ref={farGroupRef} renderOrder={BTC_MOUNTAIN_RENDER_ORDER}>
+        <instancedMesh ref={farCoreRef} args={[coreGeometry, undefined, BTC_MOUNTAIN_LAYER_FAR_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER}>
+          <meshStandardMaterial color="#6f4429" roughness={0.96} metalness={0.03} emissive="#1f130c" emissiveIntensity={0.05} flatShading side={DoubleSide} />
+        </instancedMesh>
+        <instancedMesh ref={farShoulderRef} args={[shoulderGeometry, undefined, BTC_MOUNTAIN_LAYER_FAR_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.01}>
+          <meshStandardMaterial color="#5a361f" roughness={0.98} metalness={0.02} emissive="#170e09" emissiveIntensity={0.04} flatShading side={DoubleSide} />
+        </instancedMesh>
+        <instancedMesh ref={farFoothillRef} args={[shoulderGeometry, undefined, BTC_MOUNTAIN_LAYER_FAR_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.005}>
+          <meshStandardMaterial color="#40281a" roughness={0.99} metalness={0.01} emissive="#120b07" emissiveIntensity={0.035} flatShading side={DoubleSide} />
+        </instancedMesh>
+      </group>
+      <group ref={midGroupRef} renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.01}>
+        <instancedMesh ref={midCoreRef} args={[coreGeometry, undefined, BTC_MOUNTAIN_LAYER_MID_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.02}>
+          <meshStandardMaterial color="#815135" roughness={0.95} metalness={0.03} emissive="#24160d" emissiveIntensity={0.06} flatShading side={DoubleSide} />
+        </instancedMesh>
+        <instancedMesh ref={midShoulderRef} args={[shoulderGeometry, undefined, BTC_MOUNTAIN_LAYER_MID_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.03}>
+          <meshStandardMaterial color="#684128" roughness={0.97} metalness={0.02} emissive="#1c110a" emissiveIntensity={0.05} flatShading side={DoubleSide} />
+        </instancedMesh>
+        <instancedMesh ref={midFoothillRef} args={[shoulderGeometry, undefined, BTC_MOUNTAIN_LAYER_MID_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.025}>
+          <meshStandardMaterial color="#4c301e" roughness={0.99} metalness={0.01} emissive="#150d08" emissiveIntensity={0.04} flatShading side={DoubleSide} />
+        </instancedMesh>
+      </group>
+      <group ref={peakGroupRef} renderOrder={BTC_MOUNTAIN_RENDER_ORDER - 0.02}>
+        <instancedMesh ref={peakCoreRef} args={[coreGeometry, undefined, BTC_MOUNTAIN_LAYER_PEAK_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER - 0.02}>
+          <meshStandardMaterial color="#98613c" roughness={0.93} metalness={0.04} emissive="#2d1b10" emissiveIntensity={0.07} flatShading side={DoubleSide} />
+        </instancedMesh>
+        <instancedMesh ref={peakShoulderRef} args={[shoulderGeometry, undefined, BTC_MOUNTAIN_LAYER_PEAK_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.04}>
+          <meshStandardMaterial color="#774b2d" roughness={0.96} metalness={0.03} emissive="#21140c" emissiveIntensity={0.06} flatShading side={DoubleSide} />
+        </instancedMesh>
+        <instancedMesh ref={peakFoothillRef} args={[shoulderGeometry, undefined, BTC_MOUNTAIN_LAYER_PEAK_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.035}>
+          <meshStandardMaterial color="#583822" roughness={0.98} metalness={0.02} emissive="#180f09" emissiveIntensity={0.05} flatShading side={DoubleSide} />
+        </instancedMesh>
+      </group>
+    </group>
+  );
+}
+
 type TopBirdTowerColumns = {
   x: Float32Array;
   z: Float32Array;
@@ -8675,6 +9099,12 @@ function SandboxScene({
     () => (hoveredTowerSequence == null ? null : towers.find((tower) => tower.sequence === hoveredTowerSequence) ?? null),
     [hoveredTowerSequence, towers]
   );
+  const mountainScaleMetric = useMemo(() => {
+    if (towers.length === 0) return 10;
+    const heights = towers.map((tower) => Math.max(0, tower.height));
+    heights.sort((a, b) => a - b);
+    return percentileFromSorted(heights, 0.75);
+  }, [towers]);
   const tallestTower = useMemo(
     () => (tallestTowerSequence == null ? null : towers.find((tower) => tower.sequence === tallestTowerSequence) ?? null),
     [tallestTowerSequence, towers]
@@ -8804,7 +9234,7 @@ function SandboxScene({
 
   return (
     <Canvas
-      camera={{ position: [20, 12, 20], fov: 50, near: 0.15, far: 420 }}
+      camera={{ position: [20, 12, 20], fov: 50, near: 0.15, far: 1200 }}
       dpr={[1, RUNTIME_QUALITY_CONFIG.dprCap]}
       gl={{ antialias: RUNTIME_QUALITY_CONFIG.antialias, alpha: false, powerPreference: 'high-performance' }}
       onPointerMissed={() => {
@@ -8843,6 +9273,11 @@ function SandboxScene({
         bounds={bounds}
         focusMode={focusMode}
         marketPulse={marketMoodTarget}
+        introBootAlpha={groundIntroBootAlpha ?? fx.introBootAlpha}
+      />
+      <MountainsBackdrop
+        cityRadius={bounds.radius}
+        cityScaleMetric={mountainScaleMetric}
         introBootAlpha={groundIntroBootAlpha ?? fx.introBootAlpha}
       />
       <DistrictBoundariesLayer districts={districts} focusMode={focusMode} />
