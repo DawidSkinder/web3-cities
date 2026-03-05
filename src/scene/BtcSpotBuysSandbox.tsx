@@ -8201,6 +8201,7 @@ function MountainsBackdrop({
   const smoothScaleRef = useRef(targetScaleRef.current);
   const lastAppliedRingRef = useRef(-1);
   const lastAppliedScaleRef = useRef(-1);
+  const appliedOnceRef = useRef(false);
   const matrixRef = useRef(new Matrix4());
   const quatRef = useRef(new Quaternion());
   const posRef = useRef(new Vector3());
@@ -8336,20 +8337,30 @@ function MountainsBackdrop({
 
     const ring = smoothRingRef.current;
     const scale = smoothScaleRef.current;
+    const meshesReady =
+      !!farCoreRef.current &&
+      !!farShoulderRef.current &&
+      !!midCoreRef.current &&
+      !!midShoulderRef.current &&
+      !!peakCoreRef.current &&
+      !!peakShoulderRef.current;
+    if (!meshesReady) return;
     const changed = Math.abs(ring - lastAppliedRingRef.current) > 0.28 || Math.abs(scale - lastAppliedScaleRef.current) > 0.12;
-    if (!changed) return;
-    lastAppliedRingRef.current = ring;
-    lastAppliedScaleRef.current = scale;
+    if (!appliedOnceRef.current || changed) {
+      lastAppliedRingRef.current = ring;
+      lastAppliedScaleRef.current = scale;
+      appliedOnceRef.current = true;
 
-    const farY = GROUND_DECK_Y - scale * 0.64;
-    const midY = GROUND_DECK_Y - scale * 0.72;
-    const peakY = GROUND_DECK_Y - scale * 0.8;
-    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.02, scale * 1.34, farY, 1.0, 0.98);
-    applyShoulderLayer(farShoulderRef.current, farUnits, ring * 1.02, scale * 1.24, farY);
-    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.9, scale * 1.15, midY, 1.08, 1.02);
-    applyShoulderLayer(midShoulderRef.current, midUnits, ring * 0.9, scale * 1.04, midY);
-    applyCoreLayer(peakCoreRef.current, peakUnits, ring * 1.16, scale * 1.06, peakY, 0.92, 0.9);
-    applyShoulderLayer(peakShoulderRef.current, peakUnits, ring * 1.16, scale * 0.94, peakY);
+      const farY = GROUND_DECK_Y - scale * 0.64;
+      const midY = GROUND_DECK_Y - scale * 0.72;
+      const peakY = GROUND_DECK_Y - scale * 0.8;
+      applyCoreLayer(farCoreRef.current, farUnits, ring * 1.02, scale * 1.34, farY, 1.0, 0.98);
+      applyShoulderLayer(farShoulderRef.current, farUnits, ring * 1.02, scale * 1.24, farY);
+      applyCoreLayer(midCoreRef.current, midUnits, ring * 0.9, scale * 1.15, midY, 1.08, 1.02);
+      applyShoulderLayer(midShoulderRef.current, midUnits, ring * 0.9, scale * 1.04, midY);
+      applyCoreLayer(peakCoreRef.current, peakUnits, ring * 1.16, scale * 1.06, peakY, 0.92, 0.9);
+      applyShoulderLayer(peakShoulderRef.current, peakUnits, ring * 1.16, scale * 0.94, peakY);
+    }
   });
 
   return (
