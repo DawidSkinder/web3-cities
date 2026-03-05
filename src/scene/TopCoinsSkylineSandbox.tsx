@@ -9129,10 +9129,9 @@ function SandboxScene({
       (tower) =>
         tower.sequence === hoveredTowerSequence ||
         tower.sequence === selectedTowerSequence ||
-        !Number.isFinite(tower.emittedAt) ||
         tower.emittedAt <= mountReadyAt
     );
-    return staged.length > 0 ? staged : towers.slice(0, Math.min(3, towers.length));
+    return staged.length > 0 ? staged : towers.slice(0, Math.min(2, towers.length));
   }, [fx.introActive, fx.introProgress, hoveredTowerSequence, layer2Visible, selectedTowerSequence, topFx, towers]);
   const hoveredTower = useMemo(
     () => (hoveredTowerSequence == null ? null : renderedTowers.find((tower) => tower.sequence === hoveredTowerSequence) ?? null),
