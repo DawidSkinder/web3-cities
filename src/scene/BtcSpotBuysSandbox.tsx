@@ -12,6 +12,7 @@ import {
   Color,
   DoubleSide,
   EdgesGeometry,
+  FrontSide,
   LinearFilter,
   LineBasicMaterial,
   Matrix4,
@@ -8195,7 +8196,7 @@ function MountainsBackdrop({
       BTC_MOUNTAIN_RING_MAX
     )
   );
-  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 4.8 + cityRadius * 0.45, 115, 190));
+  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 4.8 + cityRadius * 0.45, 150, 250));
   const smoothRingRef = useRef(targetRingRef.current);
   const smoothScaleRef = useRef(targetScaleRef.current);
   const lastAppliedRingRef = useRef(-1);
@@ -8243,7 +8244,7 @@ function MountainsBackdrop({
       const scaleFromRadius = cityRadiusRef.current * 0.45;
       const scaleFromHeights = cityScaleMetricRef.current * 4.8;
       targetRingRef.current = nextRing;
-      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 115, 190);
+      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 150, 250);
     };
     updateTargets();
     const timer = window.setInterval(updateTargets, BTC_MOUNTAIN_METRIC_UPDATE_MS);
@@ -8308,13 +8309,13 @@ function MountainsBackdrop({
       const sideYaw = coreYaw + MathUtils.lerp(-1.05, 1.05, unit.shoulderDirT);
       const hBase = layerScale * MathUtils.lerp(0.78, 1.55, unit.hT);
       const h = hBase * MathUtils.lerp(0.22, 0.44, unit.shoulderScaleT);
-      const offset = hBase * MathUtils.lerp(0.48, 1.08, unit.shoulderSpreadT);
+      const offset = hBase * MathUtils.lerp(0.26, 0.66, unit.shoulderSpreadT);
       const sx = hBase * MathUtils.lerp(0.34, 0.96, unit.wT) * MathUtils.lerp(1.0, 1.22, unit.shoulderScaleT);
       const sz = hBase * MathUtils.lerp(0.36, 1.0, unit.dT) * MathUtils.lerp(1.0, 1.2, 1 - unit.shoulderScaleT);
       quat.setFromAxisAngle(up, sideYaw);
       pos.set(
         x + Math.sin(sideYaw + Math.PI * 0.5) * offset,
-        yBase - hBase * MathUtils.lerp(0.46, 0.68, unit.shoulderScaleT) - h * MathUtils.lerp(0.15, 0.36, unit.shoulderScaleT),
+        yBase - hBase * MathUtils.lerp(0.24, 0.44, unit.shoulderScaleT) - h * MathUtils.lerp(0.1, 0.24, unit.shoulderScaleT),
         z + Math.cos(sideYaw + Math.PI * 0.5) * offset
       );
       scale.set(sx, h, sz);
@@ -8340,9 +8341,9 @@ function MountainsBackdrop({
     lastAppliedRingRef.current = ring;
     lastAppliedScaleRef.current = scale;
 
-    const farY = GROUND_DECK_Y - scale * 0.94;
-    const midY = GROUND_DECK_Y - scale * 1.0;
-    const peakY = GROUND_DECK_Y - scale * 1.06;
+    const farY = GROUND_DECK_Y - scale * 0.64;
+    const midY = GROUND_DECK_Y - scale * 0.72;
+    const peakY = GROUND_DECK_Y - scale * 0.8;
     applyCoreLayer(farCoreRef.current, farUnits, ring * 1.02, scale * 1.34, farY, 1.0, 0.98);
     applyShoulderLayer(farShoulderRef.current, farUnits, ring * 1.02, scale * 1.24, farY);
     applyCoreLayer(midCoreRef.current, midUnits, ring * 0.9, scale * 1.15, midY, 1.08, 1.02);
@@ -8361,13 +8362,13 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER}
         >
           <meshStandardMaterial
-            color="#222d40"
-            emissive="#7a5b3e"
-            emissiveIntensity={0.12}
+            color="#2f3849"
+            emissive="#8f6b47"
+            emissiveIntensity={0.21}
             roughness={0.98}
             metalness={0.02}
             flatShading
-            side={DoubleSide}
+            side={FrontSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8377,13 +8378,13 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.01}
         >
           <meshStandardMaterial
-            color="#1a2231"
-            emissive="#604733"
-            emissiveIntensity={0.08}
+            color="#252d3d"
+            emissive="#75573e"
+            emissiveIntensity={0.16}
             roughness={0.97}
             metalness={0.03}
             flatShading
-            side={DoubleSide}
+            side={FrontSide}
           />
         </instancedMesh>
       </group>
@@ -8395,13 +8396,13 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.02}
         >
           <meshStandardMaterial
-            color="#2c3a52"
-            emissive="#98704b"
-            emissiveIntensity={0.15}
+            color="#3a455b"
+            emissive="#a97b50"
+            emissiveIntensity={0.23}
             roughness={0.97}
             metalness={0.03}
             flatShading
-            side={DoubleSide}
+            side={FrontSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8411,13 +8412,13 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.03}
         >
           <meshStandardMaterial
-            color="#202b3f"
-            emissive="#6e5137"
-            emissiveIntensity={0.1}
+            color="#2a354b"
+            emissive="#806041"
+            emissiveIntensity={0.17}
             roughness={0.96}
             metalness={0.04}
             flatShading
-            side={DoubleSide}
+            side={FrontSide}
           />
         </instancedMesh>
       </group>
@@ -8429,13 +8430,13 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER - 0.02}
         >
           <meshStandardMaterial
-            color="#263245"
-            emissive="#7f5d40"
-            emissiveIntensity={0.13}
+            color="#344057"
+            emissive="#936d48"
+            emissiveIntensity={0.2}
             roughness={0.97}
             metalness={0.03}
             flatShading
-            side={DoubleSide}
+            side={FrontSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8445,13 +8446,13 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.04}
         >
           <meshStandardMaterial
-            color="#1c2638"
-            emissive="#654a33"
-            emissiveIntensity={0.09}
+            color="#232d41"
+            emissive="#795840"
+            emissiveIntensity={0.15}
             roughness={0.98}
             metalness={0.02}
             flatShading
-            side={DoubleSide}
+            side={FrontSide}
           />
         </instancedMesh>
       </group>

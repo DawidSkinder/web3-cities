@@ -8,6 +8,7 @@ import {
   BoxGeometry,
   CanvasTexture,
   CircleGeometry,
+  ConeGeometry,
   Color,
   DoubleSide,
   EdgesGeometry,
@@ -499,6 +500,29 @@ const ARTERY_RECENT_LOOKBACK = 40;
 const ARTERY_MAX_LINKS_PER_EVENT = 3;
 const ARTERY_TRAFFIC_EXTRA_CAP = 1024;
 const ARTERY_TRAFFIC_SPEED_MULT = 0.68;
+const TOP_BIRD_FIXED_COUNT = 88;
+const TOP_BIRD_MAX_INSTANCES = 160;
+const TOP_BIRD_METRIC_UPDATE_MS = 1000;
+const TOP_BIRD_COUNT_ADJUST_PER_SEC = 20;
+const TOP_BIRD_INTRO_ALPHA_SHOW = 0.01;
+const TOP_BIRD_RENDER_ORDER = 5.56;
+const TOP_BIRD_CLEARANCE_Y = 1.35;
+const TOP_BIRD_AVOID_PAD = 1.25;
+const TOP_BIRD_AVOID_RADIUS_MAX = 9.5;
+const TOP_BIRD_REPEL_STRENGTH = 2.15;
+const TOP_BIRD_SIZE_MIN = 0.28;
+const TOP_BIRD_SIZE_MAX = 0.5;
+const TOP_BIRD_CITY_SIZE_GAIN = 0.0035;
+const TOP_BIRD_MIN_SCREEN_PX = 1.9;
+const TOP_BIRD_SIZE_DYNAMIC_MAX = 0.62;
+const TOP_BIRD_ALTITUDE_LIFT_HEIGHT_GAIN = 0.16;
+const TOP_BIRD_ALTITUDE_LIFT_PROX_GAIN = 0.5;
+const TOP_BIRD_ALTITUDE_DAMP_BASE = 1.6;
+const TOP_BIRD_ALTITUDE_DAMP_LIFT = 2.1;
+const TOP_BIRD_MAX_ALTITUDE_STEP_BASE = 1.15;
+const TOP_BIRD_MAX_ALTITUDE_STEP_LIFT = 1.85;
+const TOP_BIRD_PITCH_SCALE_GAIN = 1.2;
+const TOP_BIRD_OPACITY = 0.24;
 
 const PARK_FORCE_FIRST_BY_TOWER_COUNT = 60;
 const PARK_CANDIDATE_ATTEMPTS = 28;
@@ -845,6 +869,17 @@ function distanceVisibilityCurve(cameraDistance: number) {
 function remapClamped(value: number, inMin: number, inMax: number) {
   if (inMax <= inMin) return 0;
   return MathUtils.clamp((value - inMin) / (inMax - inMin), 0, 1);
+}
+
+function percentileFromSorted(sorted: number[], p: number) {
+  if (sorted.length === 0) return 0;
+  if (sorted.length === 1) return sorted[0] ?? 0;
+  const safeP = MathUtils.clamp(p, 0, 1);
+  const raw = safeP * (sorted.length - 1);
+  const i0 = Math.floor(raw);
+  const i1 = Math.min(sorted.length - 1, i0 + 1);
+  const t = raw - i0;
+  return MathUtils.lerp(sorted[i0] ?? 0, sorted[i1] ?? 0, t);
 }
 
 function emaStd(variance: number) {
@@ -8064,6 +8099,355 @@ function RecordCeremonyLayer({
   );
 }
 
+type TopBirdTowerColumns = {
+  x: Float32Array;
+  z: Float32Array;
+  radius: Float32Array;
+  height: Float32Array;
+  count: number;
+};
+
+function TopBirdFlock({
+  towers,
+  cityRadius,
+  introLifeAlpha
+}: {
+  towers: TowerDatum[];
+  cityRadius: number;
+  introLifeAlpha: number;
+}) {
+  const { camera, size } = useThree();
+  const meshRef = useRef<ThreeInstancedMesh>(null);
+  const towersRef = useRef(towers);
+  const cityRadiusRef = useRef(cityRadius);
+  const introLifeAlphaRef = useRef(introLifeAlpha);
+  const columnsRef = useRef<TopBirdTowerColumns>({
+    x: new Float32Array(0),
+    z: new Float32Array(0),
+    radius: new Float32Array(0),
+    height: new Float32Array(0),
+    count: 0
+  });
+  const bandFloorRef = useRef(4.5);
+  const bandLowRef = useRef(7.2);
+  const bandMidRef = useRef(10.6);
+  const bandHighRef = useRef(13.2);
+  const bandCapRef = useRef(16.8);
+  const orbitMinRef = useRef(10);
+  const orbitMaxRef = useRef(26);
+  const targetCountRef = useRef(0);
+  const activeCountRef = useRef(0);
+  const adjustBudgetRef = useRef(0);
+  const spawnSerialRef = useRef(0);
+  const angleRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const speedRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const orbitRadiusRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const orbitTargetRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const radiusAmpRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const radiusFreqRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const bandRef = useRef(new Uint8Array(TOP_BIRD_MAX_INSTANCES));
+  const altitudeRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const flapPhaseRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const flapSpeedRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const sizeRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const rerouteAtRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const prevXRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const prevYRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const prevZRef = useRef(new Float32Array(TOP_BIRD_MAX_INSTANCES));
+  const matrixRef = useRef(new Matrix4());
+  const posRef = useRef(new Vector3());
+  const scaleRef = useRef(new Vector3());
+  const quatRef = useRef(new Quaternion());
+  const upRef = useRef(new Vector3(0, 1, 0));
+
+  const geometry = useMemo(() => {
+    const g = new ConeGeometry(0.16, 0.42, 3, 1);
+    g.rotateX(Math.PI * 0.5);
+    g.translate(0, 0, 0.14);
+    return g;
+  }, []);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+
+  useEffect(() => {
+    towersRef.current = towers;
+  }, [towers]);
+  useEffect(() => {
+    cityRadiusRef.current = cityRadius;
+  }, [cityRadius]);
+  useEffect(() => {
+    introLifeAlphaRef.current = introLifeAlpha;
+  }, [introLifeAlpha]);
+
+  const ensureColumnCapacity = (count: number) => {
+    const cols = columnsRef.current;
+    if (cols.x.length >= count) return;
+    cols.x = new Float32Array(count);
+    cols.z = new Float32Array(count);
+    cols.radius = new Float32Array(count);
+    cols.height = new Float32Array(count);
+  };
+
+  const recomputeMetrics = () => {
+    const src = towersRef.current;
+    const towerCount = src.length;
+    const heights: number[] = [];
+    heights.length = towerCount;
+    for (let i = 0; i < towerCount; i++) {
+      heights[i] = Math.max(0, src[i]?.height ?? 0);
+    }
+    heights.sort((a, b) => a - b);
+    const p50 = percentileFromSorted(heights, 0.5);
+    const p75 = percentileFromSorted(heights, 0.75);
+    const p90 = percentileFromSorted(heights, 0.9);
+    const skylineAnchor = Math.max(p75, p90 * 0.92);
+    const floor = Math.max(3.8, p50 * 0.38 + 2.2);
+    const low = MathUtils.clamp(p50 * 0.52 + 2.5, floor + 0.6, Math.max(floor + 2.8, skylineAnchor * 0.78 + 2.2));
+    const mid = MathUtils.clamp(p75 * 0.72 + 3.0, low + 0.9, Math.max(low + 2.4, skylineAnchor * 0.9 + 2.8));
+    const high = Math.max(mid + 1.1, skylineAnchor + 3.8);
+    const cap = Math.max(high + 1.6, skylineAnchor + 8.6);
+    bandFloorRef.current = floor;
+    bandLowRef.current = low;
+    bandMidRef.current = mid;
+    bandHighRef.current = high;
+    bandCapRef.current = cap;
+
+    const cityR = Math.max(18, cityRadiusRef.current);
+    const orbitCore = cityR * 0.48;
+    const orbitSpreadInner = Math.max(5.5, Math.min(18, cityR * 0.16));
+    const orbitSpreadOuter = Math.max(8, Math.min(26, cityR * 0.22));
+    const orbitMin = Math.max(8.5, orbitCore - orbitSpreadInner);
+    const orbitMax = Math.max(orbitMin + 7.5, orbitCore + orbitSpreadOuter);
+    orbitMinRef.current = orbitMin;
+    orbitMaxRef.current = orbitMax;
+    targetCountRef.current = towerCount > 0 ? TOP_BIRD_FIXED_COUNT : 0;
+
+    ensureColumnCapacity(towerCount);
+    const cols = columnsRef.current;
+    cols.count = towerCount;
+    for (let i = 0; i < towerCount; i++) {
+      const tower = src[i];
+      const radius = Math.min(
+        TOP_BIRD_AVOID_RADIUS_MAX,
+        Math.max(tower.baseW, tower.baseD, tower.footprintX, tower.footprintZ) * 0.58 + TOP_BIRD_AVOID_PAD
+      );
+      cols.x[i] = tower.x;
+      cols.z[i] = tower.z;
+      cols.radius[i] = radius;
+      cols.height[i] = Math.max(0, tower.height);
+    }
+  };
+
+  const reseedBird = (idx: number, nowMs: number, keepAngle = false) => {
+    const serial = spawnSerialRef.current++;
+    const orbitMin = orbitMinRef.current;
+    const orbitMax = orbitMaxRef.current;
+    const floor = bandFloorRef.current;
+    const cap = bandCapRef.current;
+    const low = bandLowRef.current;
+    const mid = bandMidRef.current;
+    const high = bandHighRef.current;
+    const dir = hash01(serial, idx, 11) < 0.5 ? -1 : 1;
+    const bandPick = hash01(serial, idx, 17);
+    bandRef.current[idx] = bandPick < 0.34 ? 0 : bandPick < 0.8 ? 1 : 2;
+    if (!keepAngle) {
+      angleRef.current[idx] = hash01(serial, idx, 23) * Math.PI * 2;
+    }
+    speedRef.current[idx] = dir * MathUtils.lerp(0.08, 0.17, hash01(serial, idx, 29));
+    orbitTargetRef.current[idx] = MathUtils.lerp(orbitMin * 1.02, orbitMax * 0.96, hash01(serial, idx, 31));
+    orbitRadiusRef.current[idx] = orbitTargetRef.current[idx];
+    radiusAmpRef.current[idx] = MathUtils.lerp(0.24, 1.1, hash01(serial, idx, 37));
+    radiusFreqRef.current[idx] = MathUtils.lerp(0.26, 0.88, hash01(serial, idx, 41));
+    flapPhaseRef.current[idx] = hash01(serial, idx, 43) * Math.PI * 2;
+    flapSpeedRef.current[idx] = MathUtils.lerp(5.6, 8.4, hash01(serial, idx, 47));
+    sizeRef.current[idx] = MathUtils.lerp(TOP_BIRD_SIZE_MIN, TOP_BIRD_SIZE_MAX, hash01(serial, idx, 53));
+    const bandAlt = bandRef.current[idx] === 0 ? low : bandRef.current[idx] === 1 ? mid : high;
+    const alt = MathUtils.clamp(bandAlt + MathUtils.lerp(-0.7, 0.7, hash01(serial, idx, 59)), floor, cap);
+    altitudeRef.current[idx] = alt;
+    rerouteAtRef.current[idx] = nowMs + MathUtils.lerp(9000, 20000, hash01(serial, idx, 61));
+    const orbit = orbitRadiusRef.current[idx];
+    const x = Math.sin(angleRef.current[idx]) * orbit;
+    const z = Math.cos(angleRef.current[idx]) * orbit;
+    prevXRef.current[idx] = x;
+    prevYRef.current[idx] = alt;
+    prevZRef.current[idx] = z;
+  };
+
+  const rerouteBird = (idx: number, nowMs: number) => {
+    const serial = spawnSerialRef.current++;
+    const orbitMin = orbitMinRef.current;
+    const orbitMax = orbitMaxRef.current;
+    orbitTargetRef.current[idx] = MathUtils.lerp(orbitMin * 1.02, orbitMax * 0.96, hash01(serial, idx, 71));
+    radiusAmpRef.current[idx] = MathUtils.lerp(0.2, 1.05, hash01(serial, idx, 73));
+    radiusFreqRef.current[idx] = MathUtils.lerp(0.24, 0.9, hash01(serial, idx, 79));
+    const bandPick = hash01(serial, idx, 83);
+    bandRef.current[idx] = bandPick < 0.32 ? 0 : bandPick < 0.8 ? 1 : 2;
+    rerouteAtRef.current[idx] = nowMs + MathUtils.lerp(10_000, 22_000, hash01(serial, idx, 89));
+  };
+
+  useEffect(() => {
+    recomputeMetrics();
+    activeCountRef.current = 0;
+    const timer = window.setInterval(recomputeMetrics, TOP_BIRD_METRIC_UPDATE_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useFrame(({ clock }, delta) => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    const nowMs = performance.now();
+    const nowSec = clock.getElapsedTime();
+    const introVisible = introLifeAlphaRef.current > TOP_BIRD_INTRO_ALPHA_SHOW;
+    const targetCount = introVisible ? targetCountRef.current : 0;
+    adjustBudgetRef.current += delta * TOP_BIRD_COUNT_ADJUST_PER_SEC;
+    while (adjustBudgetRef.current >= 1) {
+      if (activeCountRef.current < targetCount) {
+        reseedBird(activeCountRef.current, nowMs);
+        activeCountRef.current += 1;
+        adjustBudgetRef.current -= 1;
+        continue;
+      }
+      if (activeCountRef.current > targetCount) {
+        activeCountRef.current -= 1;
+        adjustBudgetRef.current -= 1;
+        continue;
+      }
+      break;
+    }
+
+    const cols = columnsRef.current;
+    const floor = bandFloorRef.current;
+    const low = bandLowRef.current;
+    const mid = bandMidRef.current;
+    const high = bandHighRef.current;
+    const cap = bandCapRef.current;
+    const orbitMin = orbitMinRef.current;
+    const orbitMax = orbitMaxRef.current;
+    const matrix = matrixRef.current;
+    const pos = posRef.current;
+    const scale = scaleRef.current;
+    const quat = quatRef.current;
+    const up = upRef.current;
+    const perspective = camera as { fov?: number };
+    const fovDeg = perspective.fov ?? 50;
+    const tanHalfFov = Math.tan(MathUtils.degToRad(fovDeg * 0.5));
+    const viewportHeight = Math.max(320, size.height);
+    const camPos = camera.position;
+    const citySizeBoost = MathUtils.clamp(1 + cityRadiusRef.current * TOP_BIRD_CITY_SIZE_GAIN, 1, 2.4);
+
+    for (let i = 0; i < activeCountRef.current; i++) {
+      if (nowMs >= rerouteAtRef.current[i]) {
+        rerouteBird(i, nowMs);
+      }
+      angleRef.current[i] += speedRef.current[i] * delta;
+      orbitRadiusRef.current[i] = MathUtils.damp(orbitRadiusRef.current[i], orbitTargetRef.current[i], 0.9, delta);
+      const weave = Math.sin(nowSec * radiusFreqRef.current[i] + flapPhaseRef.current[i] * 0.9) * radiusAmpRef.current[i];
+      let radius = orbitRadiusRef.current[i] + weave;
+      radius = MathUtils.clamp(radius, orbitMin, orbitMax);
+      let x = Math.sin(angleRef.current[i]) * radius;
+      let z = Math.cos(angleRef.current[i]) * radius;
+      let repelX = 0;
+      let repelZ = 0;
+      let altitudeLift = 0;
+
+      for (let c = 0; c < cols.count; c++) {
+        const dx = x - cols.x[c];
+        const dz = z - cols.z[c];
+        const avoidR = cols.radius[c];
+        const avoidRSq = avoidR * avoidR;
+        const dSq = dx * dx + dz * dz;
+        if (dSq >= avoidRSq) continue;
+        const d = Math.sqrt(Math.max(1e-6, dSq));
+        const k = (avoidR - d) / avoidR;
+        const invD = 1 / d;
+        repelX += dx * invD * k;
+        repelZ += dz * invD * k;
+        if (altitudeRef.current[i] < cols.height[c] + TOP_BIRD_CLEARANCE_Y) {
+          altitudeLift = Math.max(
+            altitudeLift,
+            (cols.height[c] + TOP_BIRD_CLEARANCE_Y - altitudeRef.current[i]) * TOP_BIRD_ALTITUDE_LIFT_HEIGHT_GAIN +
+              k * TOP_BIRD_ALTITUDE_LIFT_PROX_GAIN
+          );
+        }
+      }
+
+      x += repelX * TOP_BIRD_REPEL_STRENGTH * delta;
+      z += repelZ * TOP_BIRD_REPEL_STRENGTH * delta;
+      const rNow = Math.hypot(x, z);
+      if (rNow > 1e-5) {
+        const clampedR = MathUtils.clamp(rNow, orbitMin, orbitMax);
+        const scaleR = clampedR / rNow;
+        x *= scaleR;
+        z *= scaleR;
+      }
+      angleRef.current[i] = dampAngleRad(angleRef.current[i], Math.atan2(x, z), 2.4, delta);
+
+      const bandAlt = bandRef.current[i] === 0 ? low : bandRef.current[i] === 1 ? mid : high;
+      const altitudeWave = Math.sin(nowSec * (0.42 + radiusFreqRef.current[i] * 0.38) + flapPhaseRef.current[i]) * 0.52;
+      const targetAltitude = MathUtils.clamp(bandAlt + altitudeWave + altitudeLift, floor, cap);
+      const dampedAltitude = MathUtils.damp(
+        altitudeRef.current[i],
+        targetAltitude,
+        altitudeLift > 0 ? TOP_BIRD_ALTITUDE_DAMP_LIFT : TOP_BIRD_ALTITUDE_DAMP_BASE,
+        delta
+      );
+      const maxAltitudeStep =
+        (altitudeLift > 0 ? TOP_BIRD_MAX_ALTITUDE_STEP_LIFT : TOP_BIRD_MAX_ALTITUDE_STEP_BASE) * Math.max(0, delta);
+      altitudeRef.current[i] += MathUtils.clamp(dampedAltitude - altitudeRef.current[i], -maxAltitudeStep, maxAltitudeStep);
+      altitudeRef.current[i] = MathUtils.clamp(altitudeRef.current[i], floor, cap);
+
+      if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(altitudeRef.current[i])) {
+        reseedBird(i, nowMs, true);
+        continue;
+      }
+
+      const vx = x - prevXRef.current[i];
+      const vy = altitudeRef.current[i] - prevYRef.current[i];
+      const vz = z - prevZRef.current[i];
+      prevXRef.current[i] = x;
+      prevYRef.current[i] = altitudeRef.current[i];
+      prevZRef.current[i] = z;
+      const yaw = Math.hypot(vx, vz) > 1e-6 ? Math.atan2(vx, vz) : angleRef.current[i] + Math.PI * 0.5;
+      quat.setFromAxisAngle(up, yaw);
+
+      const flap = Math.sin(nowSec * flapSpeedRef.current[i] + flapPhaseRef.current[i]);
+      const distToCam = Math.hypot(camPos.x - x, camPos.y - altitudeRef.current[i], camPos.z - z);
+      const worldPerPx = (2 * Math.max(1, distToCam) * tanHalfFov) / viewportHeight;
+      const minSizeForScreen = worldPerPx * TOP_BIRD_MIN_SCREEN_PX;
+      const birdSize = Math.min(TOP_BIRD_SIZE_DYNAMIC_MAX, Math.max(sizeRef.current[i] * citySizeBoost, minSizeForScreen));
+      const pitchScale = 1 + MathUtils.clamp(vy * TOP_BIRD_PITCH_SCALE_GAIN, -0.06, 0.07);
+      pos.set(x, altitudeRef.current[i], z);
+      scale.set(birdSize * 1.05, birdSize * (0.63 + flap * 0.1) * pitchScale, birdSize * (1.22 + flap * 0.05));
+      matrix.compose(pos, quat, scale);
+      mesh.setMatrixAt(i, matrix);
+    }
+
+    mesh.count = activeCountRef.current;
+    mesh.instanceMatrix.needsUpdate = true;
+  });
+
+  return (
+    <group>
+      <instancedMesh ref={meshRef} args={[geometry, undefined, TOP_BIRD_MAX_INSTANCES]} renderOrder={TOP_BIRD_RENDER_ORDER} frustumCulled={false}>
+        <meshBasicMaterial
+          color="#fff0d7"
+          transparent
+          opacity={TOP_BIRD_OPACITY}
+          toneMapped={false}
+          side={DoubleSide}
+          depthTest
+          depthWrite={false}
+          blending={AdditiveBlending}
+          polygonOffset
+          polygonOffsetFactor={-1}
+          polygonOffsetUnits={-2}
+        />
+      </instancedMesh>
+    </group>
+  );
+}
+
 function CinematicBackdrop() {
   const shader = useMemo(
     () =>
@@ -8480,6 +8864,7 @@ function SandboxScene({
         clutter={fx.clutter}
       />
       <TrafficParticles particles={trafficRender} focusMode={focusMode} introLifeAlpha={fx.introLifeAlpha} clutter={fx.clutter} />
+      <TopBirdFlock towers={towers} cityRadius={bounds.radius} introLifeAlpha={fx.introLifeAlpha} />
       <HoverProjectionTracker tower={hoveredTower} onHudUpdate={onHoverHudUpdate} />
 
       {/* Render band 6: tower bodies and holo layers remain the top visual anchors */}
