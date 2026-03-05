@@ -535,20 +535,21 @@ const DEBUG_FORCE_TRAFFIC_VIS = false;
 const MAX_TRAFFIC_INSTANCES = 4096;
 const TRAFFIC_PATH_TRIM = 0.9;
 const BTC_MOUNTAIN_SEED = 58_031;
-const BTC_MOUNTAIN_LAYER_FAR_COUNT = 20;
-const BTC_MOUNTAIN_LAYER_MID_COUNT = 14;
-const BTC_MOUNTAIN_LAYER_PEAK_COUNT = 8;
-const BTC_MOUNTAIN_RING_MULT = 4.4;
-const BTC_MOUNTAIN_RING_MIN = 280;
-const BTC_MOUNTAIN_RING_MAX = 340;
+const BTC_MOUNTAIN_LAYER_FAR_COUNT = 18;
+const BTC_MOUNTAIN_LAYER_MID_COUNT = 12;
+const BTC_MOUNTAIN_LAYER_PEAK_COUNT = 7;
+const BTC_MOUNTAIN_RING_MULT = 5.0;
+const BTC_MOUNTAIN_RING_MIN = 340;
+const BTC_MOUNTAIN_RING_MAX = 380;
 const BTC_MOUNTAIN_METRIC_UPDATE_MS = 1000;
 const BTC_MOUNTAIN_RENDER_ORDER = -5;
 const BTC_BIRD_START_TOWER_COUNT = 6;
-const BTC_BIRD_MIN_COUNT = 6;
-const BTC_BIRD_MAX_COUNT = 60;
-const BTC_BIRD_BASE_COUNT = 6;
-const BTC_BIRD_GROWTH_BY_SQRT_TOWERS = 2.9;
-const BTC_BIRD_COUNT_ADJUST_PER_SEC = 4;
+const BTC_BIRD_MIN_COUNT = 10;
+const BTC_BIRD_MAX_COUNT = 220;
+const BTC_BIRD_BASE_COUNT = 8;
+const BTC_BIRD_GROWTH_PER_TOWER = 0.42;
+const BTC_BIRD_GROWTH_BY_CITY_RADIUS = 0.14;
+const BTC_BIRD_COUNT_ADJUST_PER_SEC = 18;
 const BTC_BIRD_METRIC_UPDATE_MS = 1000;
 const BTC_BIRD_MAX_INSTANCES = BTC_BIRD_MAX_COUNT;
 const BTC_BIRD_RENDER_ORDER = 5.56;
@@ -556,6 +557,11 @@ const BTC_BIRD_CLEARANCE_Y = 1.35;
 const BTC_BIRD_AVOID_PAD = 1.25;
 const BTC_BIRD_AVOID_RADIUS_MAX = 9.5;
 const BTC_BIRD_REPEL_STRENGTH = 2.15;
+const BTC_BIRD_SIZE_MIN = 0.38;
+const BTC_BIRD_SIZE_MAX = 0.74;
+const BTC_BIRD_CITY_SIZE_GAIN = 0.012;
+const BTC_BIRD_MIN_SCREEN_PX = 4.8;
+const BTC_BIRD_OPACITY = 0.24;
 const BTC_BIRD_DEBUG_ROW = true;
 
 const RADIAL_GLOW_VERTEX = `
@@ -8181,7 +8187,7 @@ function MountainsBackdrop({
       BTC_MOUNTAIN_RING_MAX
     )
   );
-  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 4.2 + cityRadius * 0.45, 88, 170));
+  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 4.8 + cityRadius * 0.45, 115, 190));
   const smoothRingRef = useRef(targetRingRef.current);
   const smoothScaleRef = useRef(targetScaleRef.current);
   const lastAppliedRingRef = useRef(-1);
@@ -8227,9 +8233,9 @@ function MountainsBackdrop({
         BTC_MOUNTAIN_RING_MAX
       );
       const scaleFromRadius = cityRadiusRef.current * 0.45;
-      const scaleFromHeights = cityScaleMetricRef.current * 4.2;
+      const scaleFromHeights = cityScaleMetricRef.current * 4.8;
       targetRingRef.current = nextRing;
-      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 88, 170);
+      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 115, 190);
     };
     updateTargets();
     const timer = window.setInterval(updateTargets, BTC_MOUNTAIN_METRIC_UPDATE_MS);
@@ -8258,9 +8264,9 @@ function MountainsBackdrop({
       const x = Math.sin(unit.angle) * radial;
       const z = Math.cos(unit.angle) * radial;
       const yaw = unit.angle + Math.PI + unit.yawJitter;
-      const h = layerScale * MathUtils.lerp(0.85, 1.55, unit.hT);
-      const sx = h * MathUtils.lerp(0.62, 1.34, unit.wT) * sxMult;
-      const sz = h * MathUtils.lerp(0.66, 1.42, unit.dT) * szMult;
+      const h = layerScale * MathUtils.lerp(0.95, 1.75, unit.hT);
+      const sx = h * MathUtils.lerp(0.22, 0.46, unit.wT) * sxMult;
+      const sz = h * MathUtils.lerp(0.22, 0.48, unit.dT) * szMult;
       quat.setFromAxisAngle(up, yaw);
       pos.set(x, yBase, z);
       scale.set(sx, h, sz);
@@ -8292,15 +8298,15 @@ function MountainsBackdrop({
       const z = Math.cos(unit.angle) * radial;
       const coreYaw = unit.angle + Math.PI + unit.yawJitter;
       const sideYaw = coreYaw + MathUtils.lerp(-1.05, 1.05, unit.shoulderDirT);
-      const hBase = layerScale * MathUtils.lerp(0.72, 1.45, unit.hT);
-      const h = hBase * MathUtils.lerp(0.36, 0.62, unit.shoulderScaleT);
-      const offset = hBase * MathUtils.lerp(0.2, 0.55, unit.shoulderSpreadT);
-      const sx = hBase * MathUtils.lerp(0.9, 1.8, unit.wT) * MathUtils.lerp(1.0, 1.35, unit.shoulderScaleT);
-      const sz = hBase * MathUtils.lerp(0.95, 1.9, unit.dT) * MathUtils.lerp(1.0, 1.3, 1 - unit.shoulderScaleT);
+      const hBase = layerScale * MathUtils.lerp(0.78, 1.55, unit.hT);
+      const h = hBase * MathUtils.lerp(0.22, 0.44, unit.shoulderScaleT);
+      const offset = hBase * MathUtils.lerp(0.48, 1.08, unit.shoulderSpreadT);
+      const sx = hBase * MathUtils.lerp(0.34, 0.96, unit.wT) * MathUtils.lerp(1.0, 1.22, unit.shoulderScaleT);
+      const sz = hBase * MathUtils.lerp(0.36, 1.0, unit.dT) * MathUtils.lerp(1.0, 1.2, 1 - unit.shoulderScaleT);
       quat.setFromAxisAngle(up, sideYaw);
       pos.set(
         x + Math.sin(sideYaw + Math.PI * 0.5) * offset,
-        yBase - h * MathUtils.lerp(0.34, 0.58, unit.shoulderScaleT),
+        yBase - hBase * MathUtils.lerp(0.46, 0.68, unit.shoulderScaleT) - h * MathUtils.lerp(0.15, 0.36, unit.shoulderScaleT),
         z + Math.cos(sideYaw + Math.PI * 0.5) * offset
       );
       scale.set(sx, h, sz);
@@ -8326,12 +8332,15 @@ function MountainsBackdrop({
     lastAppliedRingRef.current = ring;
     lastAppliedScaleRef.current = scale;
 
-    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.0, scale * 1.32, GROUND_DECK_Y - 2.2, 1.02, 1.0);
-    applyShoulderLayer(farShoulderRef.current, farUnits, ring * 1.0, scale * 1.26, GROUND_DECK_Y - 2.2);
-    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.86, scale * 1.08, GROUND_DECK_Y - 1.8, 1.12, 1.06);
-    applyShoulderLayer(midShoulderRef.current, midUnits, ring * 0.86, scale * 1.0, GROUND_DECK_Y - 1.8);
-    applyCoreLayer(peakCoreRef.current, peakUnits, ring * 1.14, scale * 0.96, GROUND_DECK_Y - 2.4, 0.92, 0.94);
-    applyShoulderLayer(peakShoulderRef.current, peakUnits, ring * 1.14, scale * 0.88, GROUND_DECK_Y - 2.4);
+    const farY = GROUND_DECK_Y - scale * 0.94;
+    const midY = GROUND_DECK_Y - scale * 1.0;
+    const peakY = GROUND_DECK_Y - scale * 1.06;
+    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.02, scale * 1.34, farY, 1.0, 0.98);
+    applyShoulderLayer(farShoulderRef.current, farUnits, ring * 1.02, scale * 1.24, farY);
+    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.9, scale * 1.15, midY, 1.08, 1.02);
+    applyShoulderLayer(midShoulderRef.current, midUnits, ring * 0.9, scale * 1.04, midY);
+    applyCoreLayer(peakCoreRef.current, peakUnits, ring * 1.16, scale * 1.06, peakY, 0.92, 0.9);
+    applyShoulderLayer(peakShoulderRef.current, peakUnits, ring * 1.16, scale * 0.94, peakY);
   });
 
   return (
@@ -8344,14 +8353,13 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER}
         >
           <meshStandardMaterial
-            color="#1b2534"
-            emissive="#6c5038"
-            emissiveIntensity={0.09}
+            color="#222d40"
+            emissive="#7a5b3e"
+            emissiveIntensity={0.12}
             roughness={0.98}
             metalness={0.02}
             flatShading
-            transparent
-            opacity={0.96}
+            side={DoubleSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8361,14 +8369,13 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.01}
         >
           <meshStandardMaterial
-            color="#111823"
-            emissive="#4f3a28"
-            emissiveIntensity={0.05}
+            color="#1a2231"
+            emissive="#604733"
+            emissiveIntensity={0.08}
             roughness={0.97}
             metalness={0.03}
             flatShading
-            transparent
-            opacity={0.72}
+            side={DoubleSide}
           />
         </instancedMesh>
       </group>
@@ -8380,14 +8387,13 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.02}
         >
           <meshStandardMaterial
-            color="#2a3850"
-            emissive="#886246"
-            emissiveIntensity={0.12}
+            color="#2c3a52"
+            emissive="#98704b"
+            emissiveIntensity={0.15}
             roughness={0.97}
             metalness={0.03}
             flatShading
-            transparent
-            opacity={0.95}
+            side={DoubleSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8397,14 +8403,13 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.03}
         >
           <meshStandardMaterial
-            color="#1a2434"
-            emissive="#624731"
-            emissiveIntensity={0.07}
+            color="#202b3f"
+            emissive="#6e5137"
+            emissiveIntensity={0.1}
             roughness={0.96}
             metalness={0.04}
             flatShading
-            transparent
-            opacity={0.7}
+            side={DoubleSide}
           />
         </instancedMesh>
       </group>
@@ -8416,14 +8421,13 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER - 0.02}
         >
           <meshStandardMaterial
-            color="#202c3f"
-            emissive="#74553b"
-            emissiveIntensity={0.1}
+            color="#263245"
+            emissive="#7f5d40"
+            emissiveIntensity={0.13}
             roughness={0.97}
             metalness={0.03}
             flatShading
-            transparent
-            opacity={0.9}
+            side={DoubleSide}
           />
         </instancedMesh>
         <instancedMesh
@@ -8433,14 +8437,13 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.04}
         >
           <meshStandardMaterial
-            color="#141d2a"
-            emissive="#5c4330"
-            emissiveIntensity={0.065}
+            color="#1c2638"
+            emissive="#654a33"
+            emissiveIntensity={0.09}
             roughness={0.98}
             metalness={0.02}
             flatShading
-            transparent
-            opacity={0.68}
+            side={DoubleSide}
           />
         </instancedMesh>
       </group>
@@ -8465,6 +8468,7 @@ function BirdFlock({
   cityRadius: number;
   onBirdCountChange?: (count: number) => void;
 }) {
+  const { camera, size } = useThree();
   const meshRef = useRef<ThreeInstancedMesh>(null);
   const towersRef = useRef(towers);
   const cityRadiusRef = useRef(cityRadius);
@@ -8543,28 +8547,34 @@ function BirdFlock({
     heights.sort((a, b) => a - b);
     const p50 = percentileFromSorted(heights, 0.5);
     const p75 = percentileFromSorted(heights, 0.75);
-    const maxH = heights.length > 0 ? heights[heights.length - 1] ?? 0 : 0;
-    const floor = Math.max(3.8, p50 * 0.48 + 2.3);
-    const low = MathUtils.clamp(p50 * 0.6 + 2.6, floor + 0.5, Math.max(floor + 2.8, maxH * 0.86));
-    const mid = MathUtils.clamp(p75 * 0.9 + 2.8, low + 0.75, Math.max(low + 2.2, maxH * 0.9));
-    const cap = Math.max(mid + 1.25, maxH * 0.95 + 0.9);
-    const high = MathUtils.clamp(Math.max(mid + 0.9, maxH * 0.82 + 2.2), mid + 0.9, cap - 0.45);
+    const p90 = percentileFromSorted(heights, 0.9);
+    const skylineAnchor = Math.max(p75, p90 * 0.92);
+    const floor = Math.max(3.8, p50 * 0.38 + 2.2);
+    const low = MathUtils.clamp(p50 * 0.52 + 2.5, floor + 0.6, Math.max(floor + 2.8, skylineAnchor * 0.78 + 2.2));
+    const mid = MathUtils.clamp(p75 * 0.72 + 3.0, low + 0.9, Math.max(low + 2.4, skylineAnchor * 0.9 + 2.8));
+    const high = Math.max(mid + 1.1, skylineAnchor + 3.8);
+    const cap = Math.max(high + 1.6, skylineAnchor + 8.6);
     bandFloorRef.current = floor;
     bandLowRef.current = low;
     bandMidRef.current = mid;
     bandHighRef.current = high;
     bandCapRef.current = cap;
 
-    const orbitMin = Math.max(7.5, cityRadiusRef.current * 0.35);
-    const orbitMax = Math.max(orbitMin + 6, cityRadiusRef.current * 1.2);
+    const cityR = Math.max(18, cityRadiusRef.current);
+    const orbitCore = cityR * 0.48;
+    const orbitSpreadInner = Math.max(5.5, Math.min(18, cityR * 0.16));
+    const orbitSpreadOuter = Math.max(8, Math.min(26, cityR * 0.22));
+    const orbitMin = Math.max(8.5, orbitCore - orbitSpreadInner);
+    const orbitMax = Math.max(orbitMin + 7.5, orbitCore + orbitSpreadOuter);
     orbitMinRef.current = orbitMin;
     orbitMaxRef.current = orbitMax;
 
     if (towerCount < BTC_BIRD_START_TOWER_COUNT) {
       targetCountRef.current = 0;
     } else {
+      const desiredCount = BTC_BIRD_BASE_COUNT + towerCount * BTC_BIRD_GROWTH_PER_TOWER + cityR * BTC_BIRD_GROWTH_BY_CITY_RADIUS;
       targetCountRef.current = MathUtils.clamp(
-        Math.floor(BTC_BIRD_BASE_COUNT + BTC_BIRD_GROWTH_BY_SQRT_TOWERS * Math.sqrt(Math.max(0, towerCount))),
+        Math.round(desiredCount),
         BTC_BIRD_MIN_COUNT,
         BTC_BIRD_MAX_COUNT
       );
@@ -8608,7 +8618,7 @@ function BirdFlock({
     radiusFreqRef.current[idx] = MathUtils.lerp(0.26, 0.88, hash01(serial, idx, 41));
     flapPhaseRef.current[idx] = hash01(serial, idx, 43) * Math.PI * 2;
     flapSpeedRef.current[idx] = MathUtils.lerp(5.6, 8.4, hash01(serial, idx, 47));
-    sizeRef.current[idx] = MathUtils.lerp(0.31, 0.56, hash01(serial, idx, 53));
+    sizeRef.current[idx] = MathUtils.lerp(BTC_BIRD_SIZE_MIN, BTC_BIRD_SIZE_MAX, hash01(serial, idx, 53));
     const bandAlt = bandRef.current[idx] === 0 ? low : bandRef.current[idx] === 1 ? mid : high;
     const alt = MathUtils.clamp(bandAlt + MathUtils.lerp(-0.7, 0.7, hash01(serial, idx, 59)), floor, cap);
     altitudeRef.current[idx] = alt;
@@ -8681,6 +8691,12 @@ function BirdFlock({
     const scale = scaleRef.current;
     const quat = quatRef.current;
     const up = upRef.current;
+    const perspective = camera as { fov?: number };
+    const fovDeg = perspective.fov ?? 50;
+    const tanHalfFov = Math.tan(MathUtils.degToRad(fovDeg * 0.5));
+    const viewportHeight = Math.max(320, size.height);
+    const camPos = camera.position;
+    const citySizeBoost = MathUtils.clamp(1 + cityRadiusRef.current * BTC_BIRD_CITY_SIZE_GAIN, 1, 2.4);
 
     for (let i = 0; i < activeCountRef.current; i++) {
       if (nowMs >= rerouteAtRef.current[i]) {
@@ -8749,7 +8765,10 @@ function BirdFlock({
       quat.setFromAxisAngle(up, yaw);
 
       const flap = Math.sin(nowSec * flapSpeedRef.current[i] + flapPhaseRef.current[i]);
-      const birdSize = sizeRef.current[i];
+      const distToCam = Math.hypot(camPos.x - x, camPos.y - altitudeRef.current[i], camPos.z - z);
+      const worldPerPx = (2 * Math.max(1, distToCam) * tanHalfFov) / viewportHeight;
+      const minSizeForScreen = worldPerPx * BTC_BIRD_MIN_SCREEN_PX;
+      const birdSize = Math.max(sizeRef.current[i] * citySizeBoost, minSizeForScreen);
       const pitchScale = 1 + MathUtils.clamp(vy * 2.2, -0.12, 0.13);
       pos.set(x, altitudeRef.current[i], z);
       scale.set(birdSize * 1.05, birdSize * (0.63 + flap * 0.1) * pitchScale, birdSize * (1.22 + flap * 0.05));
@@ -8771,7 +8790,7 @@ function BirdFlock({
         <meshBasicMaterial
           color="#fff0d7"
           transparent
-          opacity={0.17}
+          opacity={BTC_BIRD_OPACITY}
           toneMapped={false}
           side={DoubleSide}
           depthTest
