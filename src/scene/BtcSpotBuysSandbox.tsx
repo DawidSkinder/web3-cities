@@ -541,18 +541,18 @@ const BTC_MOUNTAIN_SEED = 58_031;
 const BTC_MOUNTAIN_LAYER_FAR_COUNT = 56;
 const BTC_MOUNTAIN_LAYER_MID_COUNT = 38;
 const BTC_MOUNTAIN_LAYER_PEAK_COUNT = 24;
-const BTC_MOUNTAIN_RING_MULT = 6.2;
-const BTC_MOUNTAIN_RING_MIN = 520;
-const BTC_MOUNTAIN_RING_MAX = 680;
+const BTC_MOUNTAIN_RING_MULT = 3.4;
+const BTC_MOUNTAIN_RING_MIN = 260;
+const BTC_MOUNTAIN_RING_MAX = 340;
 const BTC_MOUNTAIN_METRIC_UPDATE_MS = 1000;
 const BTC_MOUNTAIN_RENDER_ORDER = 1.3;
 const BTC_MOUNTAIN_REVEAL_MID_DELAY_S = 0.34;
 const BTC_MOUNTAIN_REVEAL_PEAK_DELAY_S = 0.66;
 const BTC_MOUNTAIN_REVEAL_LAYER_DUR_S = 1.05;
 const BTC_MOUNTAIN_REVEAL_FALLBACK_S = 0.95;
-const BTC_MOUNTAIN_FAR_OPACITY = 0.26;
-const BTC_MOUNTAIN_MID_OPACITY = 0.3;
-const BTC_MOUNTAIN_PEAK_OPACITY = 0.34;
+const BTC_MOUNTAIN_FAR_OPACITY = 0.78;
+const BTC_MOUNTAIN_MID_OPACITY = 0.84;
+const BTC_MOUNTAIN_PEAK_OPACITY = 0.9;
 const BTC_BIRD_START_TOWER_COUNT = 6;
 const BTC_BIRD_MIN_COUNT = 10;
 const BTC_BIRD_MAX_COUNT = 220;
@@ -8240,7 +8240,7 @@ function MountainsBackdrop({
       BTC_MOUNTAIN_RING_MAX
     )
   );
-  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 2.4 + cityRadius * 0.28, 95, 185));
+  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 1.6 + cityRadius * 0.16, 55, 110));
   const smoothRingRef = useRef(targetRingRef.current);
   const smoothScaleRef = useRef(targetScaleRef.current);
   const revealTimeRef = useRef(0);
@@ -8282,10 +8282,10 @@ function MountainsBackdrop({
         BTC_MOUNTAIN_RING_MIN,
         BTC_MOUNTAIN_RING_MAX
       );
-      const scaleFromRadius = cityRadiusRef.current * 0.28;
-      const scaleFromHeights = cityScaleMetricRef.current * 2.4;
+      const scaleFromRadius = cityRadiusRef.current * 0.16;
+      const scaleFromHeights = cityScaleMetricRef.current * 1.6;
       targetRingRef.current = nextRing;
-      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 95, 185);
+      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 55, 110);
     };
     updateTargets();
     const timer = window.setInterval(updateTargets, BTC_MOUNTAIN_METRIC_UPDATE_MS);
@@ -8424,32 +8424,32 @@ function MountainsBackdrop({
     if (farGroupRef.current) farGroupRef.current.visible = true;
     if (midGroupRef.current) midGroupRef.current.visible = true;
     if (peakGroupRef.current) peakGroupRef.current.visible = true;
-    const farY = GROUND_DECK_Y - scale * 0.06;
-    const midY = GROUND_DECK_Y - scale * 0.08;
-    const peakY = GROUND_DECK_Y - scale * 0.1;
-    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.01, scale * 0.52, farY, 1.0, 0.98);
+    const farY = GROUND_DECK_Y - scale * 0.03;
+    const midY = GROUND_DECK_Y - scale * 0.04;
+    const peakY = GROUND_DECK_Y - scale * 0.05;
+    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.01, scale * 0.34, farY, 1.0, 0.98);
     applyShoulderLayer(
       farShoulderRef.current,
       farUnits,
       ring * 1.01,
-      scale * 0.36,
+      scale * 0.24,
       farY
     );
-    applyFoothillLayer(farFoothillRef.current, farUnits, ring * 1.01, scale * 0.26, farY);
-    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.91, scale * 0.48, midY, 1.08, 1.02);
+    applyFoothillLayer(farFoothillRef.current, farUnits, ring * 1.01, scale * 0.18, farY);
+    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.91, scale * 0.31, midY, 1.08, 1.02);
     applyShoulderLayer(
       midShoulderRef.current,
       midUnits,
       ring * 0.91,
-      scale * 0.32,
+      scale * 0.22,
       midY
     );
-    applyFoothillLayer(midFoothillRef.current, midUnits, ring * 0.91, scale * 0.23, midY);
+    applyFoothillLayer(midFoothillRef.current, midUnits, ring * 0.91, scale * 0.16, midY);
     applyCoreLayer(
       peakCoreRef.current,
       peakUnits,
       ring * 1.14,
-      scale * 0.44,
+      scale * 0.28,
       peakY,
       0.92,
       0.9
@@ -8458,10 +8458,10 @@ function MountainsBackdrop({
       peakShoulderRef.current,
       peakUnits,
       ring * 1.14,
-      scale * 0.28,
+      scale * 0.2,
       peakY
     );
-    applyFoothillLayer(peakFoothillRef.current, peakUnits, ring * 1.14, scale * 0.2, peakY);
+    applyFoothillLayer(peakFoothillRef.current, peakUnits, ring * 1.14, scale * 0.14, peakY);
   });
 
   return (
@@ -8474,12 +8474,12 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER}
         >
           <meshBasicMaterial
-            color="#7a5537"
+            color="#b57844"
             transparent
             opacity={BTC_MOUNTAIN_FAR_OPACITY}
             toneMapped={false}
             side={DoubleSide}
-            depthTest
+            depthTest={false}
             depthWrite={false}
           />
         </instancedMesh>
@@ -8490,12 +8490,12 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.01}
         >
           <meshBasicMaterial
-            color="#63462f"
+            color="#9e6a3f"
             transparent
             opacity={BTC_MOUNTAIN_FAR_OPACITY * 0.88}
             toneMapped={false}
             side={DoubleSide}
-            depthTest
+            depthTest={false}
             depthWrite={false}
           />
         </instancedMesh>
@@ -8506,12 +8506,12 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.005}
         >
           <meshBasicMaterial
-            color="#523929"
+            color="#7f5535"
             transparent
             opacity={BTC_MOUNTAIN_FAR_OPACITY * 0.72}
             toneMapped={false}
             side={DoubleSide}
-            depthTest
+            depthTest={false}
             depthWrite={false}
           />
         </instancedMesh>
@@ -8524,12 +8524,12 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.02}
         >
           <meshBasicMaterial
-            color="#89603f"
+            color="#cd864c"
             transparent
             opacity={BTC_MOUNTAIN_MID_OPACITY}
             toneMapped={false}
             side={DoubleSide}
-            depthTest
+            depthTest={false}
             depthWrite={false}
           />
         </instancedMesh>
@@ -8540,12 +8540,12 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.03}
         >
           <meshBasicMaterial
-            color="#705038"
+            color="#ac7444"
             transparent
             opacity={BTC_MOUNTAIN_MID_OPACITY * 0.86}
             toneMapped={false}
             side={DoubleSide}
-            depthTest
+            depthTest={false}
             depthWrite={false}
           />
         </instancedMesh>
@@ -8556,12 +8556,12 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.025}
         >
           <meshBasicMaterial
-            color="#584031"
+            color="#8a5d3a"
             transparent
             opacity={BTC_MOUNTAIN_MID_OPACITY * 0.7}
             toneMapped={false}
             side={DoubleSide}
-            depthTest
+            depthTest={false}
             depthWrite={false}
           />
         </instancedMesh>
@@ -8574,12 +8574,12 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER - 0.02}
         >
           <meshBasicMaterial
-            color="#966946"
+            color="#dfa05f"
             transparent
             opacity={BTC_MOUNTAIN_PEAK_OPACITY}
             toneMapped={false}
             side={DoubleSide}
-            depthTest
+            depthTest={false}
             depthWrite={false}
           />
         </instancedMesh>
@@ -8590,12 +8590,12 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.04}
         >
           <meshBasicMaterial
-            color="#77553b"
+            color="#be8350"
             transparent
             opacity={BTC_MOUNTAIN_PEAK_OPACITY * 0.84}
             toneMapped={false}
             side={DoubleSide}
-            depthTest
+            depthTest={false}
             depthWrite={false}
           />
         </instancedMesh>
@@ -8606,12 +8606,12 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.035}
         >
           <meshBasicMaterial
-            color="#604634"
+            color="#9a6942"
             transparent
             opacity={BTC_MOUNTAIN_PEAK_OPACITY * 0.66}
             toneMapped={false}
             side={DoubleSide}
-            depthTest
+            depthTest={false}
             depthWrite={false}
           />
         </instancedMesh>
