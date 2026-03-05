@@ -549,7 +549,7 @@ const BTC_MOUNTAIN_RENDER_ORDER = -5;
 const BTC_MOUNTAIN_REVEAL_MID_DELAY_S = 0.34;
 const BTC_MOUNTAIN_REVEAL_PEAK_DELAY_S = 0.66;
 const BTC_MOUNTAIN_REVEAL_LAYER_DUR_S = 1.05;
-const BTC_MOUNTAIN_REVEAL_FALLBACK_S = BTC_GROUND_BOOT_MS * 0.001 + 0.2;
+const BTC_MOUNTAIN_REVEAL_FALLBACK_S = 0.95;
 const BTC_MOUNTAIN_EMISSIVE_FAR_CORE = 0.072;
 const BTC_MOUNTAIN_EMISSIVE_FAR_SHOULDER = 0.05;
 const BTC_MOUNTAIN_EMISSIVE_FAR_FOOTHILL = 0.03;
@@ -8279,10 +8279,6 @@ function MountainsBackdrop({
 
   useEffect(() => {
     introBootAlphaRef.current = introBootAlpha;
-    if (introBootAlpha < 0.995) {
-      revealTimeRef.current = 0;
-      revealMixRef.current = 0;
-    }
   }, [introBootAlpha]);
 
   useEffect(() => {
@@ -8421,7 +8417,7 @@ function MountainsBackdrop({
     smoothRingRef.current = MathUtils.damp(smoothRingRef.current, targetRingRef.current, 0.92, delta);
     smoothScaleRef.current = MathUtils.damp(smoothScaleRef.current, targetScaleRef.current, 0.95, delta);
 
-    const introDone = introBootAlphaRef.current >= 0.985 || mountElapsedRef.current > BTC_MOUNTAIN_REVEAL_FALLBACK_S;
+    const introDone = introBootAlphaRef.current >= 0.82 || mountElapsedRef.current > BTC_MOUNTAIN_REVEAL_FALLBACK_S;
     if (introDone) {
       revealTimeRef.current = Math.min(revealTimeRef.current + delta, 8);
       revealMixRef.current = MathUtils.damp(revealMixRef.current, 1, 2.8, delta);
