@@ -12,6 +12,7 @@ import {
   Color,
   DoubleSide,
   EdgesGeometry,
+  FrontSide,
   LinearFilter,
   LineBasicMaterial,
   Matrix4,
@@ -543,6 +544,15 @@ const BTC_MOUNTAIN_RING_MIN = 520;
 const BTC_MOUNTAIN_RING_MAX = 760;
 const BTC_MOUNTAIN_METRIC_UPDATE_MS = 1000;
 const BTC_MOUNTAIN_RENDER_ORDER = -5;
+const BTC_MOUNTAIN_REVEAL_MID_DELAY_S = 0.34;
+const BTC_MOUNTAIN_REVEAL_PEAK_DELAY_S = 0.66;
+const BTC_MOUNTAIN_REVEAL_LAYER_DUR_S = 1.05;
+const BTC_MOUNTAIN_OPACITY_FAR_CORE = 0.11;
+const BTC_MOUNTAIN_OPACITY_FAR_SHOULDER = 0.07;
+const BTC_MOUNTAIN_OPACITY_MID_CORE = 0.13;
+const BTC_MOUNTAIN_OPACITY_MID_SHOULDER = 0.08;
+const BTC_MOUNTAIN_OPACITY_PEAK_CORE = 0.1;
+const BTC_MOUNTAIN_OPACITY_PEAK_SHOULDER = 0.06;
 const BTC_BIRD_START_TOWER_COUNT = 6;
 const BTC_BIRD_MIN_COUNT = 10;
 const BTC_BIRD_MAX_COUNT = 220;
@@ -8172,10 +8182,12 @@ function buildMountainUnits(seedOffset: number, count: number) {
 
 function MountainsBackdrop({
   cityRadius,
-  cityScaleMetric
+  cityScaleMetric,
+  introBootAlpha
 }: {
   cityRadius: number;
   cityScaleMetric: number;
+  introBootAlpha: number;
 }) {
   const farCoreRef = useRef<ThreeInstancedMesh>(null);
   const farShoulderRef = useRef<ThreeInstancedMesh>(null);
@@ -8188,6 +8200,7 @@ function MountainsBackdrop({
   const peakGroupRef = useRef<Group>(null);
   const cityRadiusRef = useRef(cityRadius);
   const cityScaleMetricRef = useRef(cityScaleMetric);
+  const introBootAlphaRef = useRef(introBootAlpha);
   const targetRingRef = useRef(
     MathUtils.clamp(
       Math.max(cityRadius * BTC_MOUNTAIN_RING_MULT, BTC_MOUNTAIN_RING_MIN),
@@ -8198,6 +8211,8 @@ function MountainsBackdrop({
   const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 4.8 + cityRadius * 0.45, 220, 340));
   const smoothRingRef = useRef(targetRingRef.current);
   const smoothScaleRef = useRef(targetScaleRef.current);
+  const revealTimeRef = useRef(0);
+  const revealMixRef = useRef(0);
   const matrixRef = useRef(new Matrix4());
   const quatRef = useRef(new Quaternion());
   const posRef = useRef(new Vector3());
@@ -8230,6 +8245,14 @@ function MountainsBackdrop({
     cityRadiusRef.current = cityRadius;
     cityScaleMetricRef.current = cityScaleMetric;
   }, [cityRadius, cityScaleMetric]);
+
+  useEffect(() => {
+    introBootAlphaRef.current = introBootAlpha;
+    if (introBootAlpha < 0.995) {
+      revealTimeRef.current = 0;
+      revealMixRef.current = 0;
+    }
+  }, [introBootAlpha]);
 
   useEffect(() => {
     const updateTargets = () => {
@@ -8327,6 +8350,22 @@ function MountainsBackdrop({
     smoothRingRef.current = MathUtils.damp(smoothRingRef.current, targetRingRef.current, 0.92, delta);
     smoothScaleRef.current = MathUtils.damp(smoothScaleRef.current, targetScaleRef.current, 0.95, delta);
 
+    const introDone = introBootAlphaRef.current >= 0.995;
+    if (introDone) {
+      revealTimeRef.current = Math.min(revealTimeRef.current + delta, 8);
+      revealMixRef.current = MathUtils.damp(revealMixRef.current, 1, 2.8, delta);
+    } else {
+      revealTimeRef.current = 0;
+      revealMixRef.current = MathUtils.damp(revealMixRef.current, 0, 9.5, delta);
+    }
+    const revealTime = revealTimeRef.current;
+    const revealMix = revealMixRef.current;
+    const farReveal = smoothstep01(MathUtils.clamp(revealTime / BTC_MOUNTAIN_REVEAL_LAYER_DUR_S, 0, 1)) * revealMix;
+    const midReveal =
+      smoothstep01(MathUtils.clamp((revealTime - BTC_MOUNTAIN_REVEAL_MID_DELAY_S) / BTC_MOUNTAIN_REVEAL_LAYER_DUR_S, 0, 1)) * revealMix;
+    const peakReveal =
+      smoothstep01(MathUtils.clamp((revealTime - BTC_MOUNTAIN_REVEAL_PEAK_DELAY_S) / BTC_MOUNTAIN_REVEAL_LAYER_DUR_S, 0, 1)) * revealMix;
+
     farGroupRef.current?.rotateY(delta * 0.0011);
     midGroupRef.current?.rotateY(-delta * 0.0008);
     peakGroupRef.current?.rotateY(delta * 0.00045);
@@ -8341,15 +8380,57 @@ function MountainsBackdrop({
       !!peakCoreRef.current &&
       !!peakShoulderRef.current;
     if (!meshesReady) return;
-    const farY = GROUND_DECK_Y - scale * 0.18;
-    const midY = GROUND_DECK_Y - scale * 0.24;
-    const peakY = GROUND_DECK_Y - scale * 0.29;
-    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.02, scale * 1.28, farY, 1.0, 0.98);
-    applyShoulderLayer(farShoulderRef.current, farUnits, ring * 1.02, scale * 1.06, farY);
-    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.9, scale * 1.14, midY, 1.08, 1.02);
-    applyShoulderLayer(midShoulderRef.current, midUnits, ring * 0.9, scale * 0.92, midY);
-    applyCoreLayer(peakCoreRef.current, peakUnits, ring * 1.16, scale * 1.02, peakY, 0.92, 0.9);
-    applyShoulderLayer(peakShoulderRef.current, peakUnits, ring * 1.16, scale * 0.84, peakY);
+    if (farGroupRef.current) farGroupRef.current.visible = farReveal > 0.001;
+    if (midGroupRef.current) midGroupRef.current.visible = midReveal > 0.001;
+    if (peakGroupRef.current) peakGroupRef.current.visible = peakReveal > 0.001;
+    const farY = GROUND_DECK_Y - scale * 0.18 - (1 - farReveal) * scale * 0.08;
+    const midY = GROUND_DECK_Y - scale * 0.24 - (1 - midReveal) * scale * 0.08;
+    const peakY = GROUND_DECK_Y - scale * 0.29 - (1 - peakReveal) * scale * 0.07;
+    applyCoreLayer(farCoreRef.current, farUnits, ring * 1.02, scale * (1.28 * MathUtils.lerp(0.94, 1, farReveal)), farY, 1.0, 0.98);
+    applyShoulderLayer(
+      farShoulderRef.current,
+      farUnits,
+      ring * 1.02,
+      scale * (1.06 * MathUtils.lerp(0.95, 1, farReveal)),
+      farY
+    );
+    applyCoreLayer(midCoreRef.current, midUnits, ring * 0.9, scale * (1.14 * MathUtils.lerp(0.94, 1, midReveal)), midY, 1.08, 1.02);
+    applyShoulderLayer(
+      midShoulderRef.current,
+      midUnits,
+      ring * 0.9,
+      scale * (0.92 * MathUtils.lerp(0.95, 1, midReveal)),
+      midY
+    );
+    applyCoreLayer(
+      peakCoreRef.current,
+      peakUnits,
+      ring * 1.16,
+      scale * (1.02 * MathUtils.lerp(0.95, 1, peakReveal)),
+      peakY,
+      0.92,
+      0.9
+    );
+    applyShoulderLayer(
+      peakShoulderRef.current,
+      peakUnits,
+      ring * 1.16,
+      scale * (0.84 * MathUtils.lerp(0.95, 1, peakReveal)),
+      peakY
+    );
+
+    const farCoreMat = farCoreRef.current.material as { opacity?: number } | undefined;
+    if (farCoreMat) farCoreMat.opacity = BTC_MOUNTAIN_OPACITY_FAR_CORE * farReveal;
+    const farShoulderMat = farShoulderRef.current.material as { opacity?: number } | undefined;
+    if (farShoulderMat) farShoulderMat.opacity = BTC_MOUNTAIN_OPACITY_FAR_SHOULDER * farReveal;
+    const midCoreMat = midCoreRef.current.material as { opacity?: number } | undefined;
+    if (midCoreMat) midCoreMat.opacity = BTC_MOUNTAIN_OPACITY_MID_CORE * midReveal;
+    const midShoulderMat = midShoulderRef.current.material as { opacity?: number } | undefined;
+    if (midShoulderMat) midShoulderMat.opacity = BTC_MOUNTAIN_OPACITY_MID_SHOULDER * midReveal;
+    const peakCoreMat = peakCoreRef.current.material as { opacity?: number } | undefined;
+    if (peakCoreMat) peakCoreMat.opacity = BTC_MOUNTAIN_OPACITY_PEAK_CORE * peakReveal;
+    const peakShoulderMat = peakShoulderRef.current.material as { opacity?: number } | undefined;
+    if (peakShoulderMat) peakShoulderMat.opacity = BTC_MOUNTAIN_OPACITY_PEAK_SHOULDER * peakReveal;
   });
 
   return (
@@ -8364,9 +8445,10 @@ function MountainsBackdrop({
           <meshBasicMaterial
             color="#c8b59a"
             transparent
-            opacity={0.21}
+            opacity={BTC_MOUNTAIN_OPACITY_FAR_CORE}
             toneMapped={false}
-            side={DoubleSide}
+            side={FrontSide}
+            depthWrite={false}
           />
         </instancedMesh>
         <instancedMesh
@@ -8378,9 +8460,10 @@ function MountainsBackdrop({
           <meshBasicMaterial
             color="#a98c6e"
             transparent
-            opacity={0.14}
+            opacity={BTC_MOUNTAIN_OPACITY_FAR_SHOULDER}
             toneMapped={false}
-            side={DoubleSide}
+            side={FrontSide}
+            depthWrite={false}
           />
         </instancedMesh>
       </group>
@@ -8394,9 +8477,10 @@ function MountainsBackdrop({
           <meshBasicMaterial
             color="#d4c3ab"
             transparent
-            opacity={0.24}
+            opacity={BTC_MOUNTAIN_OPACITY_MID_CORE}
             toneMapped={false}
-            side={DoubleSide}
+            side={FrontSide}
+            depthWrite={false}
           />
         </instancedMesh>
         <instancedMesh
@@ -8408,9 +8492,10 @@ function MountainsBackdrop({
           <meshBasicMaterial
             color="#b69673"
             transparent
-            opacity={0.17}
+            opacity={BTC_MOUNTAIN_OPACITY_MID_SHOULDER}
             toneMapped={false}
-            side={DoubleSide}
+            side={FrontSide}
+            depthWrite={false}
           />
         </instancedMesh>
       </group>
@@ -8424,9 +8509,10 @@ function MountainsBackdrop({
           <meshBasicMaterial
             color="#bda88d"
             transparent
-            opacity={0.2}
+            opacity={BTC_MOUNTAIN_OPACITY_PEAK_CORE}
             toneMapped={false}
-            side={DoubleSide}
+            side={FrontSide}
+            depthWrite={false}
           />
         </instancedMesh>
         <instancedMesh
@@ -8438,9 +8524,10 @@ function MountainsBackdrop({
           <meshBasicMaterial
             color="#9c8166"
             transparent
-            opacity={0.13}
+            opacity={BTC_MOUNTAIN_OPACITY_PEAK_SHOULDER}
             toneMapped={false}
-            side={DoubleSide}
+            side={FrontSide}
+            depthWrite={false}
           />
         </instancedMesh>
       </group>
@@ -9212,7 +9299,13 @@ function SandboxScene({
         marketPulse={marketMoodTarget}
         introBootAlpha={groundIntroBootAlpha ?? fx.introBootAlpha}
       />
-      {mode === 'btc' ? <MountainsBackdrop cityRadius={bounds.radius} cityScaleMetric={mountainScaleMetric} /> : null}
+      {mode === 'btc' ? (
+        <MountainsBackdrop
+          cityRadius={bounds.radius}
+          cityScaleMetric={mountainScaleMetric}
+          introBootAlpha={groundIntroBootAlpha ?? fx.introBootAlpha}
+        />
+      ) : null}
       <DistrictBoundariesLayer districts={districts} focusMode={focusMode} />
       <ShockwaveLayer shockwaves={shockwaves} focusMode={focusMode} />
       {showParksLayer ? <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} showFireflies={showParkFireflies} /> : null}
