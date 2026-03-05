@@ -8,9 +8,11 @@ import {
   BoxGeometry,
   CanvasTexture,
   CircleGeometry,
+  ConeGeometry,
   Color,
   DoubleSide,
   EdgesGeometry,
+  IcosahedronGeometry,
   LinearFilter,
   LineBasicMaterial,
   Matrix4,
@@ -19,6 +21,7 @@ import {
   Quaternion,
   ShaderMaterial,
   SRGBColorSpace,
+  TetrahedronGeometry,
   TextureLoader,
   TorusGeometry,
   Vector3
@@ -533,6 +536,16 @@ const TOWER_DETAIL_BAND_Y_EPS = 0.0006;
 const DEBUG_FORCE_TRAFFIC_VIS = false;
 const MAX_TRAFFIC_INSTANCES = 4096;
 const TRAFFIC_PATH_TRIM = 0.9;
+const BTC_MOUNTAIN_SEED = 58_031;
+const BTC_MOUNTAIN_COUNT = 72;
+const BTC_BIRD_FLOCK_INTERVAL_MS = 15_000;
+const BTC_BIRD_FLOCK_MIN_SIZE = 3;
+const BTC_BIRD_FLOCK_MAX_SIZE = 8;
+const BTC_BIRD_LIFE_MIN_MS = 20_000;
+const BTC_BIRD_LIFE_MAX_MS = 45_000;
+const BTC_BIRD_MAX_INSTANCES = 120;
+const BTC_BIRD_RENDER_ORDER = 5.56;
+const BTC_BIRD_DEBUG_ROW = true;
 
 const RADIAL_GLOW_VERTEX = `
 varying vec2 vUv;
@@ -8091,6 +8104,415 @@ function RecordCeremonyLayer({
   );
 }
 
+type MountainTransform = {
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  sx: number;
+  sy: number;
+  sz: number;
+};
+
+function DistantMountains({ cityRadius }: { cityRadius: number }) {
+  const baseARef = useRef<ThreeInstancedMesh>(null);
+  const baseBRef = useRef<ThreeInstancedMesh>(null);
+  const baseCRef = useRef<ThreeInstancedMesh>(null);
+  const accentARef = useRef<ThreeInstancedMesh>(null);
+  const accentBRef = useRef<ThreeInstancedMesh>(null);
+  const accentCRef = useRef<ThreeInstancedMesh>(null);
+  const upRef = useRef(new Vector3(0, 1, 0));
+
+  const geometries = useMemo(() => {
+    const cone = new ConeGeometry(1, 1, 5, 1);
+    cone.translate(0, 0.5, 0);
+    const tetra = new TetrahedronGeometry(0.88, 0);
+    tetra.translate(0, 0.5, 0);
+    const icosa = new IcosahedronGeometry(0.9, 0);
+    icosa.translate(0, 0.5, 0);
+    return [cone, tetra, icosa] as const;
+  }, []);
+
+  useEffect(
+    () => () => {
+      geometries.forEach((g) => g.dispose());
+    },
+    [geometries]
+  );
+
+  const transforms = useMemo(() => {
+    const safeRadius = Math.max(20, cityRadius);
+    const minRadius = safeRadius * 2.5;
+    const maxRadius = safeRadius * 4.0;
+    const minHeight = Math.max(8, safeRadius * 0.18);
+    const maxHeight = Math.max(minHeight + 4, safeRadius * 0.48);
+    const buckets: [MountainTransform[], MountainTransform[], MountainTransform[]] = [[], [], []];
+
+    for (let i = 0; i < BTC_MOUNTAIN_COUNT; i++) {
+      const angleJitter = MathUtils.lerp(-0.18, 0.18, hash01(BTC_MOUNTAIN_SEED, i, 11));
+      const angle = ((i + 0.5) / BTC_MOUNTAIN_COUNT) * Math.PI * 2 + angleJitter;
+      const radiusT = Math.pow(hash01(BTC_MOUNTAIN_SEED, i, 17), 0.58);
+      const radius = MathUtils.lerp(minRadius, maxRadius, radiusT);
+      const height = MathUtils.lerp(minHeight, maxHeight, Math.pow(hash01(BTC_MOUNTAIN_SEED, i, 19), 1.1));
+      const sx = height * MathUtils.lerp(0.34, 0.84, hash01(BTC_MOUNTAIN_SEED, i, 23));
+      const sz = height * MathUtils.lerp(0.36, 0.9, hash01(BTC_MOUNTAIN_SEED, i, 29));
+      const yaw = angle + Math.PI + MathUtils.lerp(-0.4, 0.4, hash01(BTC_MOUNTAIN_SEED, i, 31));
+      const y = GROUND_DECK_Y + MathUtils.lerp(-1.05, 0.95, hash01(BTC_MOUNTAIN_SEED, i, 37));
+      const variantPick = hash01(BTC_MOUNTAIN_SEED, i, 41);
+      const variant = variantPick < 0.4 ? 0 : variantPick < 0.74 ? 1 : 2;
+      buckets[variant].push({
+        x: Math.sin(angle) * radius,
+        y,
+        z: Math.cos(angle) * radius,
+        yaw,
+        sx,
+        sy: height,
+        sz
+      });
+    }
+
+    return buckets;
+  }, [cityRadius]);
+
+  useEffect(() => {
+    const matrix = new Matrix4();
+    const quat = new Quaternion();
+    const pos = new Vector3();
+    const scale = new Vector3();
+    const up = upRef.current;
+
+    const applyTransforms = (
+      mesh: ThreeInstancedMesh | null,
+      items: MountainTransform[],
+      scaleMult: number,
+      yOffset: number
+    ) => {
+      if (!mesh) return;
+      const count = Math.min(items.length, mesh.instanceMatrix.count);
+      for (let i = 0; i < count; i++) {
+        const item = items[i];
+        quat.setFromAxisAngle(up, item.yaw);
+        pos.set(item.x, item.y + yOffset, item.z);
+        scale.set(item.sx * scaleMult, item.sy, item.sz * scaleMult);
+        matrix.compose(pos, quat, scale);
+        mesh.setMatrixAt(i, matrix);
+      }
+      mesh.count = count;
+      mesh.instanceMatrix.needsUpdate = true;
+    };
+
+    applyTransforms(baseARef.current, transforms[0], 1, 0);
+    applyTransforms(baseBRef.current, transforms[1], 1, 0);
+    applyTransforms(baseCRef.current, transforms[2], 1, 0);
+    applyTransforms(accentARef.current, transforms[0], 1.025, 0.08);
+    applyTransforms(accentBRef.current, transforms[1], 1.025, 0.08);
+    applyTransforms(accentCRef.current, transforms[2], 1.025, 0.08);
+  }, [transforms]);
+
+  return (
+    <group>
+      <instancedMesh ref={baseARef} args={[undefined, undefined, BTC_MOUNTAIN_COUNT]} frustumCulled={false}>
+        <primitive object={geometries[0]} attach="geometry" />
+        <meshStandardMaterial color="#0c1117" emissive="#5f4730" emissiveIntensity={0.045} roughness={0.97} metalness={0.03} flatShading />
+      </instancedMesh>
+      <instancedMesh ref={baseBRef} args={[undefined, undefined, BTC_MOUNTAIN_COUNT]} frustumCulled={false}>
+        <primitive object={geometries[1]} attach="geometry" />
+        <meshStandardMaterial color="#0b1016" emissive="#664a30" emissiveIntensity={0.042} roughness={0.97} metalness={0.03} flatShading />
+      </instancedMesh>
+      <instancedMesh ref={baseCRef} args={[undefined, undefined, BTC_MOUNTAIN_COUNT]} frustumCulled={false}>
+        <primitive object={geometries[2]} attach="geometry" />
+        <meshStandardMaterial color="#0a0f15" emissive="#6d5033" emissiveIntensity={0.04} roughness={0.96} metalness={0.04} flatShading />
+      </instancedMesh>
+      <instancedMesh ref={accentARef} args={[undefined, undefined, BTC_MOUNTAIN_COUNT]} frustumCulled={false}>
+        <primitive object={geometries[0]} attach="geometry" />
+        <meshBasicMaterial
+          color="#f2bf88"
+          transparent
+          opacity={0.055}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+          blending={AdditiveBlending}
+        />
+      </instancedMesh>
+      <instancedMesh ref={accentBRef} args={[undefined, undefined, BTC_MOUNTAIN_COUNT]} frustumCulled={false}>
+        <primitive object={geometries[1]} attach="geometry" />
+        <meshBasicMaterial
+          color="#f4c58f"
+          transparent
+          opacity={0.05}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+          blending={AdditiveBlending}
+        />
+      </instancedMesh>
+      <instancedMesh ref={accentCRef} args={[undefined, undefined, BTC_MOUNTAIN_COUNT]} frustumCulled={false}>
+        <primitive object={geometries[2]} attach="geometry" />
+        <meshBasicMaterial
+          color="#f0ba82"
+          transparent
+          opacity={0.045}
+          toneMapped={false}
+          depthWrite={false}
+          depthTest
+          blending={AdditiveBlending}
+        />
+      </instancedMesh>
+    </group>
+  );
+}
+
+function BirdFlocks({
+  cityRadius,
+  sceneMaxY,
+  onBirdCountChange
+}: {
+  cityRadius: number;
+  sceneMaxY: number;
+  onBirdCountChange?: (count: number) => void;
+}) {
+  const meshRef = useRef<ThreeInstancedMesh>(null);
+  const activeRef = useRef(new Uint8Array(BTC_BIRD_MAX_INSTANCES));
+  const bornAtRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const dieAtRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const angleRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const omegaRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const radiusBaseRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const radiusTargetRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const radiusAmpRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const radiusFreqRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const radiusPhaseRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const altitudeBaseRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const altitudeTargetRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const altitudeAmpRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const altitudeFreqRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const altitudePhaseRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const sizeRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const prevXRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const prevYRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const prevZRef = useRef(new Float32Array(BTC_BIRD_MAX_INSTANCES));
+  const activeCountRef = useRef(0);
+  const reportedCountRef = useRef(-1);
+  const nextSpawnAtRef = useRef(0);
+  const spawnSerialRef = useRef(0);
+  const matrixRef = useRef(new Matrix4());
+  const posRef = useRef(new Vector3());
+  const scaleRef = useRef(new Vector3());
+  const quatRef = useRef(new Quaternion());
+  const upRef = useRef(new Vector3(0, 1, 0));
+
+  const geometry = useMemo(() => {
+    const g = new ConeGeometry(0.16, 0.42, 3, 1);
+    g.rotateX(Math.PI * 0.5);
+    g.translate(0, 0, 0.14);
+    return g;
+  }, []);
+
+  useEffect(() => () => geometry.dispose(), [geometry]);
+
+  useEffect(() => {
+    activeRef.current.fill(0);
+    activeCountRef.current = 0;
+    reportedCountRef.current = -1;
+    spawnSerialRef.current = 0;
+    nextSpawnAtRef.current = performance.now() + 1400;
+    onBirdCountChange?.(0);
+    return () => onBirdCountChange?.(0);
+  }, [onBirdCountChange]);
+
+  useFrame((_, delta) => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+
+    const now = performance.now();
+    const minRadius = Math.max(4.5, cityRadius * 0.3);
+    const maxRadius = Math.max(minRadius + 3, cityRadius * 1.1);
+    const centerAvoidRadius = minRadius * 0.72;
+    const minAltitude = Math.max(3, Math.min(7.5, sceneMaxY * 0.15));
+    const maxAltitude = Math.max(minAltitude + 4, Math.min(18 + sceneMaxY * 0.1, sceneMaxY * 0.62));
+    const active = activeRef.current;
+    const bornAt = bornAtRef.current;
+    const dieAt = dieAtRef.current;
+    const angle = angleRef.current;
+    const omega = omegaRef.current;
+    const radiusBase = radiusBaseRef.current;
+    const radiusTarget = radiusTargetRef.current;
+    const radiusAmp = radiusAmpRef.current;
+    const radiusFreq = radiusFreqRef.current;
+    const radiusPhase = radiusPhaseRef.current;
+    const altitudeBase = altitudeBaseRef.current;
+    const altitudeTarget = altitudeTargetRef.current;
+    const altitudeAmp = altitudeAmpRef.current;
+    const altitudeFreq = altitudeFreqRef.current;
+    const altitudePhase = altitudePhaseRef.current;
+    const size = sizeRef.current;
+    const prevX = prevXRef.current;
+    const prevY = prevYRef.current;
+    const prevZ = prevZRef.current;
+
+    let spawnStep = 0;
+    while (now >= nextSpawnAtRef.current && spawnStep < 3) {
+      spawnStep += 1;
+      const serial = spawnSerialRef.current++;
+      const intervalJitter = MathUtils.lerp(0.86, 1.22, hash01(serial, 9707));
+      nextSpawnAtRef.current += BTC_BIRD_FLOCK_INTERVAL_MS * intervalJitter;
+
+      if (activeCountRef.current >= BTC_BIRD_MAX_INSTANCES) continue;
+      const flockSize = Math.min(
+        BTC_BIRD_MAX_INSTANCES - activeCountRef.current,
+        Math.max(
+          BTC_BIRD_FLOCK_MIN_SIZE,
+          Math.round(MathUtils.lerp(BTC_BIRD_FLOCK_MIN_SIZE, BTC_BIRD_FLOCK_MAX_SIZE, hash01(serial, 9713)))
+        )
+      );
+      if (flockSize <= 0) continue;
+
+      const flockLifeMs = MathUtils.lerp(BTC_BIRD_LIFE_MIN_MS, BTC_BIRD_LIFE_MAX_MS, hash01(serial, 9719));
+      const flockBornAt = now;
+      const flockDieAt = now + flockLifeMs;
+      const anchorAngle = hash01(serial, 9721) * Math.PI * 2;
+      const orbitDir = hash01(serial, 9727) < 0.5 ? -1 : 1;
+      const anchorRadius = MathUtils.lerp(minRadius * 1.04, maxRadius * 0.93, hash01(serial, 9733));
+      const anchorAltitude = MathUtils.lerp(minAltitude, maxAltitude, hash01(serial, 9739));
+
+      for (let b = 0; b < flockSize; b++) {
+        let slot = -1;
+        for (let i = 0; i < BTC_BIRD_MAX_INSTANCES; i++) {
+          if (active[i] === 0) {
+            slot = i;
+            break;
+          }
+        }
+        if (slot < 0) break;
+        active[slot] = 1;
+        activeCountRef.current += 1;
+        bornAt[slot] = flockBornAt;
+        dieAt[slot] = flockDieAt;
+        const spread = MathUtils.lerp(-0.26, 0.26, hash01(serial, b, 9743));
+        angle[slot] = anchorAngle + spread;
+        omega[slot] = orbitDir * MathUtils.lerp(0.11, 0.2, hash01(serial, b, 9749));
+        radiusBase[slot] = anchorRadius + MathUtils.lerp(-1.5, 1.5, hash01(serial, b, 9751));
+        radiusTarget[slot] = anchorRadius + MathUtils.lerp(-2.1, 2.1, hash01(serial, b, 9757));
+        radiusAmp[slot] = MathUtils.lerp(0.28, 1.1, hash01(serial, b, 9763));
+        radiusFreq[slot] = MathUtils.lerp(0.35, 1.05, hash01(serial, b, 9767));
+        radiusPhase[slot] = hash01(serial, b, 9769) * Math.PI * 2;
+        altitudeBase[slot] = anchorAltitude + MathUtils.lerp(-0.95, 0.95, hash01(serial, b, 9773));
+        altitudeTarget[slot] = anchorAltitude + MathUtils.lerp(-1.4, 1.4, hash01(serial, b, 9779));
+        altitudeAmp[slot] = MathUtils.lerp(0.12, 0.7, hash01(serial, b, 9781));
+        altitudeFreq[slot] = MathUtils.lerp(0.4, 1.2, hash01(serial, b, 9787));
+        altitudePhase[slot] = hash01(serial, b, 9791) * Math.PI * 2;
+        size[slot] = MathUtils.lerp(0.36, 0.58, hash01(serial, b, 9797));
+        const sx = Math.sin(angle[slot]) * radiusBase[slot];
+        const sy = MathUtils.clamp(altitudeBase[slot], minAltitude, maxAltitude);
+        const sz = Math.cos(angle[slot]) * radiusBase[slot];
+        prevX[slot] = sx;
+        prevY[slot] = sy;
+        prevZ[slot] = sz;
+      }
+    }
+
+    const matrix = matrixRef.current;
+    const pos = posRef.current;
+    const scl = scaleRef.current;
+    const quat = quatRef.current;
+    const up = upRef.current;
+    let visibleCount = 0;
+    let countChanged = false;
+
+    for (let i = 0; i < BTC_BIRD_MAX_INSTANCES; i++) {
+      if (active[i] === 0) continue;
+      if (now >= dieAt[i]) {
+        active[i] = 0;
+        activeCountRef.current = Math.max(0, activeCountRef.current - 1);
+        countChanged = true;
+        continue;
+      }
+
+      const ageSec = Math.max(0, (now - bornAt[i]) * 0.001);
+      angle[i] += omega[i] * delta;
+      radiusBase[i] = MathUtils.damp(radiusBase[i], radiusTarget[i], 1.35, delta);
+      altitudeBase[i] = MathUtils.damp(altitudeBase[i], altitudeTarget[i], 1.55, delta);
+
+      let radius = radiusBase[i] + Math.sin(ageSec * radiusFreq[i] + radiusPhase[i]) * radiusAmp[i];
+      let altitude = altitudeBase[i] + Math.sin(ageSec * altitudeFreq[i] + altitudePhase[i]) * altitudeAmp[i];
+
+      if (radius < centerAvoidRadius) radiusTarget[i] = Math.max(radiusTarget[i], minRadius * 1.03);
+      if (radius < minRadius) {
+        radiusTarget[i] = Math.min(maxRadius, radiusTarget[i] + (minRadius - radius) * 0.55);
+        radius = minRadius;
+      } else if (radius > maxRadius) {
+        radiusTarget[i] = Math.max(minRadius, radiusTarget[i] - (radius - maxRadius) * 0.5);
+        radius = maxRadius;
+      }
+      if (altitude < minAltitude) {
+        altitudeTarget[i] = Math.min(maxAltitude, altitudeTarget[i] + (minAltitude - altitude) * 0.55);
+        altitude = minAltitude;
+      } else if (altitude > maxAltitude) {
+        altitudeTarget[i] = Math.max(minAltitude, altitudeTarget[i] - (altitude - maxAltitude) * 0.5);
+        altitude = maxAltitude;
+      }
+
+      const weave = Math.sin(ageSec * (0.28 + radiusFreq[i] * 0.22) + radiusPhase[i] * 0.45) * 0.08;
+      const theta = angle[i] + weave;
+      const x = Math.sin(theta) * radius;
+      const z = Math.cos(theta) * radius;
+
+      const vx = x - prevX[i];
+      const vy = altitude - prevY[i];
+      const vz = z - prevZ[i];
+      prevX[i] = x;
+      prevY[i] = altitude;
+      prevZ[i] = z;
+
+      const planar = Math.hypot(vx, vz);
+      const yaw = planar > 1e-6 ? Math.atan2(vx, vz) : theta + Math.PI * 0.5;
+      quat.setFromAxisAngle(up, yaw);
+
+      const ageIn = MathUtils.clamp((now - bornAt[i]) / 1300, 0, 1);
+      const ageOut = MathUtils.clamp((dieAt[i] - now) / 1800, 0, 1);
+      const lifeScale = easeOutCubic(Math.min(ageIn, ageOut));
+      const pitchScale = 1 + MathUtils.clamp(vy * 2.4, -0.12, 0.14);
+      const birdSize = size[i] * MathUtils.lerp(0.72, 1, lifeScale);
+
+      pos.set(x, altitude, z);
+      scl.set(birdSize * 1.05, birdSize * 0.68 * pitchScale, birdSize * 1.26);
+      matrix.compose(pos, quat, scl);
+      mesh.setMatrixAt(visibleCount, matrix);
+      visibleCount += 1;
+    }
+
+    mesh.count = visibleCount;
+    mesh.instanceMatrix.needsUpdate = true;
+
+    if (countChanged || reportedCountRef.current !== activeCountRef.current) {
+      reportedCountRef.current = activeCountRef.current;
+      onBirdCountChange?.(activeCountRef.current);
+    }
+  });
+
+  return (
+    <group>
+      <instancedMesh ref={meshRef} args={[undefined, undefined, BTC_BIRD_MAX_INSTANCES]} renderOrder={BTC_BIRD_RENDER_ORDER} frustumCulled={false}>
+        <primitive object={geometry} attach="geometry" />
+        <meshBasicMaterial
+          color="#fff2dc"
+          transparent
+          opacity={0.18}
+          toneMapped={false}
+          side={DoubleSide}
+          depthTest
+          depthWrite={false}
+          blending={AdditiveBlending}
+          polygonOffset
+          polygonOffsetFactor={-1}
+          polygonOffsetUnits={-2}
+        />
+      </instancedMesh>
+    </group>
+  );
+}
+
 function CinematicBackdrop() {
   const shader = useMemo(
     () =>
@@ -8247,6 +8669,7 @@ function MarketMoodLightRig({ mood = 0.5 }: { mood?: number }) {
 }
 
 function SandboxScene({
+  mode,
   towers,
   traces,
   arterialTraces,
@@ -8267,8 +8690,10 @@ function SandboxScene({
   onHoverTowerChange,
   onSelectTowerChange,
   onHoverHudUpdate,
-  onCameraDebug
+  onCameraDebug,
+  onBirdCountChange
 }: {
+  mode: CityMode;
   towers: TowerDatum[];
   traces: TraceDatum[];
   arterialTraces: TraceDatum[];
@@ -8298,6 +8723,7 @@ function SandboxScene({
   onSelectTowerChange?: (sequence: number | null) => void;
   onHoverHudUpdate?: (snapshot: HoverHudSnapshot) => void;
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
+  onBirdCountChange?: (count: number) => void;
 }) {
   const fx = topFx ?? {
     introBootAlpha: 1,
@@ -8482,6 +8908,7 @@ function SandboxScene({
         marketPulse={marketMoodTarget}
         introBootAlpha={groundIntroBootAlpha ?? fx.introBootAlpha}
       />
+      {mode === 'btc' ? <DistantMountains cityRadius={bounds.radius} /> : null}
       <DistrictBoundariesLayer districts={districts} focusMode={focusMode} />
       <ShockwaveLayer shockwaves={shockwaves} focusMode={focusMode} />
       {showParksLayer ? <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} showFireflies={showParkFireflies} /> : null}
@@ -8501,6 +8928,7 @@ function SandboxScene({
         clutter={fx.clutter}
       />
       <TrafficParticles particles={trafficRender} focusMode={focusMode} introLifeAlpha={fx.introLifeAlpha} clutter={fx.clutter} />
+      {mode === 'btc' ? <BirdFlocks cityRadius={bounds.radius} sceneMaxY={bounds.maxY} onBirdCountChange={onBirdCountChange} /> : null}
       <HoverProjectionTracker tower={hoveredTower} onHudUpdate={onHoverHudUpdate} />
 
       {/* Render band 6: tower bodies and holo layers remain the top visual anchors */}
@@ -8558,6 +8986,7 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
   const [, setCameraDebug] = useState<CameraDebugSnapshot>({ camDist: 0, visCurve: 0 });
   const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
   const [selectedTowerSequence, setSelectedTowerSequence] = useState<number | null>(null);
+  const [birdCount, setBirdCount] = useState(0);
   const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
   const btcGroundIntroBootAlpha = useBtcGroundIntroBootAlpha();
   const topFx = undefined;
@@ -8566,6 +8995,7 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
     setHoveredTowerSequence(null);
     setSelectedTowerSequence(null);
     setHoverHud(HOVER_HUD_HIDDEN);
+    setBirdCount(0);
   }, [mode]);
 
   useEffect(() => {
@@ -8603,6 +9033,7 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
   return (
     <div className="minimal-viz">
       <SandboxScene
+        mode={mode}
         towers={towers}
         traces={traces}
         arterialTraces={arterialTraces}
@@ -8624,6 +9055,7 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
         onSelectTowerChange={setSelectedTowerSequence}
         onHoverHudUpdate={setHoverHud}
         onCameraDebug={setCameraDebug}
+        onBirdCountChange={setBirdCount}
       />
       <HoverHudOverlay tower={hoveredTower} hud={hoverHud} />
       <div className="minimal-viz__overlay">
@@ -8651,6 +9083,12 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
             <span>Latest Seq</span>
             <span>{overlay.latestSequence}</span>
           </div>
+          {BTC_BIRD_DEBUG_ROW ? (
+            <div className="minimal-viz__row">
+              <span>Birds</span>
+              <span>{birdCount}</span>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

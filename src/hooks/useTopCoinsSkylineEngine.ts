@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { clearTopCoinsStore, publishTopCoinsSnapshot } from '../data/topCoins/topCoinsStore';
+import { publishTopCoinsSnapshot } from '../data/topCoins/topCoinsStore';
 import { TopCoinsDataEngine } from '../data/topCoins/TopCoinsDataEngine';
 
 export function useTopCoinsSkylineEngine(options: { enabled: boolean }) {
@@ -7,11 +7,8 @@ export function useTopCoinsSkylineEngine(options: { enabled: boolean }) {
 
   useEffect(() => {
     if (!enabled) {
-      clearTopCoinsStore();
       return;
     }
-
-    clearTopCoinsStore();
 
     const engine = new TopCoinsDataEngine({
       pollMs: Number(import.meta.env.VITE_TOP_COINS_POLL_MS ?? 60_000),
@@ -27,7 +24,6 @@ export function useTopCoinsSkylineEngine(options: { enabled: boolean }) {
     return () => {
       unsubscribe();
       engine.stop();
-      clearTopCoinsStore();
     };
   }, [enabled]);
 }

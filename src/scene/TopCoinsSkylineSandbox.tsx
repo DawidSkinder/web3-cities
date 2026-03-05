@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Group, InstancedMesh as ThreeInstancedMesh, Mesh, Texture } from 'three';
 import {
   AdditiveBlending,
@@ -12,6 +12,7 @@ import {
   DoubleSide,
   EdgesGeometry,
   LinearFilter,
+  LinearMipmapLinearFilter,
   LineBasicMaterial,
   Matrix4,
   MathUtils,
@@ -786,6 +787,15 @@ function finalizeCanvasTexture(texture: CanvasTexture) {
   texture.colorSpace = SRGBColorSpace;
   texture.minFilter = LinearFilter;
   texture.magFilter = LinearFilter;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function finalizeTopCoinDiscTexture<T extends Texture>(texture: T) {
+  texture.colorSpace = SRGBColorSpace;
+  texture.minFilter = LinearMipmapLinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.generateMipmaps = true;
   texture.needsUpdate = true;
   return texture;
 }
@@ -3060,6 +3070,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
   const updateWaveLoadRef = useRef(0);
   const historyRef = useRef<TopCoinsSnapshot[]>([]);
   const liveSnapshotRef = useRef<TopCoinsSnapshot | null>(null);
+  const deferredDecorativeBuildPendingRef = useRef(false);
   const lastAppliedKeyRef = useRef('');
   const lastTopGainerSymbolRef = useRef('N/A');
   const introRef = useRef({
@@ -3247,6 +3258,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
       introRef.current.active = false;
       introRef.current.awaitingLayer2Start = false;
       introRef.current.firstUsableSnapshotApplied = false;
+      deferredDecorativeBuildPendingRef.current = false;
       introRef.current.startPending = false;
       introRef.current.progress = 0;
       introRef.current.bootAlpha = 0;
@@ -3256,12 +3268,21 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
       return;
     }
 
-    const metadataOnly = !replayEnabled && states.size > 0 && !selected.hashChanged;
+    const shouldDeferDecorativeBuild = !replayEnabled && !layer2Ready && states.size === 0 && selected.items.length > 0;
+    if (shouldDeferDecorativeBuild) {
+      deferredDecorativeBuildPendingRef.current = true;
+    }
+    const forceDecorativeBuild = !replayEnabled && layer2Ready && deferredDecorativeBuildPendingRef.current;
+    if (forceDecorativeBuild) {
+      deferredDecorativeBuildPendingRef.current = false;
+    }
+
+    const metadataOnly = !forceDecorativeBuild && !replayEnabled && states.size > 0 && !selected.hashChanged;
     const applyKey = replayEnabled ? `replay:${replayIndex}:${selected.hash}` : `live:${selected.hash}:${selected.hashChanged ? 1 : 0}`;
-    if (!metadataOnly && lastAppliedKeyRef.current === applyKey) {
+    if (!metadataOnly && !forceDecorativeBuild && lastAppliedKeyRef.current === applyKey) {
       return;
     }
-    if (!metadataOnly) {
+    if (!metadataOnly && !forceDecorativeBuild) {
       lastAppliedKeyRef.current = applyKey;
     }
 
@@ -3564,245 +3585,277 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
         }
       }
 
-      districtsRef.current = [];
-      const traces: TraceDatum[] = [];
-      const arterialTraces: TraceDatum[] = [];
-      const trafficParticles: TrafficParticleDatum[] = [];
-      const arterialTrafficParticles: TrafficParticleDatum[] = [];
-      const dedupe = new Set<string>();
+      const shouldBuildDecorativeNow = forceDecorativeBuild || replayEnabled || layer2Ready;
+      if (!shouldBuildDecorativeNow) {
+        tracesRef.current = [];
+        arterialTracesRef.current = [];
+        trafficRef.current = [];
+        arterialTrafficRef.current = [];
+        parksRef.current = [];
+        parkTreesRef.current = [];
+        districtsRef.current = [];
+        let maxRadius = 18;
+        let maxHeight = 10;
+        for (let i = 0; i < activeStates.length; i++) {
+          const state = activeStates[i];
+          if (!state) continue;
+          maxRadius = Math.max(maxRadius, Math.hypot(state.xTarget, state.zTarget) + 8);
+          maxHeight = Math.max(maxHeight, state.heightTarget + 2.5);
+        }
+        boundsRef.current = { radius: maxRadius, maxY: maxHeight };
+        const totalBreadth = Math.max(1, selected.items.length);
+        const breadthRaw = selected.stats.breadth ?? (selected.stats.marketBreadth.positive - selected.stats.marketBreadth.negative) / totalBreadth;
+        moodTargetRef.current = MathUtils.clamp(0.5 + breadthRaw * 0.5, 0.08, 0.92);
+        volatilityRef.current =
+          selected.items.length > 0
+            ? MathUtils.clamp(
+                selected.items.reduce((acc, item) => acc + Math.abs(item.priceChangePercent), 0) / selected.items.length / 6,
+                0.15,
+                1.2
+              )
+            : 0.2;
+        clutterRef.current = 0;
+      } else {
+        districtsRef.current = [];
+        const traces: TraceDatum[] = [];
+        const arterialTraces: TraceDatum[] = [];
+        const trafficParticles: TrafficParticleDatum[] = [];
+        const arterialTrafficParticles: TrafficParticleDatum[] = [];
+        const dedupe = new Set<string>();
 
-      const pushLink = (a: TopCoinSymbolState, b: TopCoinSymbolState, arterial: boolean, seed: number, force = false) => {
-        const aSeq = Math.min(a.sequence, b.sequence);
-        const bSeq = Math.max(a.sequence, b.sequence);
-        const key = `${aSeq}:${bSeq}:${arterial ? 'A' : 'T'}`;
-        if (dedupe.has(key)) return;
-        dedupe.add(key);
+        const pushLink = (a: TopCoinSymbolState, b: TopCoinSymbolState, arterial: boolean, seed: number, force = false) => {
+          const aSeq = Math.min(a.sequence, b.sequence);
+          const bSeq = Math.max(a.sequence, b.sequence);
+          const key = `${aSeq}:${bSeq}:${arterial ? 'A' : 'T'}`;
+          if (dedupe.has(key)) return;
+          dedupe.add(key);
 
-        const segment = segmentFromPoints(a.xTarget, a.zTarget, b.xTarget, b.zTarget);
-        if (segment.length < 1.2) return;
-        if (!arterial && !force && segment.length > 34) return;
+          const segment = segmentFromPoints(a.xTarget, a.zTarget, b.xTarget, b.zTarget);
+          if (segment.length < 1.2) return;
+          if (!arterial && !force && segment.length > 34) return;
 
-        const avgPct = (a.pctTarget + b.pctTarget) * 0.5;
-        const avgVolNorm = MathUtils.clamp(
-          (Math.log10(a.quoteVolumeTarget + 1) + Math.log10(b.quoteVolumeTarget + 1)) / (2 * Math.log10(maxQuoteVolume + 1)),
+          const avgPct = (a.pctTarget + b.pctTarget) * 0.5;
+          const avgVolNorm = MathUtils.clamp(
+            (Math.log10(a.quoteVolumeTarget + 1) + Math.log10(b.quoteVolumeTarget + 1)) / (2 * Math.log10(maxQuoteVolume + 1)),
+            0,
+            1
+          );
+          const rankFactor = MathUtils.lerp(
+            1.22,
+            0.74,
+            MathUtils.clamp((Math.min(a.rank, b.rank) - 1) / Math.max(1, TOP_COINS_UNIVERSE_LIMIT - 1), 0, 1)
+          );
+
+          const baseWarm = new Color('#f4d8af');
+          const accent = avgPct >= 0 ? new Color('#8dc78b') : new Color('#cc7f77');
+          const glow = avgPct >= 0 ? new Color('#f0bf79') : new Color('#a46f8a');
+          const widthBase = arterial ? 0.12 : 0.08;
+          const width = widthBase + avgVolNorm * (arterial ? 0.08 : 0.05);
+          const trace: TraceDatum = {
+            id: `${arterial ? 'A' : 'T'}-${key}`,
+            aSequence: aSeq,
+            bSequence: bSeq,
+            midX: segment.midX,
+            midZ: segment.midZ,
+            length: Math.max(0.9, segment.length - 0.42),
+            yaw: segment.yaw,
+            y: arterial ? ARTERY_TRACE_BASE_Y + seed * 0.00045 : TRACE_BASE_Y + seed * TRACE_LAYER_STEP_Y,
+            width,
+            glowWidth: width * (arterial ? 3.2 : 2.6),
+            coreColor: `#${baseWarm.clone().lerp(accent, arterial ? 0.42 : 0.3).getHexString()}`,
+            glowColor: `#${TRACE_ORANGE.clone().lerp(glow, arterial ? 0.58 : 0.44).getHexString()}`,
+            isArtery: arterial,
+            scanSeed: hashUnitString(`${a.symbol}:${b.symbol}`, 17)
+          };
+
+          if (arterial) arterialTraces.push(trace);
+          else traces.push(trace);
+
+          const particleCount = Math.min(
+            arterial ? 7 : 5,
+            Math.max(arterial ? 2 : 1, Math.round((1.2 + segment.length / 10) * (0.9 + avgVolNorm * 1.4)))
+          );
+          const dirX = Math.sin(segment.yaw);
+          const dirZ = Math.cos(segment.yaw);
+          const travelLen = Math.max(0.5, trace.length - 0.14);
+          const halfLen = travelLen * 0.5;
+          const ax = segment.midX - dirX * halfLen;
+          const az = segment.midZ - dirZ * halfLen;
+          const bx = segment.midX + dirX * halfLen;
+          const bz = segment.midZ + dirZ * halfLen;
+
+          for (let i = 0; i < particleCount; i++) {
+            const phase = hashUnitString(`${trace.id}:${i}`, 61);
+            const speedMood = MathUtils.lerp(0.86, 1.24, volatilityRef.current);
+            const speed = (0.018 + avgVolNorm * 0.05) * (arterial ? 1.16 : 1) * speedMood * rankFactor;
+            const c = avgPct >= 0 ? '#f0d8aa' : '#d8b8b2';
+            const entry: TrafficParticleDatum = {
+              id: `${trace.id}-P-${i}`,
+              traceId: trace.id,
+              ax,
+              az,
+              bx,
+              bz,
+              yaw: segment.yaw,
+              y: (arterial ? ARTERY_TRAFFIC_BASE_Y : TRAFFIC_SOLID_BASE_Y) + seed * 0.00025,
+              speed,
+              phase,
+              color: c,
+              sizeX: arterial ? 0.12 : 0.09,
+              sizeY: 0.027,
+              sizeZ: arterial ? 0.31 : 0.22,
+              isArtery: arterial
+            };
+            if (arterial) arterialTrafficParticles.push(entry);
+            else trafficParticles.push(entry);
+          }
+        };
+
+        const maxLinkDistance = MathUtils.clamp(layout.cityRadius * 0.44, 28, 54);
+        const desiredLinksBase = RUNTIME_QUALITY_CONFIG.tier === 'low' ? 2 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 3 : 5;
+
+        for (let i = 0; i < activeStates.length; i++) {
+          const origin = activeStates[i];
+          const neighbors = activeStates
+            .filter((other) => other.sequence !== origin.sequence)
+            .map((other) => ({
+              other,
+              dist: Math.hypot(other.xTarget - origin.xTarget, other.zTarget - origin.zTarget)
+            }))
+            .sort((a, b) => a.dist - b.dist);
+          if (neighbors.length === 0) continue;
+          pushLink(origin, neighbors[0].other, false, i + 1, true);
+          let added = 1;
+          const desiredLinks = origin.rank <= 24 ? desiredLinksBase + 1 : desiredLinksBase;
+          for (let n = 1; n < neighbors.length && added < desiredLinks; n++) {
+            if (neighbors[n].dist > maxLinkDistance) continue;
+            pushLink(origin, neighbors[n].other, false, i * 11 + n);
+            added += 1;
+          }
+          for (let n = 1; n < neighbors.length && added < 2; n++) {
+            pushLink(origin, neighbors[n].other, false, i * 17 + n, true);
+            added += 1;
+          }
+        }
+
+        const topTen = activeStates.slice(0, Math.min(10, activeStates.length));
+        for (let i = 0; i < topTen.length; i++) {
+          const a = topTen[i];
+          const b = topTen[(i + 1) % topTen.length];
+          if (a && b && a.sequence !== b.sequence) {
+            pushLink(a, b, true, 8100 + i, true);
+          }
+          const c = topTen[(i + 2) % topTen.length];
+          if (a && c && a.sequence !== c.sequence && i < topTen.length - 2) {
+            pushLink(a, c, true, 8200 + i, true);
+          }
+        }
+
+        const globalLeader = activeStates[0] ?? null;
+        const topGainerHub = activeStates.find((state) => state.symbol === topGainerSymbol) ?? null;
+        const topLoserHub = activeStates.find((state) => state.symbol === topLoserSymbol) ?? null;
+        const topVolumeHub = activeStates.find((state) => state.symbol === topVolumeSymbol) ?? null;
+        const arterialHubs = [globalLeader, topGainerHub, topVolumeHub, topLoserHub].filter(
+          (state, idx, arr): state is TopCoinSymbolState => Boolean(state) && arr.findIndex((s) => s?.sequence === state?.sequence) === idx
+        );
+        const arterialTargetPool = activeStates.slice(0, Math.min(40, activeStates.length));
+        for (let h = 0; h < arterialHubs.length; h++) {
+          const hub = arterialHubs[h];
+          const candidates = arterialTargetPool
+            .filter((candidate) => candidate.sequence !== hub.sequence)
+            .map((candidate) => ({
+              candidate,
+              dist: Math.hypot(candidate.xTarget - hub.xTarget, candidate.zTarget - hub.zTarget)
+            }))
+            .sort((a, b) => a.dist - b.dist);
+          const arterialLinks = Math.min(6, candidates.length);
+          for (let i = 0; i < arterialLinks; i++) {
+            pushLink(hub, candidates[i]!.candidate, true, h * 19 + i + 1, true);
+          }
+        }
+
+        // Keep Top Coins ground scaling aligned with BTC mode:
+        // derive bounds directly from active tower positions with a fixed margin.
+        let maxRadius = 18;
+        let maxHeight = 10;
+        for (let i = 0; i < activeStates.length; i++) {
+          const state = activeStates[i];
+          if (!state) continue;
+          maxRadius = Math.max(maxRadius, Math.hypot(state.xTarget, state.zTarget) + 8);
+          maxHeight = Math.max(maxHeight, state.heightTarget + 2.5);
+        }
+        boundsRef.current = { radius: maxRadius, maxY: maxHeight };
+
+        const parkTowerTargets: TopCoinsParkTower[] = [];
+        for (const item of selected.items) {
+          const state = states.get(item.symbol);
+          if (!state) continue;
+          const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.baseTarget, 0, 1));
+          const baseScale = topCoinBaseScale({
+            pct: state.pctTarget,
+            rank: state.rank,
+            sizeScore: state.baseTarget,
+            isTopGainer: state.isTopGainer,
+            isTopLoser: state.isTopLoser,
+            isTopVolume: state.isTopVolume
+          });
+          const baseW = MathUtils.clamp(shape.baseW * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
+          const baseD = MathUtils.clamp(shape.baseD * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
+          parkTowerTargets.push({
+            sequence: state.sequence,
+            x: state.xTarget,
+            z: state.zTarget,
+            height: state.heightTarget,
+            baseW,
+            baseD,
+            footprintX: MathUtils.clamp(baseW * 0.98, 0.8, 5.7),
+            footprintZ: MathUtils.clamp(baseD * 0.98, 0.8, 5.7)
+          });
+        }
+        const decorativeParks = buildTopCoinsDecorativeParks({
+          towers: parkTowerTargets,
+          cityRadius: boundsRef.current.radius,
+          traces,
+          arterialTraces
+        });
+        const filteredTraceIds = new Set<string>();
+        for (let i = 0; i < decorativeParks.traces.length; i++) {
+          const trace = decorativeParks.traces[i];
+          if (trace) filteredTraceIds.add(trace.id);
+        }
+        const filteredArterialTraceIds = new Set<string>();
+        for (let i = 0; i < decorativeParks.arterialTraces.length; i++) {
+          const trace = decorativeParks.arterialTraces[i];
+          if (trace) filteredArterialTraceIds.add(trace.id);
+        }
+        const filteredTraffic = trafficParticles.filter((particle) => filteredTraceIds.has(particle.traceId));
+        const filteredArterialTraffic = arterialTrafficParticles.filter((particle) =>
+          filteredArterialTraceIds.has(particle.traceId)
+        );
+        tracesRef.current = decorativeParks.traces;
+        arterialTracesRef.current = decorativeParks.arterialTraces;
+        trafficRef.current = filteredTraffic;
+        arterialTrafficRef.current = filteredArterialTraffic;
+        parksRef.current = decorativeParks.parks;
+        parkTreesRef.current = decorativeParks.trees;
+
+        const totalBreadth = Math.max(1, selected.items.length);
+        const breadthRaw = selected.stats.breadth ?? (selected.stats.marketBreadth.positive - selected.stats.marketBreadth.negative) / totalBreadth;
+        moodTargetRef.current = MathUtils.clamp(0.5 + breadthRaw * 0.5, 0.08, 0.92);
+        volatilityRef.current =
+          selected.items.length > 0
+            ? MathUtils.clamp(
+                selected.items.reduce((acc, item) => acc + Math.abs(item.priceChangePercent), 0) / selected.items.length / 6,
+                0.15,
+                1.2
+              )
+            : 0.2;
+        clutterRef.current = MathUtils.clamp(
+          (decorativeParks.traces.length * 0.65 + filteredTraffic.length * 0.2 + selected.items.length) / 360,
           0,
           1
         );
-        const rankFactor = MathUtils.lerp(
-          1.22,
-          0.74,
-          MathUtils.clamp((Math.min(a.rank, b.rank) - 1) / Math.max(1, TOP_COINS_UNIVERSE_LIMIT - 1), 0, 1)
-        );
-
-        const baseWarm = new Color('#f4d8af');
-        const accent = avgPct >= 0 ? new Color('#8dc78b') : new Color('#cc7f77');
-        const glow = avgPct >= 0 ? new Color('#f0bf79') : new Color('#a46f8a');
-        const widthBase = arterial ? 0.12 : 0.08;
-        const width = widthBase + avgVolNorm * (arterial ? 0.08 : 0.05);
-        const trace: TraceDatum = {
-          id: `${arterial ? 'A' : 'T'}-${key}`,
-          aSequence: aSeq,
-          bSequence: bSeq,
-          midX: segment.midX,
-          midZ: segment.midZ,
-          length: Math.max(0.9, segment.length - 0.42),
-          yaw: segment.yaw,
-          y: arterial ? ARTERY_TRACE_BASE_Y + seed * 0.00045 : TRACE_BASE_Y + seed * TRACE_LAYER_STEP_Y,
-          width,
-          glowWidth: width * (arterial ? 3.2 : 2.6),
-          coreColor: `#${baseWarm.clone().lerp(accent, arterial ? 0.42 : 0.3).getHexString()}`,
-          glowColor: `#${TRACE_ORANGE.clone().lerp(glow, arterial ? 0.58 : 0.44).getHexString()}`,
-          isArtery: arterial,
-          scanSeed: hashUnitString(`${a.symbol}:${b.symbol}`, 17)
-        };
-
-        if (arterial) arterialTraces.push(trace);
-        else traces.push(trace);
-
-        const particleCount = Math.min(
-          arterial ? 7 : 5,
-          Math.max(arterial ? 2 : 1, Math.round((1.2 + segment.length / 10) * (0.9 + avgVolNorm * 1.4)))
-        );
-        const dirX = Math.sin(segment.yaw);
-        const dirZ = Math.cos(segment.yaw);
-        const travelLen = Math.max(0.5, trace.length - 0.14);
-        const halfLen = travelLen * 0.5;
-        const ax = segment.midX - dirX * halfLen;
-        const az = segment.midZ - dirZ * halfLen;
-        const bx = segment.midX + dirX * halfLen;
-        const bz = segment.midZ + dirZ * halfLen;
-
-        for (let i = 0; i < particleCount; i++) {
-          const phase = hashUnitString(`${trace.id}:${i}`, 61);
-          const speedMood = MathUtils.lerp(0.86, 1.24, volatilityRef.current);
-          const speed = (0.018 + avgVolNorm * 0.05) * (arterial ? 1.16 : 1) * speedMood * rankFactor;
-          const c = avgPct >= 0 ? '#f0d8aa' : '#d8b8b2';
-          const entry: TrafficParticleDatum = {
-            id: `${trace.id}-P-${i}`,
-            traceId: trace.id,
-            ax,
-            az,
-            bx,
-            bz,
-            yaw: segment.yaw,
-            y: (arterial ? ARTERY_TRAFFIC_BASE_Y : TRAFFIC_SOLID_BASE_Y) + seed * 0.00025,
-            speed,
-            phase,
-            color: c,
-            sizeX: arterial ? 0.12 : 0.09,
-            sizeY: 0.027,
-            sizeZ: arterial ? 0.31 : 0.22,
-            isArtery: arterial
-          };
-          if (arterial) arterialTrafficParticles.push(entry);
-          else trafficParticles.push(entry);
-        }
-      };
-
-      const maxLinkDistance = MathUtils.clamp(layout.cityRadius * 0.44, 28, 54);
-      const desiredLinksBase = RUNTIME_QUALITY_CONFIG.tier === 'low' ? 2 : RUNTIME_QUALITY_CONFIG.tier === 'medium' ? 3 : 5;
-
-      for (let i = 0; i < activeStates.length; i++) {
-        const origin = activeStates[i];
-        const neighbors = activeStates
-          .filter((other) => other.sequence !== origin.sequence)
-          .map((other) => ({
-            other,
-            dist: Math.hypot(other.xTarget - origin.xTarget, other.zTarget - origin.zTarget)
-          }))
-          .sort((a, b) => a.dist - b.dist);
-        if (neighbors.length === 0) continue;
-        pushLink(origin, neighbors[0].other, false, i + 1, true);
-        let added = 1;
-        const desiredLinks = origin.rank <= 24 ? desiredLinksBase + 1 : desiredLinksBase;
-        for (let n = 1; n < neighbors.length && added < desiredLinks; n++) {
-          if (neighbors[n].dist > maxLinkDistance) continue;
-          pushLink(origin, neighbors[n].other, false, i * 11 + n);
-          added += 1;
-        }
-        for (let n = 1; n < neighbors.length && added < 2; n++) {
-          pushLink(origin, neighbors[n].other, false, i * 17 + n, true);
-          added += 1;
-        }
       }
-
-      const topTen = activeStates.slice(0, Math.min(10, activeStates.length));
-      for (let i = 0; i < topTen.length; i++) {
-        const a = topTen[i];
-        const b = topTen[(i + 1) % topTen.length];
-        if (a && b && a.sequence !== b.sequence) {
-          pushLink(a, b, true, 8100 + i, true);
-        }
-        const c = topTen[(i + 2) % topTen.length];
-        if (a && c && a.sequence !== c.sequence && i < topTen.length - 2) {
-          pushLink(a, c, true, 8200 + i, true);
-        }
-      }
-
-      const globalLeader = activeStates[0] ?? null;
-      const topGainerHub = activeStates.find((state) => state.symbol === topGainerSymbol) ?? null;
-      const topLoserHub = activeStates.find((state) => state.symbol === topLoserSymbol) ?? null;
-      const topVolumeHub = activeStates.find((state) => state.symbol === topVolumeSymbol) ?? null;
-      const arterialHubs = [globalLeader, topGainerHub, topVolumeHub, topLoserHub].filter(
-        (state, idx, arr): state is TopCoinSymbolState => Boolean(state) && arr.findIndex((s) => s?.sequence === state?.sequence) === idx
-      );
-      const arterialTargetPool = activeStates.slice(0, Math.min(40, activeStates.length));
-      for (let h = 0; h < arterialHubs.length; h++) {
-        const hub = arterialHubs[h];
-        const candidates = arterialTargetPool
-          .filter((candidate) => candidate.sequence !== hub.sequence)
-          .map((candidate) => ({
-            candidate,
-            dist: Math.hypot(candidate.xTarget - hub.xTarget, candidate.zTarget - hub.zTarget)
-          }))
-          .sort((a, b) => a.dist - b.dist);
-        const arterialLinks = Math.min(6, candidates.length);
-        for (let i = 0; i < arterialLinks; i++) {
-          pushLink(hub, candidates[i]!.candidate, true, h * 19 + i + 1, true);
-        }
-      }
-
-      // Keep Top Coins ground scaling aligned with BTC mode:
-      // derive bounds directly from active tower positions with a fixed margin.
-      let maxRadius = 18;
-      let maxHeight = 10;
-      for (let i = 0; i < activeStates.length; i++) {
-        const state = activeStates[i];
-        if (!state) continue;
-        maxRadius = Math.max(maxRadius, Math.hypot(state.xTarget, state.zTarget) + 8);
-        maxHeight = Math.max(maxHeight, state.heightTarget + 2.5);
-      }
-      boundsRef.current = { radius: maxRadius, maxY: maxHeight };
-
-      const parkTowerTargets: TopCoinsParkTower[] = [];
-      for (const item of selected.items) {
-        const state = states.get(item.symbol);
-        if (!state) continue;
-        const shape = buildTowerShapeParams(state.sequence, MathUtils.clamp(state.baseTarget, 0, 1));
-        const baseScale = topCoinBaseScale({
-          pct: state.pctTarget,
-          rank: state.rank,
-          sizeScore: state.baseTarget,
-          isTopGainer: state.isTopGainer,
-          isTopLoser: state.isTopLoser,
-          isTopVolume: state.isTopVolume
-        });
-        const baseW = MathUtils.clamp(shape.baseW * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
-        const baseD = MathUtils.clamp(shape.baseD * baseScale, MIN_BASE * 0.95, MAX_BASE * 1.95);
-        parkTowerTargets.push({
-          sequence: state.sequence,
-          x: state.xTarget,
-          z: state.zTarget,
-          height: state.heightTarget,
-          baseW,
-          baseD,
-          footprintX: MathUtils.clamp(baseW * 0.98, 0.8, 5.7),
-          footprintZ: MathUtils.clamp(baseD * 0.98, 0.8, 5.7)
-        });
-      }
-      const decorativeParks = buildTopCoinsDecorativeParks({
-        towers: parkTowerTargets,
-        cityRadius: boundsRef.current.radius,
-        traces,
-        arterialTraces
-      });
-      const filteredTraceIds = new Set<string>();
-      for (let i = 0; i < decorativeParks.traces.length; i++) {
-        const trace = decorativeParks.traces[i];
-        if (trace) filteredTraceIds.add(trace.id);
-      }
-      const filteredArterialTraceIds = new Set<string>();
-      for (let i = 0; i < decorativeParks.arterialTraces.length; i++) {
-        const trace = decorativeParks.arterialTraces[i];
-        if (trace) filteredArterialTraceIds.add(trace.id);
-      }
-      const filteredTraffic = trafficParticles.filter((particle) => filteredTraceIds.has(particle.traceId));
-      const filteredArterialTraffic = arterialTrafficParticles.filter((particle) =>
-        filteredArterialTraceIds.has(particle.traceId)
-      );
-      tracesRef.current = decorativeParks.traces;
-      arterialTracesRef.current = decorativeParks.arterialTraces;
-      trafficRef.current = filteredTraffic;
-      arterialTrafficRef.current = filteredArterialTraffic;
-      parksRef.current = decorativeParks.parks;
-      parkTreesRef.current = decorativeParks.trees;
-
-      const totalBreadth = Math.max(1, selected.items.length);
-      const breadthRaw = selected.stats.breadth ?? (selected.stats.marketBreadth.positive - selected.stats.marketBreadth.negative) / totalBreadth;
-      moodTargetRef.current = MathUtils.clamp(0.5 + breadthRaw * 0.5, 0.08, 0.92);
-      volatilityRef.current =
-        selected.items.length > 0
-          ? MathUtils.clamp(
-              selected.items.reduce((acc, item) => acc + Math.abs(item.priceChangePercent), 0) / selected.items.length / 6,
-              0.15,
-              1.2
-            )
-          : 0.2;
-      clutterRef.current = MathUtils.clamp(
-        (decorativeParks.traces.length * 0.65 + filteredTraffic.length * 0.2 + selected.items.length) / 360,
-        0,
-        1
-      );
     }
 
     const meta = liveSnapshotRef.current ?? selected;
@@ -4207,6 +4260,50 @@ function MinimalOrbitRig({
   const keysRef = useRef<Record<string, boolean>>({});
   const dragRef = useRef({ dragging: false, pointerId: -1, lastX: 0, lastY: 0 });
   const debugEmitAtRef = useRef(0);
+
+  useLayoutEffect(() => {
+    if (initializedRef.current) return;
+
+    const radius = Math.max(18, bounds.radius);
+    const maxY = Math.max(8, bounds.maxY);
+    const autoAngle = 0;
+    const autoDistance = MathUtils.clamp(18 + radius * 1.65 + maxY * 0.55, 24, 170);
+    const autoElevation = MathUtils.clamp(8 + maxY * 0.9 + radius * 0.22, 10, 72);
+    const autoLookY = MathUtils.clamp(1.5 + maxY * 0.45, 2, 30);
+
+    const auto = autoRef.current;
+    auto.angle = autoAngle;
+    auto.distance = autoDistance;
+    auto.elevation = autoElevation;
+    auto.lookY = autoLookY;
+
+    const control = controlRef.current;
+    control.angle = autoAngle;
+    control.distance = autoDistance;
+    control.elevation = autoElevation;
+    control.lookY = autoLookY;
+
+    const actual = actualRef.current;
+    actual.angle = autoAngle;
+    actual.distance = autoDistance;
+    actual.elevation = autoElevation;
+    actual.lookY = autoLookY;
+
+    centerActualRef.current.x = 0;
+    centerActualRef.current.z = 0;
+    centerTargetRef.current.x = 0;
+    centerTargetRef.current.z = 0;
+
+    tempDir.set(Math.sin(autoAngle), 0, Math.cos(autoAngle));
+    desiredPosition.copy(tempDir).multiplyScalar(autoDistance);
+    desiredPosition.y = autoElevation;
+    desiredTarget.set(0, autoLookY, 0);
+    smoothPosition.copy(desiredPosition);
+    smoothTarget.copy(desiredTarget);
+    camera.position.copy(smoothPosition);
+    camera.lookAt(smoothTarget);
+    initializedRef.current = true;
+  }, [bounds.maxY, bounds.radius, camera]);
 
   useEffect(() => {
     const canvas = gl.domElement;
@@ -4906,7 +5003,7 @@ function getTopCoinTickerTexture(ticker: string) {
   canvas.height = 1024;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
-    const fallback = finalizeCanvasTexture(new CanvasTexture(canvas));
+    const fallback = finalizeTopCoinDiscTexture(finalizeCanvasTexture(new CanvasTexture(canvas)));
     topCoinTickerTextureCache.set(key, fallback);
     return fallback;
   }
@@ -4949,8 +5046,7 @@ function getTopCoinTickerTexture(ticker: string) {
   ctx.shadowBlur = 0;
   ctx.fillText(label, center, center);
 
-  const texture = finalizeCanvasTexture(new CanvasTexture(canvas));
-  texture.generateMipmaps = false;
+  const texture = finalizeTopCoinDiscTexture(finalizeCanvasTexture(new CanvasTexture(canvas)));
   topCoinTickerTextureCache.set(key, texture);
   return texture;
 }
@@ -4972,10 +5068,7 @@ function loadTopCoinLogoTexture(logoPath: string) {
     topCoinLogoLoader.load(
       url,
       (texture) => {
-        texture.colorSpace = SRGBColorSpace;
-        texture.minFilter = LinearFilter;
-        texture.magFilter = LinearFilter;
-        texture.needsUpdate = true;
+        finalizeTopCoinDiscTexture(texture);
         topCoinLogoTextureCache.set(logoPath, texture);
         topCoinLogoTextureInflight.delete(logoPath);
         resolve(texture);
@@ -6377,7 +6470,12 @@ function CircuitBoardGround({
   const glowMeshRef = useRef<Mesh>(null);
   const slabRef = useRef<Mesh>(null);
   const deckRef = useRef<Mesh>(null);
-  const initialIntroBoot = MathUtils.clamp(introBootAlpha, 0, 1);
+  const introBootStartAtRef = useRef(performance.now());
+  const initialIntroBootFromClock =
+    BTC_GROUND_BOOT_MS <= 0
+      ? 1
+      : MathUtils.clamp((performance.now() - introBootStartAtRef.current) / BTC_GROUND_BOOT_MS, 0, 1);
+  const initialIntroBoot = Math.max(MathUtils.clamp(introBootAlpha, 0, 1), initialIntroBootFromClock);
   const initialIntroScale = MathUtils.lerp(BTC_GROUND_BOOT_START_SCALE, 1, easeOutCubic(initialIntroBoot));
   const graphicsGroupRef = useRef<Group>(null);
   const smoothGlowRadiusRef = useRef(targetGlowRadius);
@@ -6422,7 +6520,11 @@ function CircuitBoardGround({
   }, [glowGeometry, glowMaterial]);
 
   useFrame((_, delta) => {
-    const introBoot = MathUtils.clamp(introBootAlpha, 0, 1);
+    const introBootFromClock =
+      BTC_GROUND_BOOT_MS <= 0
+        ? 1
+        : MathUtils.clamp((performance.now() - introBootStartAtRef.current) / BTC_GROUND_BOOT_MS, 0, 1);
+    const introBoot = Math.max(MathUtils.clamp(introBootAlpha, 0, 1), introBootFromClock);
     const introVisual = MathUtils.lerp(0.62, 1, introBoot);
     const introScaleTarget = MathUtils.lerp(BTC_GROUND_BOOT_START_SCALE, 1, easeOutCubic(introBoot));
     introScaleRef.current = MathUtils.damp(introScaleRef.current, introScaleTarget, 9, delta);
@@ -8032,40 +8134,42 @@ function FakeVignettePlane() {
   );
 }
 
-function useTopGroundIntroBootAlpha() {
+function useTopGroundIntroBoot() {
   const startAtRef = useRef(performance.now());
-  const [alpha, setAlpha] = useState(() => (BTC_GROUND_BOOT_MS <= 0 ? 1 : 0.18));
+  const [layer2Ready, setLayer2Ready] = useState(() => BTC_GROUND_BOOT_MS <= 0);
 
   useEffect(() => {
     if (BTC_GROUND_BOOT_MS <= 0) {
-      setAlpha(1);
+      setLayer2Ready(true);
       return;
     }
-
-    let raf = 0;
     const startAt = startAtRef.current;
-
-    const tick = (now: number) => {
-      const t = MathUtils.clamp((now - startAt) / BTC_GROUND_BOOT_MS, 0, 1);
-      const next = easeOutCubic(t);
-      setAlpha((prev) => (Math.abs(prev - next) > 0.001 ? next : prev));
-      if (t < 1) {
-        raf = window.requestAnimationFrame(tick);
-      }
-    };
-
     const now = performance.now();
-    const initialT = MathUtils.clamp((now - startAt) / BTC_GROUND_BOOT_MS, 0, 1);
-    const initialAlpha = Math.max(0.18, easeOutCubic(initialT));
-    setAlpha(initialAlpha);
-    raf = window.requestAnimationFrame(tick);
+    const elapsed = Math.max(0, now - startAt);
+    if (elapsed >= BTC_GROUND_BOOT_MS) {
+      setLayer2Ready(true);
+      return;
+    }
+    const leftMs = Math.max(0, BTC_GROUND_BOOT_MS - elapsed);
+    const timer = window.setTimeout(() => {
+      setLayer2Ready(true);
+    }, leftMs);
 
     return () => {
-      window.cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
     };
   }, []);
 
-  return alpha;
+  const initialT =
+    BTC_GROUND_BOOT_MS <= 0
+      ? 1
+      : MathUtils.clamp((performance.now() - startAtRef.current) / BTC_GROUND_BOOT_MS, 0, 1);
+  const introBootAlpha = BTC_GROUND_BOOT_MS <= 0 ? 1 : Math.max(0.18, easeOutCubic(initialT));
+
+  return {
+    introBootAlpha,
+    layer2Ready
+  };
 }
 
 function MarketMoodLightRig({ mood = 0.5 }: { mood?: number }) {
@@ -8413,8 +8517,7 @@ function SandboxScene({
 export function TopCoinsSkylineSandbox({ onModeChange }: { onModeChange?: (nextMode: CityMode) => void }) {
   const mode: CityMode = 'top200';
   const { latest: topSnapshot } = useTopCoinsStore();
-  const topGroundIntroBootAlpha = useTopGroundIntroBootAlpha();
-  const topLayer2Ready = topGroundIntroBootAlpha >= 0.999;
+  const { introBootAlpha: topGroundIntroBootAlpha, layer2Ready: topLayer2Ready } = useTopGroundIntroBoot();
   const topData = useTopCoinsSkyline(topSnapshot, topLayer2Ready);
   const active = topData;
   const {
