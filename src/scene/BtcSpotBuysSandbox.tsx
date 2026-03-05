@@ -539,9 +539,11 @@ const BTC_MOUNTAIN_LAYER_FAR_COUNT = 32;
 const BTC_MOUNTAIN_LAYER_MID_COUNT = 24;
 const BTC_MOUNTAIN_LAYER_PEAK_COUNT = 12;
 const BTC_MOUNTAIN_RING_MULT = 3.0;
-const BTC_MOUNTAIN_RING_MIN = 220;
+const BTC_MOUNTAIN_RING_MIN = 180;
+const BTC_MOUNTAIN_RING_MAX = 320;
 const BTC_MOUNTAIN_METRIC_UPDATE_MS = 1000;
 const BTC_MOUNTAIN_RENDER_ORDER = -5;
+const BTC_BIRD_START_TOWER_COUNT = 6;
 const BTC_BIRD_MIN_COUNT = 6;
 const BTC_BIRD_MAX_COUNT = 60;
 const BTC_BIRD_BASE_COUNT = 6;
@@ -8163,8 +8165,14 @@ function MountainsBackdrop({
   const peakGroupRef = useRef<Group>(null);
   const cityRadiusRef = useRef(cityRadius);
   const cityScaleMetricRef = useRef(cityScaleMetric);
-  const targetRingRef = useRef(Math.max(cityRadius * BTC_MOUNTAIN_RING_MULT, BTC_MOUNTAIN_RING_MIN));
-  const targetScaleRef = useRef(Math.max(18, cityScaleMetric * 4.4 + cityRadius * 0.18));
+  const targetRingRef = useRef(
+    MathUtils.clamp(
+      Math.max(cityRadius * BTC_MOUNTAIN_RING_MULT, BTC_MOUNTAIN_RING_MIN),
+      BTC_MOUNTAIN_RING_MIN,
+      BTC_MOUNTAIN_RING_MAX
+    )
+  );
+  const targetScaleRef = useRef(MathUtils.clamp(cityScaleMetric * 5.8 + cityRadius * 0.28, 32, 130));
   const smoothRingRef = useRef(targetRingRef.current);
   const smoothScaleRef = useRef(targetScaleRef.current);
   const lastAppliedRingRef = useRef(-1);
@@ -8193,11 +8201,15 @@ function MountainsBackdrop({
 
   useEffect(() => {
     const updateTargets = () => {
-      const nextRing = Math.max(cityRadiusRef.current * BTC_MOUNTAIN_RING_MULT, BTC_MOUNTAIN_RING_MIN);
-      const scaleFromRadius = cityRadiusRef.current * 0.2;
-      const scaleFromHeights = cityScaleMetricRef.current * 4.6;
+      const nextRing = MathUtils.clamp(
+        Math.max(cityRadiusRef.current * BTC_MOUNTAIN_RING_MULT, BTC_MOUNTAIN_RING_MIN),
+        BTC_MOUNTAIN_RING_MIN,
+        BTC_MOUNTAIN_RING_MAX
+      );
+      const scaleFromRadius = cityRadiusRef.current * 0.28;
+      const scaleFromHeights = cityScaleMetricRef.current * 5.8;
       targetRingRef.current = nextRing;
-      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 22, 92);
+      targetScaleRef.current = MathUtils.clamp(scaleFromRadius + scaleFromHeights, 32, 130);
     };
     updateTargets();
     const timer = window.setInterval(updateTargets, BTC_MOUNTAIN_METRIC_UPDATE_MS);
@@ -8252,9 +8264,9 @@ function MountainsBackdrop({
     lastAppliedRingRef.current = ring;
     lastAppliedScaleRef.current = scale;
 
-    applyLayer(farRef.current, farUnits, ring * 1.0, scale * 1.16, GROUND_DECK_Y - 2.6);
-    applyLayer(midRef.current, midUnits, ring * 0.82, scale * 0.9, GROUND_DECK_Y - 1.9);
-    applyLayer(peakRef.current, peakUnits, ring * 1.18, scale * 0.66, GROUND_DECK_Y - 3.4);
+    applyLayer(farRef.current, farUnits, ring * 1.0, scale * 1.2, GROUND_DECK_Y - 1.25);
+    applyLayer(midRef.current, midUnits, ring * 0.84, scale * 0.96, GROUND_DECK_Y - 0.95);
+    applyLayer(peakRef.current, peakUnits, ring * 1.16, scale * 0.72, GROUND_DECK_Y - 1.55);
   });
 
   return (
@@ -8262,28 +8274,28 @@ function MountainsBackdrop({
       <group ref={farGroupRef} renderOrder={BTC_MOUNTAIN_RENDER_ORDER}>
         <instancedMesh ref={farRef} args={[geometry, undefined, BTC_MOUNTAIN_LAYER_FAR_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER}>
           <meshStandardMaterial
-            color="#080b10"
-            emissive="#4e3a27"
-            emissiveIntensity={0.032}
+            color="#141a24"
+            emissive="#5f442c"
+            emissiveIntensity={0.08}
             roughness={0.98}
             metalness={0.02}
             flatShading
             transparent
-            opacity={0.88}
+            opacity={0.94}
           />
         </instancedMesh>
       </group>
       <group ref={midGroupRef} renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.01}>
         <instancedMesh ref={midRef} args={[geometry, undefined, BTC_MOUNTAIN_LAYER_MID_COUNT]} frustumCulled={false} renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.01}>
           <meshStandardMaterial
-            color="#0a0e14"
-            emissive="#5b432c"
-            emissiveIntensity={0.04}
+            color="#1a2230"
+            emissive="#6c4f33"
+            emissiveIntensity={0.094}
             roughness={0.97}
             metalness={0.03}
             flatShading
             transparent
-            opacity={0.92}
+            opacity={0.96}
           />
         </instancedMesh>
       </group>
@@ -8292,7 +8304,7 @@ function MountainsBackdrop({
           <meshBasicMaterial
             color="#f0bc82"
             transparent
-            opacity={0.035}
+            opacity={0.055}
             toneMapped={false}
             depthWrite={false}
             depthTest
@@ -8416,11 +8428,15 @@ function BirdFlock({
     orbitMinRef.current = orbitMin;
     orbitMaxRef.current = orbitMax;
 
-    targetCountRef.current = MathUtils.clamp(
-      Math.floor(BTC_BIRD_BASE_COUNT + BTC_BIRD_GROWTH_BY_SQRT_TOWERS * Math.sqrt(Math.max(0, towerCount))),
-      BTC_BIRD_MIN_COUNT,
-      BTC_BIRD_MAX_COUNT
-    );
+    if (towerCount < BTC_BIRD_START_TOWER_COUNT) {
+      targetCountRef.current = 0;
+    } else {
+      targetCountRef.current = MathUtils.clamp(
+        Math.floor(BTC_BIRD_BASE_COUNT + BTC_BIRD_GROWTH_BY_SQRT_TOWERS * Math.sqrt(Math.max(0, towerCount))),
+        BTC_BIRD_MIN_COUNT,
+        BTC_BIRD_MAX_COUNT
+      );
+    }
 
     ensureColumnCapacity(towerCount);
     const cols = columnsRef.current;
@@ -8487,10 +8503,7 @@ function BirdFlock({
 
   useEffect(() => {
     recomputeMetrics();
-    activeCountRef.current = BTC_BIRD_MIN_COUNT;
-    for (let i = 0; i < activeCountRef.current; i++) {
-      reseedBird(i, performance.now());
-    }
+    activeCountRef.current = 0;
     reportedCountRef.current = -1;
     onBirdCountChange?.(activeCountRef.current);
     const timer = window.setInterval(recomputeMetrics, BTC_BIRD_METRIC_UPDATE_MS);
@@ -8506,6 +8519,7 @@ function BirdFlock({
     const nowMs = performance.now();
     const nowSec = clock.getElapsedTime();
     const targetCount = targetCountRef.current;
+    const minActiveCount = targetCount > 0 ? BTC_BIRD_MIN_COUNT : 0;
     adjustBudgetRef.current += delta * BTC_BIRD_COUNT_ADJUST_PER_SEC;
     while (adjustBudgetRef.current >= 1) {
       if (activeCountRef.current < targetCount) {
@@ -8514,7 +8528,7 @@ function BirdFlock({
         adjustBudgetRef.current -= 1;
         continue;
       }
-      if (activeCountRef.current > targetCount && activeCountRef.current > BTC_BIRD_MIN_COUNT) {
+      if (activeCountRef.current > targetCount && activeCountRef.current > minActiveCount) {
         activeCountRef.current -= 1;
         adjustBudgetRef.current -= 1;
         continue;
