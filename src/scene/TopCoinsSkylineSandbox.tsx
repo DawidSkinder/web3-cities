@@ -3314,6 +3314,69 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
       return;
     }
 
+    const shouldHoldLayer2 = !replayEnabled && !layer2Ready && states.size === 0 && selected.items.length > 0;
+    if (shouldHoldLayer2) {
+      tracesRef.current = [];
+      arterialTracesRef.current = [];
+      trafficRef.current = [];
+      arterialTrafficRef.current = [];
+      parksRef.current = [];
+      parkTreesRef.current = [];
+      districtsRef.current = [];
+      boundsRef.current = { radius: 36, maxY: 42 };
+      moodTargetRef.current = 0.5;
+      volatilityRef.current = 0.25;
+      clutterRef.current = 0;
+
+      const meta = liveSnapshotRef.current ?? selected;
+      const asOfMs = meta.asOf;
+      const pollSec = Math.max(1, Math.floor((meta.debug.pollMs || 60_000) / 1000));
+      const nowDebug = Date.now();
+      const asOfAgeSec = asOfMs > 0 ? Math.max(0, (nowDebug - asOfMs) / 1000) : 0;
+      const nextUpdateInSec = Math.max(0, (meta.debug.nextUpdateAt - nowDebug) / 1000);
+      debugRef.current = {
+        ...debugRef.current,
+        snapshotSeq: meta.sequence,
+        asOfMs,
+        asOfIso: meta.asOfIso || (asOfMs > 0 ? new Date(asOfMs).toISOString() : ''),
+        asOfAgeSec,
+        asOfAgeLabel: fmtAgeFriendly(asOfAgeSec),
+        staleData: asOfAgeSec > pollSec * 2,
+        symbols: meta.debug.symbols,
+        fetchedAt: meta.debug.fetchedAt,
+        lastFetchAt: meta.debug.lastFetchAt,
+        lastSuccessAt: meta.debug.lastSuccessAt,
+        pollSec,
+        nextUpdateAtMs: meta.debug.nextUpdateAt,
+        nextUpdateInSec,
+        nextUpdateInLabel: fmtMmSs(nextUpdateInSec),
+        lastHash: meta.debug.lastHash,
+        hashChanged: meta.debug.hashChanged,
+        refreshAgeSec: meta.debug.refreshAgeSec,
+        lastError: meta.debug.lastError,
+        lastFetchOk: meta.debug.lastFetchOk,
+        logosMissing: meta.debug.logosMissing,
+        logosAttempted: meta.debug.logosAttempted,
+        logosDownloaded: meta.debug.logosDownloaded,
+        introActive: false,
+        introBootAlpha: 0,
+        introLifeAlpha: 0,
+        introProgress: 0,
+        clutter: 0,
+        discVisible: 0,
+        discMode: replayEnabled ? 'replay' : 'live',
+        replayEnabled,
+        replayOffset,
+        replayMax,
+        replayAsOfIso: replayEnabled && activeSnapshot ? activeSnapshot.asOfIso : '',
+        topGainer: meta.stats.topGainer,
+        topLoser: meta.stats.topLoser,
+        topVolume: meta.stats.topVolume
+      };
+      setVersion((v) => v + 1);
+      return;
+    }
+
     const shouldDeferDecorativeBuild = !replayEnabled && !layer2Ready && states.size === 0 && selected.items.length > 0;
     if (shouldDeferDecorativeBuild) {
       deferredDecorativeBuildPendingRef.current = true;
@@ -8539,6 +8602,8 @@ function TopBirdFlock({
   const bandMidRef = useRef(10.6);
   const bandHighRef = useRef(13.2);
   const bandCapRef = useRef(16.8);
+  const bandLowCutRef = useRef(0.26);
+  const bandMidCutRef = useRef(0.68);
   const orbitMinRef = useRef(10);
   const orbitMaxRef = useRef(26);
   const targetCountRef = useRef(0);
@@ -8605,17 +8670,30 @@ function TopBirdFlock({
     const p50 = percentileFromSorted(heights, 0.5);
     const p75 = percentileFromSorted(heights, 0.75);
     const p90 = percentileFromSorted(heights, 0.9);
+    const maxH = heights.length > 0 ? heights[heights.length - 1] ?? 0 : 0;
     const skylineAnchor = Math.max(p75, p90 * 0.92);
-    const floor = Math.max(3.8, p50 * 0.38 + 2.2);
-    const low = MathUtils.clamp(p50 * 0.52 + 2.5, floor + 0.6, Math.max(floor + 2.8, skylineAnchor * 0.78 + 2.2));
-    const mid = MathUtils.clamp(p75 * 0.72 + 3.0, low + 0.9, Math.max(low + 2.4, skylineAnchor * 0.9 + 2.8));
-    const high = Math.max(mid + 1.1, skylineAnchor + 3.8);
-    const cap = Math.max(high + 1.6, skylineAnchor + 8.6);
+    const tallOutlierBias = smoothstep01(remapClamped(maxH - p90, 0, Math.max(8, p90 * 0.35 + 4)));
+    const overallTallness = smoothstep01(remapClamped(p75, 10, 42));
+    const floor = Math.max(5.8, Math.min(p50 * 0.62 + 3.0, p75 * 0.42 + 4.2, maxH * 0.22 + 4.5));
+    const low = Math.max(floor + 1.0, p50 * 0.72 + 3.0, Math.min(p75 * 0.52 + 4.0, maxH * 0.34 + 4.0));
+    const midBase = Math.max(low + 1.4, p75 * 0.78 + 4.2, p90 * 0.58 + 6.0);
+    const highBase = Math.max(
+      midBase + 1.8,
+      p90 * 0.95 + 4.8,
+      MathUtils.lerp(p90 * 1.02 + 5.2, maxH * 0.86 + 3.6, tallOutlierBias)
+    );
+    const mid = MathUtils.clamp(midBase, low + 1.4, highBase - 1.8);
+    const high = highBase;
+    const cap = Math.max(high + 3.0, maxH + 7.0, high + maxH * 0.04 + 1.4);
+    const lowShare = MathUtils.lerp(0.26, 0.18, Math.max(tallOutlierBias, overallTallness * 0.7));
+    const midShare = MathUtils.lerp(0.42, 0.34, tallOutlierBias);
     bandFloorRef.current = floor;
     bandLowRef.current = low;
     bandMidRef.current = mid;
     bandHighRef.current = high;
     bandCapRef.current = cap;
+    bandLowCutRef.current = lowShare;
+    bandMidCutRef.current = MathUtils.clamp(lowShare + midShare, lowShare + 0.22, 0.78);
 
     const cityR = Math.max(18, cityRadiusRef.current);
     const orbitCore = cityR * 0.48;
@@ -8654,7 +8732,7 @@ function TopBirdFlock({
     const high = bandHighRef.current;
     const dir = hash01(serial, idx, 11) < 0.5 ? -1 : 1;
     const bandPick = hash01(serial, idx, 17);
-    bandRef.current[idx] = bandPick < 0.34 ? 0 : bandPick < 0.8 ? 1 : 2;
+    bandRef.current[idx] = bandPick < bandLowCutRef.current ? 0 : bandPick < bandMidCutRef.current ? 1 : 2;
     if (!keepAngle) {
       angleRef.current[idx] = hash01(serial, idx, 23) * Math.PI * 2;
     }
@@ -8686,7 +8764,7 @@ function TopBirdFlock({
     radiusAmpRef.current[idx] = MathUtils.lerp(0.2, 1.05, hash01(serial, idx, 73));
     radiusFreqRef.current[idx] = MathUtils.lerp(0.24, 0.9, hash01(serial, idx, 79));
     const bandPick = hash01(serial, idx, 83);
-    bandRef.current[idx] = bandPick < 0.32 ? 0 : bandPick < 0.8 ? 1 : 2;
+    bandRef.current[idx] = bandPick < bandLowCutRef.current ? 0 : bandPick < bandMidCutRef.current ? 1 : 2;
     rerouteAtRef.current[idx] = nowMs + MathUtils.lerp(10_000, 22_000, hash01(serial, idx, 89));
   };
 
@@ -9467,7 +9545,11 @@ export function TopCoinsSkylineSandbox({ onModeChange }: { onModeChange?: (nextM
                   }
                   const lastFetchLabel = overlay.topDebug.lastFetchOk
                     ? 'ok'
-                    : `fail${overlay.topDebug.lastError ? ` · ${fmtTopCoinsError(overlay.topDebug.lastError)}` : ''}`;
+                    : overlay.topDebug.lastError
+                      ? `fail · ${fmtTopCoinsError(overlay.topDebug.lastError)}`
+                      : overlay.topDebug.fetchedAt > 0
+                        ? 'cache'
+                        : 'pending';
 
                   return (
                     <>
