@@ -98,7 +98,7 @@ canvas {
 .web3-ui__corner--top-right {
   top: var(--ui-safe);
   right: var(--ui-safe);
-  width: min(388px, calc(50vw - var(--ui-safe) * 2.2));
+  width: min(460px, calc(100vw - var(--ui-safe) * 2));
   animation-delay: 0.12s;
 }
 
@@ -308,9 +308,9 @@ canvas {
 
 .web3-ui__cta-photo {
   display: block;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 24px;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
   border-radius: 999px;
   object-fit: cover;
   border: 1px solid rgba(241, 192, 142, 0.2);
@@ -496,6 +496,10 @@ canvas {
     width: min(360px, calc(50vw - var(--ui-safe) * 2));
   }
 
+  .web3-ui__corner--top-right {
+    width: min(420px, calc(100vw - var(--ui-safe) * 2));
+  }
+
   .web3-ui__corner--bottom-left {
     width: min(380px, calc(50vw - var(--ui-safe) * 2));
   }
@@ -529,10 +533,13 @@ canvas {
 
 @media (max-width: 860px) {
   .web3-ui__corner--top-left,
-  .web3-ui__corner--top-right,
   .web3-ui__corner--bottom-left,
   .web3-ui__corner--bottom-right {
     width: min(320px, calc(50vw - var(--ui-safe) * 1.5));
+  }
+
+  .web3-ui__corner--top-right {
+    width: min(400px, calc(100vw - var(--ui-safe) * 2));
   }
 
   .web3-ui__panel--actions {
