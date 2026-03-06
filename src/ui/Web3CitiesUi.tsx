@@ -5,6 +5,7 @@ import web3CitiesLogoUrl from '../../dawidskinder_web3cities_logo_v1.svg';
 import dawidPhotoUrl from '../../ds_photo.png';
 
 type HelpKey = 'mouse' | 'keyboard' | null;
+const MOBILE_BREAKPOINT_PX = 640;
 
 const MODE_COPY: Record<
   CityMode,
@@ -60,6 +61,16 @@ function KeyboardIcon() {
   );
 }
 
+function HamburgerIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="web3-ui__glyph">
+      <line x1="5" y1="7" x2="19" y2="7" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+      <line x1="5" y1="17" x2="19" y2="17" />
+    </svg>
+  );
+}
+
 function ControlsPopover({
   id,
   title,
@@ -95,7 +106,14 @@ export function Web3CitiesUi({
 }) {
   const [hoverPopover, setHoverPopover] = useState<HelpKey>(null);
   const [pinnedPopover, setPinnedPopover] = useState<HelpKey>(null);
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches : false
+  );
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [mobileNoticeVisible, setMobileNoticeVisible] = useState(false);
   const controlsRef = useRef<HTMLDivElement | null>(null);
+  const mobileMenuRef = useRef<HTMLDivElement | null>(null);
+  const hasShownMobileNoticeRef = useRef(false);
   const modeCopy = MODE_COPY[mode];
 
   useEffect(() => {
@@ -117,6 +135,47 @@ export function Web3CitiesUi({
     };
   }, [pinnedPopover]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const mediaQuery = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`);
+    const syncMobileState = () => {
+      setIsMobile(mediaQuery.matches);
+    };
+
+    syncMobileState();
+    mediaQuery.addEventListener('change', syncMobileState);
+    return () => {
+      mediaQuery.removeEventListener('change', syncMobileState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isMobile && !hasShownMobileNoticeRef.current) {
+      hasShownMobileNoticeRef.current = true;
+      setMobileNoticeVisible(true);
+    }
+
+    if (!isMobile) {
+      setMobileMenuOpen(false);
+      setMobileNoticeVisible(false);
+    }
+  }, [isMobile]);
+
+  useEffect(() => {
+    if (!isMobile || !mobileMenuOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (mobileMenuRef.current?.contains(event.target as Node)) return;
+      setMobileMenuOpen(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [isMobile, mobileMenuOpen]);
+
   const currentUrl = typeof window !== 'undefined' ? window.location.href : 'https://www.dawidskinder.pl';
   const shareHref = useMemo(() => {
     const text =
@@ -133,58 +192,136 @@ export function Web3CitiesUi({
     setPinnedPopover((current) => (current === key ? null : key));
   };
 
+  const handleHelpMouseEnter = (key: Exclude<HelpKey, null>) => {
+    if (isMobile) return;
+    setHoverPopover(key);
+  };
+
+  const handleHelpMouseLeave = (key: Exclude<HelpKey, null>) => {
+    if (isMobile) return;
+    setHoverPopover((current) => (current === key ? null : current));
+  };
+
   return (
     <div className="web3-ui" aria-live="polite">
       <section className="web3-ui__corner web3-ui__corner--top-left">
-        <div className="web3-ui__panel web3-ui__panel--brand">
-          <img className="web3-ui__logo" src={web3CitiesLogoUrl} alt="Web3 Cities" />
-          <h1 className="web3-ui__headline">Designing clarity for complex Web3 systems.</h1>
-          <p className="web3-ui__body">
-            Web3 Cities transforms live crypto data into interactive worlds - showing how brand, product thinking, and UX
-            can make complex systems feel legible, alive, and worth exploring.
-          </p>
-        </div>
+        {isMobile ? (
+          <div className="web3-ui__panel web3-ui__panel--mobile-logo">
+            <img className="web3-ui__logo web3-ui__logo--mobile" src={web3CitiesLogoUrl} alt="Web3 Cities" />
+          </div>
+        ) : (
+          <div className="web3-ui__panel web3-ui__panel--brand">
+            <img className="web3-ui__logo" src={web3CitiesLogoUrl} alt="Web3 Cities" />
+            <h1 className="web3-ui__headline">Designing clarity for complex Web3 systems.</h1>
+            <p className="web3-ui__body">
+              Web3 Cities transforms live crypto data into interactive worlds - showing how brand, product thinking, and UX
+              can make complex systems feel legible, alive, and worth exploring.
+            </p>
+          </div>
+        )}
       </section>
 
       <section className="web3-ui__corner web3-ui__corner--top-right">
-        <div className="web3-ui__panel web3-ui__panel--actions">
-          <div className="web3-ui__tabs" role="tablist" aria-label="City modes">
+        {isMobile ? (
+          <div ref={mobileMenuRef} className="web3-ui__mobile-menu-wrap">
             <button
               type="button"
-              role="tab"
-              aria-selected={mode === 'top200'}
-              className={`web3-ui__tab${mode === 'top200' ? ' is-active' : ''}`}
-              onClick={() => onModeChange?.('top200')}
+              className="web3-ui__help-trigger web3-ui__mobile-menu-button"
+              aria-label={mobileMenuOpen ? 'Close menu' : 'Open menu'}
+              aria-expanded={mobileMenuOpen}
+              aria-controls="mobile-navigation-panel"
+              onClick={() => setMobileMenuOpen((current) => !current)}
             >
-              Market City
+              <HamburgerIcon />
             </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mode === 'btc'}
-              className={`web3-ui__tab${mode === 'btc' ? ' is-active' : ''}`}
-              onClick={() => onModeChange?.('btc')}
-            >
-              BTC City
-            </button>
-          </div>
 
-          <div className="web3-ui__action-row">
-            <a
-              className="web3-ui__cta"
-              href="https://www.dawidskinder.pl"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <span>Build your web3 product with me</span>
-              <img className="web3-ui__cta-photo" src={dawidPhotoUrl} alt="" aria-hidden="true" />
-            </a>
+            {mobileMenuOpen ? (
+              <div id="mobile-navigation-panel" className="web3-ui__panel web3-ui__panel--mobile-menu">
+                <h1 className="web3-ui__headline web3-ui__headline--mobile">Designing clarity for complex Web3 systems.</h1>
+                <p className="web3-ui__body web3-ui__body--mobile-menu">
+                  Web3 Cities transforms live crypto data into interactive worlds - showing how brand, product thinking, and
+                  UX can make complex systems feel legible, alive, and worth exploring.
+                </p>
 
-            <a className="web3-ui__text-action" href={shareHref} target="_blank" rel="noopener noreferrer">
-              Share on X
-            </a>
+                <div className="web3-ui__tabs" role="tablist" aria-label="City modes">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={mode === 'top200'}
+                    className={`web3-ui__tab${mode === 'top200' ? ' is-active' : ''}`}
+                    onClick={() => onModeChange?.('top200')}
+                  >
+                    Market City
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={mode === 'btc'}
+                    className={`web3-ui__tab${mode === 'btc' ? ' is-active' : ''}`}
+                    onClick={() => onModeChange?.('btc')}
+                  >
+                    BTC City
+                  </button>
+                </div>
+
+                <div className="web3-ui__action-row">
+                  <a
+                    className="web3-ui__cta"
+                    href="https://www.dawidskinder.pl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <span>Build your web3 product with me</span>
+                    <img className="web3-ui__cta-photo" src={dawidPhotoUrl} alt="" aria-hidden="true" />
+                  </a>
+
+                  <a className="web3-ui__text-action" href={shareHref} target="_blank" rel="noopener noreferrer">
+                    Share on X
+                  </a>
+                </div>
+              </div>
+            ) : null}
           </div>
-        </div>
+        ) : (
+          <div className="web3-ui__panel web3-ui__panel--actions">
+            <div className="web3-ui__tabs" role="tablist" aria-label="City modes">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === 'top200'}
+                className={`web3-ui__tab${mode === 'top200' ? ' is-active' : ''}`}
+                onClick={() => onModeChange?.('top200')}
+              >
+                Market City
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === 'btc'}
+                className={`web3-ui__tab${mode === 'btc' ? ' is-active' : ''}`}
+                onClick={() => onModeChange?.('btc')}
+              >
+                BTC City
+              </button>
+            </div>
+
+            <div className="web3-ui__action-row">
+              <a
+                className="web3-ui__cta"
+                href="https://www.dawidskinder.pl"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <span>Build your web3 product with me</span>
+                <img className="web3-ui__cta-photo" src={dawidPhotoUrl} alt="" aria-hidden="true" />
+              </a>
+
+              <a className="web3-ui__text-action" href={shareHref} target="_blank" rel="noopener noreferrer">
+                Share on X
+              </a>
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="web3-ui__corner web3-ui__corner--bottom-left">
@@ -196,8 +333,8 @@ export function Web3CitiesUi({
           <div ref={controlsRef} className="web3-ui__controls" aria-label="Controls help">
             <div
               className="web3-ui__help"
-              onMouseEnter={() => setHoverPopover('mouse')}
-              onMouseLeave={() => setHoverPopover((current) => (current === 'mouse' ? null : current))}
+              onMouseEnter={() => handleHelpMouseEnter('mouse')}
+              onMouseLeave={() => handleHelpMouseLeave('mouse')}
             >
               <button
                 type="button"
@@ -217,8 +354,8 @@ export function Web3CitiesUi({
 
             <div
               className="web3-ui__help"
-              onMouseEnter={() => setHoverPopover('keyboard')}
-              onMouseLeave={() => setHoverPopover((current) => (current === 'keyboard' ? null : current))}
+              onMouseEnter={() => handleHelpMouseEnter('keyboard')}
+              onMouseLeave={() => handleHelpMouseLeave('keyboard')}
             >
               <button
                 type="button"
@@ -240,19 +377,38 @@ export function Web3CitiesUi({
       </section>
 
       <section className="web3-ui__corner web3-ui__corner--bottom-right">
-        <div className="web3-ui__panel web3-ui__panel--data">
-          <p className="web3-ui__eyebrow">{metricPanel.title}</p>
-          <div className="web3-ui__metrics">
-            {metricPanel.metrics.map((metric) => (
-              <div key={metric.label} className="web3-ui__metric">
-                <span className="web3-ui__metric-label">{metric.label}</span>
-                <span className={`web3-ui__metric-value tone-${metric.tone ?? 'default'}`}>{metric.value}</span>
-              </div>
-            ))}
+        {isMobile ? null : (
+          <div className="web3-ui__panel web3-ui__panel--data">
+            <p className="web3-ui__eyebrow">{metricPanel.title}</p>
+            <div className="web3-ui__metrics">
+              {metricPanel.metrics.map((metric) => (
+                <div key={metric.label} className="web3-ui__metric">
+                  <span className="web3-ui__metric-label">{metric.label}</span>
+                  <span className={`web3-ui__metric-value tone-${metric.tone ?? 'default'}`}>{metric.value}</span>
+                </div>
+              ))}
+            </div>
+            <p className="web3-ui__microcopy">{metricPanel.microcopy}</p>
           </div>
-          <p className="web3-ui__microcopy">{metricPanel.microcopy}</p>
-        </div>
+        )}
       </section>
+
+      {isMobile && mobileNoticeVisible ? (
+        <div className="web3-ui__mobile-notice-wrap" role="dialog" aria-modal="false" aria-label="Mobile viewing notice">
+          <div className="web3-ui__panel web3-ui__panel--mobile-notice">
+            <p className="web3-ui__body web3-ui__body--mobile-notice">
+              This experience was designed for desktop viewing. It may not function optimally on mobile devices.
+            </p>
+            <button
+              type="button"
+              className="web3-ui__help-trigger web3-ui__mobile-notice-button"
+              onClick={() => setMobileNoticeVisible(false)}
+            >
+              Continue
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
