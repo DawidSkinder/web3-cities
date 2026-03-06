@@ -9602,6 +9602,13 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
     [hoveredTowerSequence, towers]
   );
 
+  const handleResetCamera = () => {
+    setHoveredTowerSequence(null);
+    setSelectedTowerSequence(null);
+    setHoverHud(HOVER_HUD_HIDDEN);
+    setResetCameraSignal((current) => current + 1);
+  };
+
   return (
     <div className="minimal-viz">
       <SandboxScene
@@ -9634,7 +9641,7 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
         mode={mode}
         onModeChange={onModeChange}
         metricPanel={metricPanel}
-        onResetCamera={() => setResetCameraSignal((current) => current + 1)}
+        onResetCamera={handleResetCamera}
       />
     </div>
   );
