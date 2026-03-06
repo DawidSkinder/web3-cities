@@ -675,7 +675,7 @@ canvas {
     position: absolute;
     top: 50%;
     left: 0;
-    transform: translateY(calc(-50% + 4px));
+    transform: translateY(-50%);
   }
 
   .web3-ui__body {
