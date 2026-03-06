@@ -8,6 +8,7 @@ type HelpKey = 'mouse' | 'keyboard' | null;
 const MOBILE_BREAKPOINT_PX = 640;
 const MOBILE_ZOOM_OUT_LABEL = 'Zoom out camera';
 const MOBILE_ZOOM_IN_LABEL = 'Zoom in camera';
+const MOBILE_NOTICE_STORAGE_KEY = 'web3-cities:mobile-notice-dismissed:v1';
 const WEB3_CITIES_SITE_URL = 'https://web3cities.dawidskinder.pl';
 
 const MODE_COPY: Record<
@@ -192,7 +193,17 @@ export function Web3CitiesUi({
   useEffect(() => {
     if (isMobile && !hasShownMobileNoticeRef.current) {
       hasShownMobileNoticeRef.current = true;
-      setMobileNoticeVisible(true);
+
+      let dismissed = false;
+      if (typeof window !== 'undefined') {
+        try {
+          dismissed = window.localStorage.getItem(MOBILE_NOTICE_STORAGE_KEY) === '1';
+        } catch {
+          dismissed = false;
+        }
+      }
+
+      setMobileNoticeVisible(!dismissed);
     }
 
     if (!isMobile) {
@@ -239,6 +250,17 @@ export function Web3CitiesUi({
   const handleHelpMouseLeave = (key: Exclude<HelpKey, null>) => {
     if (isMobile) return;
     setHoverPopover((current) => (current === key ? null : current));
+  };
+
+  const handleDismissMobileNotice = () => {
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(MOBILE_NOTICE_STORAGE_KEY, '1');
+      } catch {
+        // Ignore storage failures and just dismiss for this render.
+      }
+    }
+    setMobileNoticeVisible(false);
   };
 
   return (
@@ -472,7 +494,7 @@ export function Web3CitiesUi({
             <button
               type="button"
               className="web3-ui__help-trigger web3-ui__mobile-notice-button"
-              onClick={() => setMobileNoticeVisible(false)}
+              onClick={handleDismissMobileNotice}
             >
               Continue
             </button>
