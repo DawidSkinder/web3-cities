@@ -35,6 +35,8 @@ import type { TopCoinsSnapshot } from '../data/topCoins/types';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import type { BlockEvent } from '../data/trades/types';
 import type { CityMode } from '../lib/cityMode';
+import { deriveMarketCityMetrics } from '../ui/cityMetrics';
+import { Web3CitiesUi } from '../ui/Web3CitiesUi';
 import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
 
 type TowerArchetypeId = 0 | 1 | 2 | 3 | 4 | 5;
@@ -9397,9 +9399,8 @@ export function TopCoinsSkylineSandbox({ onModeChange }: { onModeChange?: (nextM
   const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
   const [selectedTowerSequence, setSelectedTowerSequence] = useState<number | null>(null);
   const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
-  const [nowTick, setNowTick] = useState(() => Date.now());
-  const topDebug = topData.topCoinsDebug;
   const topFx = topData.topFx;
+  const metricPanel = useMemo(() => deriveMarketCityMetrics(topSnapshot), [topSnapshot]);
 
   useEffect(() => {
     setHoveredTowerSequence(null);
@@ -9426,27 +9427,9 @@ export function TopCoinsSkylineSandbox({ onModeChange }: { onModeChange?: (nextM
     }
   }, [hoveredTowerSequence, hoverHud.visible]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setNowTick(Date.now());
-    }, 1000);
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, []);
-
   const hoveredTower = useMemo(
     () => (hoveredTowerSequence == null ? null : towers.find((tower) => tower.sequence === hoveredTowerSequence) ?? null),
     [hoveredTowerSequence, towers]
-  );
-
-  const overlay = useMemo(
-    () => ({
-      mode,
-      latestSequence: 0,
-      topDebug
-    }),
-    [mode, topDebug]
   );
 
   return (
@@ -9476,118 +9459,7 @@ export function TopCoinsSkylineSandbox({ onModeChange }: { onModeChange?: (nextM
         onCameraDebug={setCameraDebug}
       />
       <HoverHudOverlay tower={hoveredTower} hud={hoverHud} />
-      <div className="minimal-viz__overlay">
-        <div className="minimal-viz__panel">
-          <div className="minimal-viz__title">Sandbox</div>
-          <div className="minimal-viz__row minimal-viz__row--control">
-            <span>Mode</span>
-            <select
-              className="minimal-viz__select"
-              value={overlay.mode}
-              onChange={(event) => {
-                const nextMode = event.currentTarget.value === 'btc' ? 'btc' : 'top200';
-                onModeChange?.(nextMode);
-              }}
-            >
-              <option value="top200">Top Coins Skyline (Binance Spot REST)</option>
-              <option value="btc">Bitcoin Spot Buys (Binance WS)</option>
-            </select>
-          </div>
-          <div className="minimal-viz__row">
-            <span>Mode</span>
-            <span>{overlay.mode === 'top200' ? 'Top Coins Skyline' : 'BTC Spot Buys'}</span>
-          </div>
-          {overlay.mode === 'top200' ? (
-            overlay.topDebug ? (
-              <>
-                {(() => {
-                  const asOfAgeSec =
-                    overlay.topDebug.asOfMs > 0 ? Math.max(0, Math.floor((nowTick - overlay.topDebug.asOfMs) / 1000)) : Number.POSITIVE_INFINITY;
-                  const nextUpdateSec = Math.max(0, Math.ceil((overlay.topDebug.nextUpdateAtMs - nowTick) / 1000));
-                  let status: 'ok' | 'STALE' | 'error' = 'ok';
-                  let statusColor = '#9fd8b2';
-                  let staleMessage = '';
-                  if (!overlay.topDebug.lastFetchOk && overlay.topDebug.lastError) {
-                    status = 'error';
-                    statusColor = '#ff9f8f';
-                  } else if (asOfAgeSec > 600) {
-                    status = 'STALE';
-                    statusColor = '#ff8d6a';
-                    staleMessage = 'Snapshot not updating - check GitHub Actions.';
-                  } else if (asOfAgeSec > 120) {
-                    status = 'STALE';
-                    statusColor = '#ffbd75';
-                  }
-                  const lastFetchLabel = overlay.topDebug.lastFetchOk
-                    ? 'ok'
-                    : overlay.topDebug.lastError
-                      ? `fail · ${fmtTopCoinsError(overlay.topDebug.lastError)}`
-                      : overlay.topDebug.fetchedAt > 0
-                        ? 'cache'
-                        : 'pending';
-
-                  return (
-                    <>
-                      <div className="minimal-viz__row">
-                        <span>Status</span>
-                        <span style={{ color: statusColor, fontWeight: 700 }}>{status}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>AsOf</span>
-                        <span>{overlay.topDebug.asOfIso || 'n/a'}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Age</span>
-                        <span>{Number.isFinite(asOfAgeSec) ? `${asOfAgeSec}s` : 'n/a'}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Next update in</span>
-                        <span>{nextUpdateSec}s</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Universe</span>
-                        <span>{`Top ${TOP_COINS_UNIVERSE_LIMIT} · ${TOP_COINS_QUOTE_ASSET} · ${TOP_COINS_CHANGE_TF_LABEL}`}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Top gainer</span>
-                        <span>{`${overlay.topDebug.topGainer.symbol} ${fmtSignedPct(overlay.topDebug.topGainer.pct)}`}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Top loser</span>
-                        <span>{`${overlay.topDebug.topLoser.symbol} ${fmtSignedPct(overlay.topDebug.topLoser.pct)}`}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Top volume</span>
-                        <span>{`${overlay.topDebug.topVolume.symbol} ${fmtUsdCompact(overlay.topDebug.topVolume.quoteVolume)}`}</span>
-                      </div>
-                      <div className="minimal-viz__row">
-                        <span>Last fetch</span>
-                        <span>{lastFetchLabel}</span>
-                      </div>
-                      {staleMessage ? (
-                        <div className="minimal-viz__row" style={{ color: '#ff8d6a', fontWeight: 700 }}>
-                          <span>Notice</span>
-                          <span>{staleMessage}</span>
-                        </div>
-                      ) : null}
-                    </>
-                  );
-                })()}
-              </>
-            ) : (
-              <div className="minimal-viz__row">
-                <span>Status</span>
-                <span>loading...</span>
-              </div>
-            )
-          ) : (
-            <div className="minimal-viz__row">
-              <span>Latest Seq</span>
-              <span>{overlay.latestSequence}</span>
-            </div>
-          )}
-        </div>
-      </div>
+      <Web3CitiesUi mode={mode} onModeChange={onModeChange} metricPanel={metricPanel} />
     </div>
   );
 }

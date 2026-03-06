@@ -37,6 +37,8 @@ import type { TopCoinsSnapshot } from '../data/topCoins/types';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import type { BlockEvent } from '../data/trades/types';
 import type { CityMode } from '../lib/cityMode';
+import { deriveBtcCityMetrics } from '../ui/cityMetrics';
+import { Web3CitiesUi } from '../ui/Web3CitiesUi';
 import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
 
 type TowerArchetypeId = 0 | 1 | 2 | 3 | 4 | 5;
@@ -9532,7 +9534,7 @@ function SandboxScene({
 
 export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode: CityMode) => void }) {
   const mode: CityMode = 'btc';
-  const { events, latest } = useBlockEventStore();
+  const { events } = useBlockEventStore();
   const btcData = useAppendOnlyTowers(events);
   const active = btcData;
   const {
@@ -9553,16 +9555,15 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
   const [, setCameraDebug] = useState<CameraDebugSnapshot>({ camDist: 0, visCurve: 0 });
   const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
   const [selectedTowerSequence, setSelectedTowerSequence] = useState<number | null>(null);
-  const [birdCount, setBirdCount] = useState(0);
   const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
   const btcGroundIntroBootAlpha = useBtcGroundIntroBootAlpha();
   const topFx = undefined;
+  const metricPanel = useMemo(() => deriveBtcCityMetrics({ towers, events }), [events, towers]);
 
   useEffect(() => {
     setHoveredTowerSequence(null);
     setSelectedTowerSequence(null);
     setHoverHud(HOVER_HUD_HIDDEN);
-    setBirdCount(0);
   }, [mode]);
 
   useEffect(() => {
@@ -9587,14 +9588,6 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
   const hoveredTower = useMemo(
     () => (hoveredTowerSequence == null ? null : towers.find((tower) => tower.sequence === hoveredTowerSequence) ?? null),
     [hoveredTowerSequence, towers]
-  );
-
-  const overlay = useMemo(
-    () => ({
-      mode,
-      latestSequence: latest?.sequence ?? 0
-    }),
-    [latest, mode]
   );
 
   return (
@@ -9622,42 +9615,9 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
         onSelectTowerChange={setSelectedTowerSequence}
         onHoverHudUpdate={setHoverHud}
         onCameraDebug={setCameraDebug}
-        onBirdCountChange={setBirdCount}
       />
       <HoverHudOverlay tower={hoveredTower} hud={hoverHud} />
-      <div className="minimal-viz__overlay">
-        <div className="minimal-viz__panel">
-          <div className="minimal-viz__title">Sandbox</div>
-          <div className="minimal-viz__row minimal-viz__row--control">
-            <span>Mode</span>
-            <select
-              className="minimal-viz__select"
-              value={overlay.mode}
-              onChange={(event) => {
-                const nextMode = event.currentTarget.value === 'btc' ? 'btc' : 'top200';
-                onModeChange?.(nextMode);
-              }}
-            >
-              <option value="top200">Top Coins Skyline (Binance Spot REST)</option>
-              <option value="btc">Bitcoin Spot Buys (Binance WS)</option>
-            </select>
-          </div>
-          <div className="minimal-viz__row">
-            <span>Mode</span>
-            <span>BTC Spot Buys</span>
-          </div>
-          <div className="minimal-viz__row">
-            <span>Latest Seq</span>
-            <span>{overlay.latestSequence}</span>
-          </div>
-          {BTC_BIRD_DEBUG_ROW ? (
-            <div className="minimal-viz__row">
-              <span>Birds</span>
-              <span>{birdCount}</span>
-            </div>
-          ) : null}
-        </div>
-      </div>
+      <Web3CitiesUi mode={mode} onModeChange={onModeChange} metricPanel={metricPanel} />
     </div>
   );
 }
