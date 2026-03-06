@@ -98,11 +98,13 @@ function ControlsPopover({
 export function Web3CitiesUi({
   mode,
   onModeChange,
-  metricPanel
+  metricPanel,
+  onResetCamera
 }: {
   mode: CityMode;
   onModeChange?: (nextMode: CityMode) => void;
   metricPanel: UiMetricPanel;
+  onResetCamera?: () => void;
 }) {
   const [hoverPopover, setHoverPopover] = useState<HelpKey>(null);
   const [pinnedPopover, setPinnedPopover] = useState<HelpKey>(null);
@@ -329,47 +331,60 @@ export function Web3CitiesUi({
           <p className="web3-ui__body web3-ui__body--compact">{modeCopy.description}</p>
 
           <div ref={controlsRef} className="web3-ui__controls" aria-label="Controls help">
-            <div
-              className="web3-ui__help"
-              onMouseEnter={() => handleHelpMouseEnter('mouse')}
-              onMouseLeave={() => handleHelpMouseLeave('mouse')}
-            >
+            {isMobile ? (
               <button
                 type="button"
                 className="web3-ui__help-trigger"
-                aria-label="Show mouse controls"
-                aria-expanded={openPopover === 'mouse'}
-                aria-controls="mouse-controls-popover"
-                onClick={() => handlePopoverToggle('mouse')}
+                aria-label="Reset camera"
+                onClick={onResetCamera}
               >
-                <MouseIcon />
-                <span>Mouse</span>
+                <span>Reset Camera</span>
               </button>
-              {openPopover === 'mouse' ? (
-                <ControlsPopover id="mouse-controls-popover" title="Mouse controls" rows={MOUSE_CONTROLS} />
-              ) : null}
-            </div>
+            ) : (
+              <>
+                <div
+                  className="web3-ui__help"
+                  onMouseEnter={() => handleHelpMouseEnter('mouse')}
+                  onMouseLeave={() => handleHelpMouseLeave('mouse')}
+                >
+                  <button
+                    type="button"
+                    className="web3-ui__help-trigger"
+                    aria-label="Show mouse controls"
+                    aria-expanded={openPopover === 'mouse'}
+                    aria-controls="mouse-controls-popover"
+                    onClick={() => handlePopoverToggle('mouse')}
+                  >
+                    <MouseIcon />
+                    <span>Mouse</span>
+                  </button>
+                  {openPopover === 'mouse' ? (
+                    <ControlsPopover id="mouse-controls-popover" title="Mouse controls" rows={MOUSE_CONTROLS} />
+                  ) : null}
+                </div>
 
-            <div
-              className="web3-ui__help"
-              onMouseEnter={() => handleHelpMouseEnter('keyboard')}
-              onMouseLeave={() => handleHelpMouseLeave('keyboard')}
-            >
-              <button
-                type="button"
-                className="web3-ui__help-trigger"
-                aria-label="Show keyboard controls"
-                aria-expanded={openPopover === 'keyboard'}
-                aria-controls="keyboard-controls-popover"
-                onClick={() => handlePopoverToggle('keyboard')}
-              >
-                <KeyboardIcon />
-                <span>Keyboard</span>
-              </button>
-              {openPopover === 'keyboard' ? (
-                <ControlsPopover id="keyboard-controls-popover" title="Keyboard controls" rows={KEYBOARD_CONTROLS} />
-              ) : null}
-            </div>
+                <div
+                  className="web3-ui__help"
+                  onMouseEnter={() => handleHelpMouseEnter('keyboard')}
+                  onMouseLeave={() => handleHelpMouseLeave('keyboard')}
+                >
+                  <button
+                    type="button"
+                    className="web3-ui__help-trigger"
+                    aria-label="Show keyboard controls"
+                    aria-expanded={openPopover === 'keyboard'}
+                    aria-controls="keyboard-controls-popover"
+                    onClick={() => handlePopoverToggle('keyboard')}
+                  >
+                    <KeyboardIcon />
+                    <span>Keyboard</span>
+                  </button>
+                  {openPopover === 'keyboard' ? (
+                    <ControlsPopover id="keyboard-controls-popover" title="Keyboard controls" rows={KEYBOARD_CONTROLS} />
+                  ) : null}
+                </div>
+              </>
+            )}
           </div>
         </div>
       </section>

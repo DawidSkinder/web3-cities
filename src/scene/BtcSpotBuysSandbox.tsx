@@ -4346,13 +4346,15 @@ function MinimalOrbitRig({
   focusTarget,
   onClearFocusTarget,
   onCameraDebug,
-  storyBeatUntilMs = 0
+  storyBeatUntilMs = 0,
+  resetSignal = 0
 }: {
   bounds: SandboxBounds;
   focusTarget?: CameraFocusTarget | null;
   onClearFocusTarget?: () => void;
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
   storyBeatUntilMs?: number;
+  resetSignal?: number;
 }) {
   const { camera, gl } = useThree();
   const initializedRef = useRef(false);
@@ -4512,6 +4514,12 @@ function MinimalOrbitRig({
     centerTargetRef.current.z = focus.centerZ;
     modeRef.current = 'focus';
   }, [bounds.radius, camera, focusTarget]);
+
+  useEffect(() => {
+    if (resetSignal <= 0) return;
+    modeRef.current = 'auto';
+    onClearFocusTarget?.();
+  }, [onClearFocusTarget, resetSignal]);
 
   useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime();
@@ -9248,7 +9256,8 @@ function SandboxScene({
   onSelectTowerChange,
   onHoverHudUpdate,
   onCameraDebug,
-  onBirdCountChange
+  onBirdCountChange,
+  resetCameraSignal = 0
 }: {
   mode: CityMode;
   towers: TowerDatum[];
@@ -9281,6 +9290,7 @@ function SandboxScene({
   onHoverHudUpdate?: (snapshot: HoverHudSnapshot) => void;
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
   onBirdCountChange?: (count: number) => void;
+  resetCameraSignal?: number;
 }) {
   const fx = topFx ?? {
     introBootAlpha: 1,
@@ -9463,6 +9473,7 @@ function SandboxScene({
         onClearFocusTarget={() => onSelectTowerChange?.(null)}
         onCameraDebug={onCameraDebug}
         storyBeatUntilMs={fx.storyBeatUntilMs}
+        resetSignal={resetCameraSignal}
       />
 
       <CircuitBoardGround
@@ -9556,6 +9567,7 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
   const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
   const [selectedTowerSequence, setSelectedTowerSequence] = useState<number | null>(null);
   const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
+  const [resetCameraSignal, setResetCameraSignal] = useState(0);
   const btcGroundIntroBootAlpha = useBtcGroundIntroBootAlpha();
   const topFx = undefined;
   const metricPanel = useMemo(() => deriveBtcCityMetrics({ towers, events }), [events, towers]);
@@ -9611,13 +9623,19 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
         hoveredTowerSequence={hoveredTowerSequence}
         selectedTowerSequence={selectedTowerSequence}
         tallestTowerSequence={tallestTowerSequence}
+        resetCameraSignal={resetCameraSignal}
         onHoverTowerChange={setHoveredTowerSequence}
         onSelectTowerChange={setSelectedTowerSequence}
         onHoverHudUpdate={setHoverHud}
         onCameraDebug={setCameraDebug}
       />
       <HoverHudOverlay tower={hoveredTower} hud={hoverHud} />
-      <Web3CitiesUi mode={mode} onModeChange={onModeChange} metricPanel={metricPanel} />
+      <Web3CitiesUi
+        mode={mode}
+        onModeChange={onModeChange}
+        metricPanel={metricPanel}
+        onResetCamera={() => setResetCameraSignal((current) => current + 1)}
+      />
     </div>
   );
 }
