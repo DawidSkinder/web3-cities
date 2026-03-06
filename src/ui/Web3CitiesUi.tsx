@@ -129,6 +129,16 @@ function ControlsPopover({
   );
 }
 
+function detectDesktopSafari() {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  const vendor = navigator.vendor || '';
+  const isSafariEngine = /Safari/i.test(ua) && /Apple/i.test(vendor);
+  const isOtherBrowser = /(Chrome|Chromium|CriOS|EdgiOS|Edg|OPR|Opera|Firefox|FxiOS|DuckDuckGo)/i.test(ua);
+  const isMobileViewport = window.matchMedia?.(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches ?? false;
+  return isSafariEngine && !isOtherBrowser && !isMobileViewport;
+}
+
 export function Web3CitiesUi({
   mode,
   onModeChange,
@@ -149,6 +159,7 @@ export function Web3CitiesUi({
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== 'undefined' ? window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`).matches : false
   );
+  const [isDesktopSafari, setIsDesktopSafari] = useState(() => detectDesktopSafari());
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [mobileNoticeVisible, setMobileNoticeVisible] = useState(false);
   const controlsRef = useRef<HTMLDivElement | null>(null);
@@ -181,6 +192,7 @@ export function Web3CitiesUi({
     const mediaQuery = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT_PX}px)`);
     const syncMobileState = () => {
       setIsMobile(mediaQuery.matches);
+      setIsDesktopSafari(detectDesktopSafari());
     };
 
     syncMobileState();
@@ -264,7 +276,10 @@ export function Web3CitiesUi({
   };
 
   return (
-    <div className={`web3-ui ${isMobile ? 'is-mobile' : 'is-desktop'}`} aria-live="polite">
+    <div
+      className={`web3-ui ${isMobile ? 'is-mobile' : 'is-desktop'}${isDesktopSafari ? ' is-desktop-safari' : ''}`}
+      aria-live="polite"
+    >
       <section className="web3-ui__corner web3-ui__corner--top-left">
         {isMobile ? (
           <div className="web3-ui__mobile-logo-wrap">
