@@ -6,6 +6,7 @@ import dawidPhotoUrl from '../../ds_photo.png';
 
 type HelpKey = 'mouse' | 'keyboard' | null;
 const MOBILE_BREAKPOINT_PX = 640;
+const WEB3_CITIES_SITE_URL = 'https://web3cities.dawidskinder.pl';
 
 const MODE_COPY: Record<
   CityMode,
@@ -178,7 +179,7 @@ export function Web3CitiesUi({
     };
   }, [isMobile, mobileMenuOpen]);
 
-  const currentUrl = typeof window !== 'undefined' ? window.location.href : 'https://www.dawidskinder.pl';
+  const currentUrl = typeof window !== 'undefined' ? window.location.href : WEB3_CITIES_SITE_URL;
   const shareHref = useMemo(() => {
     const text =
       'Web3 Cities turns live crypto data into cinematic, explorable worlds that make complex Web3 systems feel clear and worth exploring.';
