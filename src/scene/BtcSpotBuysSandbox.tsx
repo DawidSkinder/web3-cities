@@ -4384,6 +4384,8 @@ function MinimalOrbitRig({
   const keysRef = useRef<Record<string, boolean>>({});
   const dragRef = useRef({ dragging: false, pointerId: -1, lastX: 0, lastY: 0 });
   const debugEmitAtRef = useRef(0);
+  const lastZoomInSignalRef = useRef(zoomInSignal);
+  const lastZoomOutSignalRef = useRef(zoomOutSignal);
 
   useEffect(() => {
     clearFocusTargetRef.current = onClearFocusTarget;
@@ -4531,7 +4533,11 @@ function MinimalOrbitRig({
   }, [resetSignal]);
 
   useEffect(() => {
-    if (zoomInSignal <= 0 && zoomOutSignal <= 0) return;
+    const zoomInDelta = Math.max(0, zoomInSignal - lastZoomInSignalRef.current);
+    const zoomOutDelta = Math.max(0, zoomOutSignal - lastZoomOutSignalRef.current);
+    lastZoomInSignalRef.current = zoomInSignal;
+    lastZoomOutSignalRef.current = zoomOutSignal;
+    if (zoomInDelta <= 0 && zoomOutDelta <= 0) return;
 
     const control = controlRef.current;
     const px = smoothPosition.lengthSq() > 0 ? smoothPosition.x : camera.position.x;
@@ -4546,11 +4552,11 @@ function MinimalOrbitRig({
     }
     modeRef.current = 'user';
 
-    if (zoomInSignal > 0) {
-      control.distance -= 8;
+    if (zoomInDelta > 0) {
+      control.distance -= 8 * zoomInDelta;
     }
-    if (zoomOutSignal > 0) {
-      control.distance += 8;
+    if (zoomOutDelta > 0) {
+      control.distance += 8 * zoomOutDelta;
     }
   }, [camera, focusTarget, zoomInSignal, zoomOutSignal]);
 
