@@ -146,6 +146,10 @@ canvas {
   padding: 18px 18px 16px;
 }
 
+.web3-ui__panel--mode {
+  overflow: visible;
+}
+
 .web3-ui__panel--actions {
   padding: 14px;
   display: grid;
