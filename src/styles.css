@@ -330,8 +330,16 @@ canvas {
   pointer-events: auto;
 }
 
+.web3-ui__mobile-logo-wrap {
+  position: relative;
+  height: 42px;
+  display: flex;
+  align-items: center;
+}
+
 .web3-ui__mobile-menu-button {
   min-width: 42px;
+  height: 42px;
   justify-content: center;
   padding: 0 12px;
 }
@@ -664,8 +672,7 @@ canvas {
   .web3-ui__logo--mobile {
     width: auto;
     height: 24px;
-    align-self: center;
-    transform: translateY(2px);
+    display: block;
   }
 
   .web3-ui__body {
@@ -731,8 +738,8 @@ canvas {
   }
 
   .web3-ui__panel--mode .web3-ui__glyph {
-    width: 18px;
-    height: 18px;
+    width: 20px;
+    height: 20px;
   }
 
   .web3-ui__panel--mobile-notice {
