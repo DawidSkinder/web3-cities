@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CityMode } from '../lib/cityMode';
 import type { UiMetricPanel } from './cityMetrics';
 import web3CitiesLogoUrl from '../../dawidskinder_web3cities_logo_v1.svg';
+import dawidPhotoUrl from '../../ds_photo.png';
 
 type HelpKey = 'mouse' | 'keyboard' | null;
 
@@ -175,7 +176,8 @@ export function Web3CitiesUi({
               target="_blank"
               rel="noopener noreferrer"
             >
-              Build your web3 product with me
+              <span>Build your web3 product with me</span>
+              <img className="web3-ui__cta-photo" src={dawidPhotoUrl} alt="" aria-hidden="true" />
             </a>
 
             <a className="web3-ui__text-action" href={shareHref} target="_blank" rel="noopener noreferrer">

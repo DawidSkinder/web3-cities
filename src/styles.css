@@ -279,6 +279,7 @@ canvas {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   min-height: 42px;
   padding: 0 18px;
   border-radius: 999px;
@@ -298,10 +299,21 @@ canvas {
 
 .web3-ui__action-row .web3-ui__cta {
   flex: 1 1 auto;
+  justify-content: space-between;
 }
 
 .web3-ui__action-row .web3-ui__text-action {
   margin-left: auto;
+}
+
+.web3-ui__cta-photo {
+  display: block;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  border-radius: 999px;
+  object-fit: cover;
+  border: 1px solid rgba(241, 192, 142, 0.2);
 }
 
 .web3-ui__controls {
