@@ -665,7 +665,7 @@ canvas {
     width: auto;
     height: 24px;
     align-self: center;
-    transform: translateY(-1px);
+    transform: translateY(2px);
   }
 
   .web3-ui__body {
@@ -731,8 +731,8 @@ canvas {
   }
 
   .web3-ui__panel--mode .web3-ui__glyph {
-    width: 14px;
-    height: 14px;
+    width: 18px;
+    height: 18px;
   }
 
   .web3-ui__panel--mobile-notice {
