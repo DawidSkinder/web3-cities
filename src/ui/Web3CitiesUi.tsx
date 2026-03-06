@@ -137,7 +137,6 @@ export function Web3CitiesUi({
       <section className="web3-ui__corner web3-ui__corner--top-left">
         <div className="web3-ui__panel web3-ui__panel--brand">
           <img className="web3-ui__logo" src={web3CitiesLogoUrl} alt="Web3 Cities" />
-          <p className="web3-ui__eyebrow">Web3 Cities</p>
           <h1 className="web3-ui__headline">Designing clarity for complex Web3 systems.</h1>
           <p className="web3-ui__body">
             Web3 Cities transforms live crypto data into interactive worlds - showing how brand, product thinking, and UX
@@ -169,18 +168,20 @@ export function Web3CitiesUi({
             </button>
           </div>
 
-          <a className="web3-ui__text-action" href={shareHref} target="_blank" rel="noopener noreferrer">
-            Share on X
-          </a>
+          <div className="web3-ui__action-row">
+            <a
+              className="web3-ui__cta"
+              href="https://www.dawidskinder.pl"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Build your web3 product with me
+            </a>
 
-          <a
-            className="web3-ui__cta"
-            href="https://www.dawidskinder.pl"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Build your web3 product with me
-          </a>
+            <a className="web3-ui__text-action" href={shareHref} target="_blank" rel="noopener noreferrer">
+              Share on X
+            </a>
+          </div>
         </div>
       </section>
 
