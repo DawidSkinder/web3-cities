@@ -130,6 +130,14 @@ canvas {
   -webkit-backdrop-filter: blur(var(--ui-blur));
 }
 
+.web3-ui.is-desktop .web3-ui__panel {
+  background:
+    linear-gradient(180deg, rgba(19, 16, 14, 0.92), rgba(10, 10, 10, 0.82)),
+    linear-gradient(135deg, rgba(196, 133, 79, 0.06), rgba(255, 255, 255, 0.02));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .web3-ui__panel::after {
   content: '';
   position: absolute;
@@ -414,6 +422,12 @@ canvas {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   z-index: 8;
+}
+
+.web3-ui.is-desktop .web3-ui__popover {
+  background: rgba(10, 10, 10, 0.96);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .web3-ui__popover-title {

@@ -264,7 +264,7 @@ export function Web3CitiesUi({
   };
 
   return (
-    <div className="web3-ui" aria-live="polite">
+    <div className={`web3-ui ${isMobile ? 'is-mobile' : 'is-desktop'}`} aria-live="polite">
       <section className="web3-ui__corner web3-ui__corner--top-left">
         {isMobile ? (
           <div className="web3-ui__mobile-logo-wrap">
