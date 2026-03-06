@@ -206,9 +206,7 @@ export function Web3CitiesUi({
     <div className="web3-ui" aria-live="polite">
       <section className="web3-ui__corner web3-ui__corner--top-left">
         {isMobile ? (
-          <div className="web3-ui__panel web3-ui__panel--mobile-logo">
-            <img className="web3-ui__logo web3-ui__logo--mobile" src={web3CitiesLogoUrl} alt="Web3 Cities" />
-          </div>
+          <img className="web3-ui__logo web3-ui__logo--mobile" src={web3CitiesLogoUrl} alt="Web3 Cities" />
         ) : (
           <div className="web3-ui__panel web3-ui__panel--brand">
             <img className="web3-ui__logo" src={web3CitiesLogoUrl} alt="Web3 Cities" />

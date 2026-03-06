@@ -152,10 +152,6 @@ canvas {
   gap: 10px;
 }
 
-.web3-ui__panel--mobile-logo {
-  padding: 12px 14px;
-}
-
 .web3-ui__logo {
   display: block;
   width: min(188px, 100%);
@@ -520,7 +516,12 @@ canvas {
 
 .web3-ui__mobile-notice-wrap {
   position: fixed;
-  inset: auto var(--ui-safe) calc(var(--ui-safe) + 164px);
+  top: 50%;
+  left: 50%;
+  right: auto;
+  bottom: auto;
+  width: min(360px, calc(100vw - var(--ui-safe) * 2));
+  transform: translate(-50%, -50%);
   z-index: 24;
   pointer-events: none;
 }
@@ -624,6 +625,9 @@ canvas {
     left: var(--ui-safe);
     right: auto;
     width: auto;
+    display: flex;
+    align-items: center;
+    min-height: 42px;
   }
 
   .web3-ui__corner--top-right {
@@ -631,6 +635,9 @@ canvas {
     left: auto;
     right: var(--ui-safe);
     width: auto;
+    display: flex;
+    align-items: center;
+    min-height: 42px;
   }
 
   .web3-ui__corner--bottom-left {
@@ -647,6 +654,10 @@ canvas {
   .web3-ui__headline {
     max-width: 14ch;
     font-size: 28px;
+  }
+
+  .web3-ui__logo--mobile {
+    width: 108px;
   }
 
   .web3-ui__body {
@@ -669,7 +680,50 @@ canvas {
   }
 
   .web3-ui__panel--mode {
-    padding: 16px;
+    padding: 14px;
+  }
+
+  .web3-ui__panel--mode .web3-ui__eyebrow {
+    margin-bottom: 6px;
+    font-size: 9px;
+  }
+
+  .web3-ui__panel--mode .web3-ui__section-title {
+    font-size: 18px;
+  }
+
+  .web3-ui__panel--mode .web3-ui__body {
+    margin-top: 10px;
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  .web3-ui__panel--mode .web3-ui__controls {
+    margin-top: 14px;
+    padding-top: 10px;
+    gap: 8px;
+  }
+
+  .web3-ui__panel--mode .web3-ui__help-trigger {
+    min-height: 36px;
+    padding: 0 11px;
+    gap: 8px;
+    font-size: 12px;
+  }
+
+  .web3-ui__panel--mode .web3-ui__glyph {
+    width: 14px;
+    height: 14px;
+  }
+
+  .web3-ui__panel--mobile-notice {
+    padding: 14px;
+    gap: 12px;
+  }
+
+  .web3-ui__body--mobile-notice {
+    font-size: 13px;
+    line-height: 1.4;
   }
 
   .web3-ui__cta,
