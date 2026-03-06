@@ -260,6 +260,38 @@ type HoverHudSnapshot = {
   labelY: number;
 };
 
+type TopCoinsRuntimeProfile = {
+  isMobileViewport: boolean;
+  isMobileSafari: boolean;
+  mobileSafeDiscMode: boolean;
+  progressiveActivation: boolean;
+  discPriorityLimit: number;
+  fallbackTextureSize: number;
+  fallbackMipmaps: boolean;
+  allowTextureAnisotropy: boolean;
+  fallbackCacheLimit: number;
+  logoCacheLimit: number;
+  cacheStrategyKey: string;
+};
+
+type TopCoinsDiscTextureOptions = {
+  allowTextureAllocation: boolean;
+  fallbackTextureSize: number;
+  fallbackMipmaps: boolean;
+  allowTextureAnisotropy: boolean;
+  fallbackCacheLimit: number;
+  logoCacheLimit: number;
+  eagerFallbackForLogos: boolean;
+};
+
+type ProgressiveLayerState = {
+  streets: boolean;
+  discs: boolean;
+  traffic: boolean;
+  parks: boolean;
+  birds: boolean;
+};
+
 type AccumState = {
   processedSequences: Set<number>;
   towers: TowerDatum[];
@@ -436,6 +468,7 @@ const MAX_PARKS_VISIBLE = 24;
 const TOP_REPLAY_HISTORY_MAX = 30;
 const TOP_COINS_UNIVERSE_LIMIT = 150;
 const TOP_COINS_DISC_GAINERS = 50;
+const TOP_COINS_MOBILE_DISC_GAINERS = 10;
 const TOP_COINS_QUOTE_ASSET = 'USDT';
 const TOP_COINS_CHANGE_TF_LABEL = '24h';
 const TOP_INTRO_TIME_SCALE = RUNTIME_QUALITY_CONFIG.reducedMotion ? 0.45 : 1;
@@ -528,6 +561,15 @@ const TOP_BIRD_MAX_ALTITUDE_STEP_BASE = 1.15;
 const TOP_BIRD_MAX_ALTITUDE_STEP_LIFT = 1.85;
 const TOP_BIRD_PITCH_SCALE_GAIN = 1.2;
 const TOP_BIRD_OPACITY = 0.24;
+const TOP_COINS_MOBILE_FALLBACK_TEXTURE_SIZE = 96;
+const TOP_COINS_DESKTOP_FALLBACK_TEXTURE_SIZE = 256;
+const TOP_COINS_MOBILE_FALLBACK_CACHE_LIMIT = 24;
+const TOP_COINS_DESKTOP_FALLBACK_CACHE_LIMIT = 160;
+const TOP_COINS_MOBILE_LOGO_CACHE_LIMIT = 24;
+const TOP_COINS_DESKTOP_LOGO_CACHE_LIMIT = 96;
+const TOP_COINS_PROGRESSIVE_STAGE_ORDER: Array<keyof ProgressiveLayerState> = ['streets', 'discs', 'traffic', 'parks', 'birds'];
+const TOP_COINS_PROGRESSIVE_STABLE_FRAME_BUDGET_MS = 26;
+const TOP_COINS_PROGRESSIVE_STABLE_WINDOW_MS = 420;
 
 const PARK_FORCE_FIRST_BY_TOWER_COUNT = 60;
 const PARK_CANDIDATE_ATTEMPTS = 28;
@@ -661,6 +703,200 @@ const HOVER_HUD_HIDDEN: HoverHudSnapshot = {
   labelX: 0,
   labelY: 0
 };
+
+const PROGRESSIVE_LAYERS_DISABLED: ProgressiveLayerState = {
+  streets: false,
+  discs: false,
+  traffic: false,
+  parks: false,
+  birds: false
+};
+
+const PROGRESSIVE_LAYERS_ENABLED: ProgressiveLayerState = {
+  streets: true,
+  discs: true,
+  traffic: true,
+  parks: true,
+  birds: true
+};
+
+function buildProgressiveLayerState(stage: number): ProgressiveLayerState {
+  const safeStage = Math.max(0, stage);
+  return {
+    streets: safeStage >= 1,
+    discs: safeStage >= 2,
+    traffic: safeStage >= 3,
+    parks: safeStage >= 4,
+    birds: safeStage >= 5
+  };
+}
+
+function detectTopCoinsRuntimeProfile(): TopCoinsRuntimeProfile {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return {
+      isMobileViewport: false,
+      isMobileSafari: false,
+      mobileSafeDiscMode: false,
+      progressiveActivation: false,
+      discPriorityLimit: TOP_COINS_DISC_GAINERS,
+      fallbackTextureSize: TOP_COINS_DESKTOP_FALLBACK_TEXTURE_SIZE,
+      fallbackMipmaps: true,
+      allowTextureAnisotropy: true,
+      fallbackCacheLimit: TOP_COINS_DESKTOP_FALLBACK_CACHE_LIMIT,
+      logoCacheLimit: TOP_COINS_DESKTOP_LOGO_CACHE_LIMIT,
+      cacheStrategyKey: 'desktop'
+    };
+  }
+
+  const ua = navigator.userAgent || '';
+  const platform = navigator.platform || '';
+  const touchPoints = navigator.maxTouchPoints || 0;
+  const coarsePointer =
+    typeof window.matchMedia === 'function'
+      ? window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(hover: none)').matches
+      : false;
+  const minViewport = Math.min(window.innerWidth || 0, window.innerHeight || 0);
+  const isMobileViewport = coarsePointer || minViewport <= 900;
+  const isAppleMobile = /iPhone|iPad|iPod/i.test(ua) || (platform === 'MacIntel' && touchPoints > 1);
+  const isWebKit = /WebKit/i.test(ua);
+  const isOtherIosBrowser = /(CriOS|FxiOS|EdgiOS|OPiOS|OPT\/|DuckDuckGo|YaBrowser|Puffin)/i.test(ua);
+  const isMobileSafari = isAppleMobile && isWebKit && !isOtherIosBrowser;
+  const mobileSafeDiscMode = isMobileViewport;
+  const progressiveActivation = isMobileSafari && isMobileViewport;
+  const discPriorityLimit = mobileSafeDiscMode ? TOP_COINS_MOBILE_DISC_GAINERS : TOP_COINS_DISC_GAINERS;
+  const fallbackTextureSize = mobileSafeDiscMode
+    ? TOP_COINS_MOBILE_FALLBACK_TEXTURE_SIZE
+    : TOP_COINS_DESKTOP_FALLBACK_TEXTURE_SIZE;
+  const fallbackMipmaps = !mobileSafeDiscMode;
+  const allowTextureAnisotropy = !mobileSafeDiscMode;
+  const fallbackCacheLimit = mobileSafeDiscMode
+    ? TOP_COINS_MOBILE_FALLBACK_CACHE_LIMIT
+    : TOP_COINS_DESKTOP_FALLBACK_CACHE_LIMIT;
+  const logoCacheLimit = mobileSafeDiscMode ? TOP_COINS_MOBILE_LOGO_CACHE_LIMIT : TOP_COINS_DESKTOP_LOGO_CACHE_LIMIT;
+
+  return {
+    isMobileViewport,
+    isMobileSafari,
+    mobileSafeDiscMode,
+    progressiveActivation,
+    discPriorityLimit,
+    fallbackTextureSize,
+    fallbackMipmaps,
+    allowTextureAnisotropy,
+    fallbackCacheLimit,
+    logoCacheLimit,
+    cacheStrategyKey: [
+      mobileSafeDiscMode ? 'm' : 'd',
+      progressiveActivation ? 'p' : 's',
+      fallbackTextureSize,
+      fallbackMipmaps ? 'mip' : 'nomip',
+      allowTextureAnisotropy ? 'aniso' : 'noaniso'
+    ].join(':')
+  };
+}
+
+function useTopCoinsRuntimeProfile() {
+  const [profile, setProfile] = useState<TopCoinsRuntimeProfile>(() => detectTopCoinsRuntimeProfile());
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const update = () => {
+      setProfile((prev) => {
+        const next = detectTopCoinsRuntimeProfile();
+        return prev.cacheStrategyKey === next.cacheStrategyKey && prev.discPriorityLimit === next.discPriorityLimit
+          ? prev
+          : next;
+      });
+    };
+
+    update();
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('resize', update);
+    };
+  }, []);
+
+  return profile;
+}
+
+function useTopCoinsProgressiveLayers(options: {
+  enabled: boolean;
+  introLifeAlpha: number;
+  activeTowerCount: number;
+}) {
+  const { enabled, introLifeAlpha, activeTowerCount } = options;
+  const hasActiveTowers = activeTowerCount > 0;
+  const [layers, setLayers] = useState<ProgressiveLayerState>(() =>
+    enabled ? PROGRESSIVE_LAYERS_DISABLED : PROGRESSIVE_LAYERS_ENABLED
+  );
+  const introLifeAlphaRef = useRef(introLifeAlpha);
+  const stageRef = useRef(enabled ? 0 : TOP_COINS_PROGRESSIVE_STAGE_ORDER.length);
+  const stableWindowRef = useRef(0);
+
+  useEffect(() => {
+    introLifeAlphaRef.current = introLifeAlpha;
+  }, [introLifeAlpha]);
+
+  useEffect(() => {
+    if (!enabled) {
+      stageRef.current = TOP_COINS_PROGRESSIVE_STAGE_ORDER.length;
+      stableWindowRef.current = 0;
+      setLayers(PROGRESSIVE_LAYERS_ENABLED);
+      return;
+    }
+
+    stageRef.current = 0;
+    stableWindowRef.current = 0;
+    setLayers(PROGRESSIVE_LAYERS_DISABLED);
+
+    if (!hasActiveTowers) {
+      return;
+    }
+
+    let raf = 0;
+    let mounted = true;
+    let last = performance.now();
+
+    const tick = (now: number) => {
+      if (!mounted) return;
+
+      const dt = Math.max(0, now - last);
+      last = now;
+
+      if (introLifeAlphaRef.current <= 0.01) {
+        stableWindowRef.current = 0;
+        raf = window.requestAnimationFrame(tick);
+        return;
+      }
+
+      if (dt <= TOP_COINS_PROGRESSIVE_STABLE_FRAME_BUDGET_MS) {
+        stableWindowRef.current += dt;
+      } else {
+        stableWindowRef.current = 0;
+      }
+
+      if (
+        stableWindowRef.current >= TOP_COINS_PROGRESSIVE_STABLE_WINDOW_MS &&
+        stageRef.current < TOP_COINS_PROGRESSIVE_STAGE_ORDER.length
+      ) {
+        stageRef.current += 1;
+        stableWindowRef.current = 0;
+        setLayers(buildProgressiveLayerState(stageRef.current));
+      }
+
+      raf = window.requestAnimationFrame(tick);
+    };
+
+    raf = window.requestAnimationFrame(tick);
+    return () => {
+      mounted = false;
+      window.cancelAnimationFrame(raf);
+    };
+  }, [enabled, hasActiveTowers]);
+
+  return enabled ? layers : PROGRESSIVE_LAYERS_ENABLED;
+}
 
 function clampFinite(value: number, fallback: number, min?: number, max?: number) {
   const safe = Number.isFinite(value) ? value : fallback;
@@ -833,11 +1069,17 @@ function finalizeCanvasTexture(texture: CanvasTexture) {
   return texture;
 }
 
-function finalizeTopCoinDiscTexture<T extends Texture>(texture: T) {
+function finalizeTopCoinDiscTexture<T extends Texture>(
+  texture: T,
+  options?: {
+    generateMipmaps?: boolean;
+  }
+) {
+  const generateMipmaps = options?.generateMipmaps ?? true;
   texture.colorSpace = SRGBColorSpace;
-  texture.minFilter = LinearMipmapLinearFilter;
+  texture.minFilter = generateMipmaps ? LinearMipmapLinearFilter : LinearFilter;
   texture.magFilter = LinearFilter;
-  texture.generateMipmaps = true;
+  texture.generateMipmaps = generateMipmaps;
   texture.needsUpdate = true;
   return texture;
 }
@@ -3105,7 +3347,11 @@ function topCoinBaseScale({
   return MathUtils.clamp(scale, 0.85, 2.65);
 }
 
-function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: boolean) {
+function useTopCoinsSkyline(
+  snapshot: TopCoinsSnapshot | null,
+  layer2Ready: boolean,
+  runtimeProfile: TopCoinsRuntimeProfile
+) {
   const statesRef = useRef<Map<string, TopCoinSymbolState>>(new Map());
   const tracesRef = useRef<TraceDatum[]>([]);
   const arterialTracesRef = useRef<TraceDatum[]>([]);
@@ -3353,7 +3599,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
                 a.rankByQuoteVolume - b.rankByQuoteVolume ||
                 a.symbol.localeCompare(b.symbol)
             );
-      return new Set(source.slice(0, TOP_COINS_DISC_GAINERS).map((item) => item.symbol));
+      return new Set(source.slice(0, runtimeProfile.discPriorityLimit).map((item) => item.symbol));
     })();
     let changedTowers = 0;
     let heightDeltaSum = 0;
@@ -3944,7 +4190,17 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null, layer2Ready: bool
     } else {
       setVersion((v) => v + 1);
     }
-  }, [activeSnapshot, historyVersion, layer2Ready, replayEnabled, replayIndex, replayMax, replayOffset, snapshot]);
+  }, [
+    activeSnapshot,
+    historyVersion,
+    layer2Ready,
+    replayEnabled,
+    replayIndex,
+    replayMax,
+    replayOffset,
+    runtimeProfile.discPriorityLimit,
+    snapshot
+  ]);
 
   useEffect(() => {
     if (replayEnabled || !layer2Ready || introRef.current.hasRun || statesRef.current.size === 0) return;
@@ -5051,6 +5307,48 @@ const topCoinLogoTextureCache = new Map<string, Texture | null>();
 const topCoinLogoTextureInflight = new Map<string, Promise<Texture | null>>();
 const topCoinTickerTextureCache = new Map<string, CanvasTexture>();
 const topCoinLogoLoader = new TextureLoader();
+let topCoinTextureCacheEpoch = 0;
+
+function disposeTopCoinTexture(texture: Texture | null | undefined) {
+  texture?.dispose();
+}
+
+function touchTopCoinTextureCacheEntry<T>(cache: Map<string, T>, key: string, value: T) {
+  if (cache.has(key)) {
+    cache.delete(key);
+  }
+  cache.set(key, value);
+}
+
+function trimTopCoinTextureCache<T>(
+  cache: Map<string, T>,
+  limit: number,
+  dispose?: (value: T) => void
+) {
+  while (cache.size > Math.max(1, limit)) {
+    const first = cache.keys().next();
+    if (first.done) return;
+    const key = first.value;
+    const value = cache.get(key);
+    cache.delete(key);
+    if (value !== undefined) {
+      dispose?.(value);
+    }
+  }
+}
+
+function clearTopCoinTextureCaches() {
+  topCoinTextureCacheEpoch += 1;
+  for (const texture of topCoinLogoTextureCache.values()) {
+    disposeTopCoinTexture(texture);
+  }
+  for (const texture of topCoinTickerTextureCache.values()) {
+    texture.dispose();
+  }
+  topCoinLogoTextureCache.clear();
+  topCoinLogoTextureInflight.clear();
+  topCoinTickerTextureCache.clear();
+}
 
 function resolveTopCoinLogoUrl(logoPath: string) {
   if (/^https?:\/\//i.test(logoPath)) return null;
@@ -5062,18 +5360,25 @@ function resolveTopCoinLogoUrl(logoPath: string) {
   return `${normalizedBase}/${logoPath}`;
 }
 
-function getTopCoinTickerTexture(ticker: string) {
-  const key = ticker.trim().toUpperCase() || 'N/A';
-  const existing = topCoinTickerTextureCache.get(key);
-  if (existing) return existing;
+function getTopCoinTickerTexture(ticker: string, options: TopCoinsDiscTextureOptions) {
+  const tickerKey = ticker.trim().toUpperCase() || 'N/A';
+  const cacheKey = `${options.fallbackTextureSize}:${options.fallbackMipmaps ? 'mip' : 'nomip'}:${tickerKey}`;
+  const existing = topCoinTickerTextureCache.get(cacheKey);
+  if (existing) {
+    touchTopCoinTextureCacheEntry(topCoinTickerTextureCache, cacheKey, existing);
+    return existing;
+  }
 
   const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 1024;
+  canvas.width = options.fallbackTextureSize;
+  canvas.height = options.fallbackTextureSize;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
-    const fallback = finalizeTopCoinDiscTexture(finalizeCanvasTexture(new CanvasTexture(canvas)));
-    topCoinTickerTextureCache.set(key, fallback);
+    const fallback = finalizeTopCoinDiscTexture(finalizeCanvasTexture(new CanvasTexture(canvas)), {
+      generateMipmaps: options.fallbackMipmaps
+    });
+    touchTopCoinTextureCacheEntry(topCoinTickerTextureCache, cacheKey, fallback);
+    trimTopCoinTextureCache(topCoinTickerTextureCache, options.fallbackCacheLimit, (texture) => texture.dispose());
     return fallback;
   }
 
@@ -5093,7 +5398,7 @@ function getTopCoinTickerTexture(ticker: string) {
 
   ctx.beginPath();
   ctx.arc(center, center, ring, 0, Math.PI * 2);
-  ctx.lineWidth = 8;
+  ctx.lineWidth = Math.max(2, canvas.width * 0.008);
   ctx.strokeStyle = 'rgba(247,147,26,0.82)';
   ctx.stroke();
 
@@ -5105,47 +5410,77 @@ function getTopCoinTickerTexture(ticker: string) {
   ctx.fillStyle = '#fff7ea';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const label = key.length > 5 ? key.slice(0, 5) : key;
-  ctx.lineWidth = 20;
+  const label = tickerKey.length > 5 ? tickerKey.slice(0, 5) : tickerKey;
+  const fontSize = Math.max(
+    Math.floor(canvas.width * 0.22),
+    Math.floor(canvas.width * (label.length <= 3 ? 0.31 : label.length === 4 ? 0.27 : 0.23))
+  );
+  ctx.lineWidth = Math.max(3, canvas.width * 0.02);
   ctx.strokeStyle = 'rgba(7,9,12,0.86)';
-  ctx.font = `900 ${Math.max(176, Math.floor(318 - Math.max(0, label.length - 3) * 28))}px ui-sans-serif, system-ui, sans-serif`;
+  ctx.font = `900 ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
   ctx.shadowColor = 'rgba(247,147,26,0.25)';
-  ctx.shadowBlur = 16;
+  ctx.shadowBlur = Math.max(4, canvas.width * 0.016);
   ctx.strokeText(label, center, center);
   ctx.shadowBlur = 0;
   ctx.fillText(label, center, center);
 
-  const texture = finalizeTopCoinDiscTexture(finalizeCanvasTexture(new CanvasTexture(canvas)));
-  topCoinTickerTextureCache.set(key, texture);
+  const texture = finalizeTopCoinDiscTexture(finalizeCanvasTexture(new CanvasTexture(canvas)), {
+    generateMipmaps: options.fallbackMipmaps
+  });
+  touchTopCoinTextureCacheEntry(topCoinTickerTextureCache, cacheKey, texture);
+  trimTopCoinTextureCache(topCoinTickerTextureCache, options.fallbackCacheLimit, (value) => value.dispose());
   return texture;
 }
 
-function loadTopCoinLogoTexture(logoPath: string) {
+function loadTopCoinLogoTexture(logoPath: string, options: TopCoinsDiscTextureOptions) {
   const cached = topCoinLogoTextureCache.get(logoPath);
-  if (cached !== undefined) return Promise.resolve(cached);
+  if (cached !== undefined) {
+    touchTopCoinTextureCacheEntry(topCoinLogoTextureCache, logoPath, cached);
+    return Promise.resolve(cached);
+  }
   const inFlight = topCoinLogoTextureInflight.get(logoPath);
   if (inFlight) return inFlight;
-
-  const promise = new Promise<Texture | null>((resolve) => {
+  const epoch = topCoinTextureCacheEpoch;
+  let promise: Promise<Texture | null>;
+  promise = new Promise<Texture | null>((resolve) => {
     const url = resolveTopCoinLogoUrl(logoPath);
     if (!url) {
-      topCoinLogoTextureCache.set(logoPath, null);
-      topCoinLogoTextureInflight.delete(logoPath);
+      touchTopCoinTextureCacheEntry(topCoinLogoTextureCache, logoPath, null);
+      trimTopCoinTextureCache(topCoinLogoTextureCache, options.logoCacheLimit, (value) => disposeTopCoinTexture(value));
+      if (topCoinLogoTextureInflight.get(logoPath) === promise) {
+        topCoinLogoTextureInflight.delete(logoPath);
+      }
       resolve(null);
       return;
     }
     topCoinLogoLoader.load(
       url,
       (texture) => {
+        if (epoch !== topCoinTextureCacheEpoch) {
+          texture.dispose();
+          if (topCoinLogoTextureInflight.get(logoPath) === promise) {
+            topCoinLogoTextureInflight.delete(logoPath);
+          }
+          resolve(null);
+          return;
+        }
         finalizeTopCoinDiscTexture(texture);
-        topCoinLogoTextureCache.set(logoPath, texture);
-        topCoinLogoTextureInflight.delete(logoPath);
+        touchTopCoinTextureCacheEntry(topCoinLogoTextureCache, logoPath, texture);
+        trimTopCoinTextureCache(topCoinLogoTextureCache, options.logoCacheLimit, (value) => disposeTopCoinTexture(value));
+        if (topCoinLogoTextureInflight.get(logoPath) === promise) {
+          topCoinLogoTextureInflight.delete(logoPath);
+        }
         resolve(texture);
       },
       undefined,
       () => {
-        topCoinLogoTextureCache.set(logoPath, null);
-        topCoinLogoTextureInflight.delete(logoPath);
+        if (epoch === topCoinTextureCacheEpoch) {
+          touchTopCoinTextureCacheEntry(topCoinLogoTextureCache, logoPath, null);
+          trimTopCoinTextureCache(topCoinLogoTextureCache, options.logoCacheLimit, (value) => disposeTopCoinTexture(value));
+        }
+        if (topCoinLogoTextureInflight.get(logoPath) === promise) {
+          topCoinLogoTextureInflight.delete(logoPath);
+        }
         resolve(null);
       }
     );
@@ -5155,17 +5490,42 @@ function loadTopCoinLogoTexture(logoPath: string) {
   return promise;
 }
 
-function useTopCoinDiscTexture(logoPath: string | null | undefined, ticker: string) {
-  const fallback = useMemo(() => getTopCoinTickerTexture(ticker), [ticker]);
-  const [state, setState] = useState<{ texture: Texture; usingFallback: boolean }>({
+function useTopCoinDiscTexture(
+  logoPath: string | null | undefined,
+  ticker: string,
+  options: TopCoinsDiscTextureOptions
+) {
+  const fallback = useMemo(() => {
+    if (!options.allowTextureAllocation) return null;
+    if (!options.eagerFallbackForLogos && logoPath) return null;
+    return getTopCoinTickerTexture(ticker, options);
+  }, [
+    logoPath,
+    options.allowTextureAllocation,
+    options.eagerFallbackForLogos,
+    options.fallbackCacheLimit,
+    options.fallbackMipmaps,
+    options.fallbackTextureSize,
+    options.logoCacheLimit,
+    ticker
+  ]);
+  const [state, setState] = useState<{ texture: Texture | null; usingFallback: boolean }>({
     texture: fallback,
-    usingFallback: true
+    usingFallback: Boolean(fallback)
   });
 
   useEffect(() => {
     let mounted = true;
+    if (!options.allowTextureAllocation) {
+      setState({ texture: null, usingFallback: false });
+      return () => {
+        mounted = false;
+      };
+    }
+
     if (!logoPath) {
-      setState({ texture: fallback, usingFallback: true });
+      const nextFallback = fallback ?? getTopCoinTickerTexture(ticker, options);
+      setState({ texture: nextFallback, usingFallback: true });
       return () => {
         mounted = false;
       };
@@ -5173,21 +5533,36 @@ function useTopCoinDiscTexture(logoPath: string | null | undefined, ticker: stri
 
     const cached = topCoinLogoTextureCache.get(logoPath);
     if (cached !== undefined) {
-      setState({ texture: cached ?? fallback, usingFallback: !cached });
+      touchTopCoinTextureCacheEntry(topCoinLogoTextureCache, logoPath, cached);
+      const nextFallback = cached
+        ? null
+        : fallback ?? getTopCoinTickerTexture(ticker, options);
+      setState({ texture: cached ?? nextFallback, usingFallback: !cached });
       return () => {
         mounted = false;
       };
     }
 
-    loadTopCoinLogoTexture(logoPath).then((loaded) => {
+    if (fallback) {
+      setState({ texture: fallback, usingFallback: true });
+    } else {
+      setState({ texture: null, usingFallback: false });
+    }
+
+    loadTopCoinLogoTexture(logoPath, options).then((loaded) => {
       if (!mounted) return;
-      setState({ texture: loaded ?? fallback, usingFallback: !loaded });
+      if (loaded) {
+        setState({ texture: loaded, usingFallback: false });
+        return;
+      }
+      const nextFallback = fallback ?? getTopCoinTickerTexture(ticker, options);
+      setState({ texture: nextFallback, usingFallback: true });
     });
 
     return () => {
       mounted = false;
     };
-  }, [fallback, logoPath]);
+  }, [fallback, logoPath, options, ticker]);
 
   return state;
 }
@@ -5197,6 +5572,7 @@ function TopCoinLogoDisc({
   focusMode,
   isHovered,
   isSelected,
+  discTextureOptions,
   focusAnchorX = 0,
   focusAnchorZ = 0,
   introLifeAlpha = 1,
@@ -5207,6 +5583,7 @@ function TopCoinLogoDisc({
   focusMode: boolean;
   isHovered: boolean;
   isSelected: boolean;
+  discTextureOptions: TopCoinsDiscTextureOptions;
   focusAnchorX?: number;
   focusAnchorZ?: number;
   introLifeAlpha?: number;
@@ -5222,14 +5599,14 @@ function TopCoinLogoDisc({
   const worldPosRef = useRef(new Vector3());
   const ndcRef = useRef(new Vector3());
   const ticker = useMemo(() => getTopCoinTicker(tower.symbol, tower.baseAsset), [tower.baseAsset, tower.symbol]);
-  const { texture, usingFallback } = useTopCoinDiscTexture(tower.logoPath, ticker);
+  const { texture, usingFallback } = useTopCoinDiscTexture(tower.logoPath, ticker, discTextureOptions);
 
   useEffect(() => {
     if (!texture) return;
-    const maxAniso = gl.capabilities.getMaxAnisotropy();
-    texture.anisotropy = Math.max(2, Math.min(8, maxAniso || 1));
+    const maxAniso = discTextureOptions.allowTextureAnisotropy ? gl.capabilities.getMaxAnisotropy() : 1;
+    texture.anisotropy = discTextureOptions.allowTextureAnisotropy ? Math.max(2, Math.min(8, maxAniso || 1)) : 1;
     texture.needsUpdate = true;
-  }, [gl, texture]);
+  }, [discTextureOptions.allowTextureAnisotropy, gl, texture]);
 
   useEffect(() => {
     return () => {
@@ -5257,9 +5634,10 @@ function TopCoinLogoDisc({
     const introFade = MathUtils.clamp(introLifeAlpha, 0, 1) * introDelay;
     const transitionVisibility = 1 - smoothstep01(remapClamped(transitionLoad, 0.05, 0.22));
     const baseLodAlpha = MathUtils.clamp(priorityAlpha * introFade * transitionVisibility, 0, 1);
+    const trackScreenOcclusion = Boolean(texture) || isForceVisible;
 
     // Keep very-low-priority discs nearly free in far/default views.
-    if (!isForceVisible && baseLodAlpha < 0.01 && !isPriority) {
+    if (!trackScreenOcclusion || (!isForceVisible && baseLodAlpha < 0.01 && !isPriority)) {
       topCoinDiscScreenRegistry.delete(tower.sequence);
     }
 
@@ -5284,7 +5662,7 @@ function TopCoinLogoDisc({
 
     const projected = ndcRef.current.copy(worldPosRef.current).project(camera);
     const nowPerf = performance.now();
-    if (baseLodAlpha >= 0.01 || isForceVisible) {
+    if (trackScreenOcclusion && (baseLodAlpha >= 0.01 || isForceVisible)) {
       topCoinDiscScreenRegistry.set(tower.sequence, {
         x: projected.x,
         y: projected.y,
@@ -5294,7 +5672,7 @@ function TopCoinLogoDisc({
     }
 
     let screenOcclusion = tower.discOcclusion ?? 0;
-    if (baseLodAlpha >= 0.02 || isForceVisible) {
+    if (trackScreenOcclusion && (baseLodAlpha >= 0.02 || isForceVisible)) {
       const screenThresholdX = 0.11 * MathUtils.clamp(1200 / Math.max(320, size.width), 0.78, 1.4);
       const screenThresholdY = 0.15 * MathUtils.clamp(900 / Math.max(320, size.height), 0.78, 1.4);
       for (const [sequence, other] of topCoinDiscScreenRegistry) {
@@ -5330,7 +5708,11 @@ function TopCoinLogoDisc({
     if (bodyMat) bodyMat.opacity = MathUtils.damp(bodyMat.opacity ?? 0.72, 0.72 * dimFactor * hoverBoost * lodAlpha, 8, delta);
     const plateMat = fallbackPlateRef.current?.material as { opacity?: number } | undefined;
     if (plateMat) {
-      const plateTarget = usingFallback ? 0.66 * dimFactor * lodAlpha : 0;
+      const plateTarget = usingFallback
+        ? 0.66 * dimFactor * hoverBoost * lodAlpha
+        : !texture
+          ? 0.18 * dimFactor * hoverBoost * lodAlpha
+          : 0;
       plateMat.opacity = MathUtils.damp(plateMat.opacity ?? 0, plateTarget, 8, delta);
     }
     const discMat = discRef.current?.material as { opacity?: number } | undefined;
@@ -5359,17 +5741,19 @@ function TopCoinLogoDisc({
         <primitive attach="geometry" object={TOP_DISC_FACE_GEOMETRY} />
         <meshBasicMaterial color="#06080c" transparent opacity={0} toneMapped={false} depthTest depthWrite={false} />
       </mesh>
-      <mesh ref={discRef} position={[0, 0, -0.008]} renderOrder={6.952}>
-        <primitive attach="geometry" object={TOP_DISC_FACE_GEOMETRY} />
-        <meshBasicMaterial
-          map={texture}
-          transparent
-          opacity={0.96}
-          toneMapped={false}
-          depthTest
-          depthWrite={false}
-        />
-      </mesh>
+      {texture ? (
+        <mesh ref={discRef} position={[0, 0, -0.008]} renderOrder={6.952}>
+          <primitive attach="geometry" object={TOP_DISC_FACE_GEOMETRY} />
+          <meshBasicMaterial
+            map={texture}
+            transparent
+            opacity={0.96}
+            toneMapped={false}
+            depthTest
+            depthWrite={false}
+          />
+        </mesh>
+      ) : null}
       <mesh ref={ringRef} position={[0, 0, -0.004]} renderOrder={6.953}>
         <primitive attach="geometry" object={TOP_DISC_RING_GEOMETRY} />
         <meshBasicMaterial
@@ -5645,7 +6029,9 @@ function AnimatedHoloTower({
   isTallest,
   onHoverTower,
   onSelectTower,
-  topFx
+  topFx,
+  topCoinsRuntimeProfile,
+  discTexturesReady = true
 }: {
   tower: TowerDatum;
   hoveredTowerSequence: number | null;
@@ -5655,6 +6041,8 @@ function AnimatedHoloTower({
   isTallest: boolean;
   onHoverTower?: (sequence: number | null) => void;
   onSelectTower?: (sequence: number) => void;
+  topCoinsRuntimeProfile?: TopCoinsRuntimeProfile;
+  discTexturesReady?: boolean;
   topFx?: {
     introBootAlpha: number;
     introLifeAlpha: number;
@@ -5754,6 +6142,36 @@ function AnimatedHoloTower({
   const isHovered = hoveredTowerSequence === tower.sequence;
   const isSelected = selectedTowerSequence === tower.sequence;
   const focusMode = hoveredTowerSequence != null;
+  const discTextureOptions = useMemo<TopCoinsDiscTextureOptions>(
+    () => {
+      const runtimeProfile =
+        topCoinsRuntimeProfile ??
+        ({
+          mobileSafeDiscMode: false,
+          fallbackTextureSize: TOP_COINS_DESKTOP_FALLBACK_TEXTURE_SIZE,
+          fallbackMipmaps: true,
+          allowTextureAnisotropy: true,
+          fallbackCacheLimit: TOP_COINS_DESKTOP_FALLBACK_CACHE_LIMIT,
+          logoCacheLimit: TOP_COINS_DESKTOP_LOGO_CACHE_LIMIT
+        } as TopCoinsRuntimeProfile);
+      const isPriority = Boolean(tower.isDiscPriority);
+      const allowTextureAllocation =
+        !runtimeProfile.mobileSafeDiscMode ||
+        isHovered ||
+        isSelected ||
+        (isPriority && discTexturesReady);
+      return {
+        allowTextureAllocation,
+        fallbackTextureSize: runtimeProfile.fallbackTextureSize,
+        fallbackMipmaps: runtimeProfile.fallbackMipmaps,
+        allowTextureAnisotropy: runtimeProfile.allowTextureAnisotropy,
+        fallbackCacheLimit: runtimeProfile.fallbackCacheLimit,
+        logoCacheLimit: runtimeProfile.logoCacheLimit,
+        eagerFallbackForLogos: !runtimeProfile.mobileSafeDiscMode
+      };
+    },
+    [discTexturesReady, isHovered, isSelected, topCoinsRuntimeProfile, tower.isDiscPriority]
+  );
 
   useFrame((_, delta) => {
     const group = groupRef.current;
@@ -6242,6 +6660,7 @@ function AnimatedHoloTower({
           focusMode={focusMode}
           isHovered={isHovered}
           isSelected={isSelected}
+          discTextureOptions={discTextureOptions}
           focusAnchorX={discFocusAnchorX}
           focusAnchorZ={discFocusAnchorZ}
           introLifeAlpha={topFx?.introLifeAlpha ?? 1}
@@ -9085,6 +9504,7 @@ function SandboxScene({
   bounds,
   marketMoodTarget,
   topFx,
+  topCoinsRuntimeProfile,
   layer2Visible = true,
   groundIntroBootAlpha,
   hoveredTowerSequence,
@@ -9117,6 +9537,7 @@ function SandboxScene({
     clutter: number;
     transitionLoad: number;
   };
+  topCoinsRuntimeProfile?: TopCoinsRuntimeProfile;
   layer2Visible?: boolean;
   groundIntroBootAlpha?: number;
   hoveredTowerSequence: number | null;
@@ -9137,6 +9558,11 @@ function SandboxScene({
     clutter: 0,
     transitionLoad: 0
   };
+  const progressiveLayers = useTopCoinsProgressiveLayers({
+    enabled: Boolean(topCoinsRuntimeProfile?.progressiveActivation),
+    introLifeAlpha: fx.introLifeAlpha,
+    activeTowerCount: towers.length
+  });
   const renderedTowers = useMemo(() => {
     if (!layer2Visible) return [] as TowerDatum[];
     const hasPendingIntroMount = topFx ? towers.some((tower) => !Number.isFinite(tower.emittedAt)) : false;
@@ -9192,7 +9618,11 @@ function SandboxScene({
   const focusMode = hoveredTowerSequence != null;
   const introNetworkAlpha = topFx ? smoothstep01(remapClamped(fx.introLifeAlpha, 0.02, 0.98)) : 1;
   const transitionLoad = MathUtils.clamp(fx.transitionLoad ?? 0, 0, 1);
-  const transitionHideNetwork = !layer2Visible || transitionLoad > 0.08 || introNetworkAlpha <= 0.01;
+  const transitionHideNetwork =
+    !layer2Visible ||
+    transitionLoad > 0.08 ||
+    introNetworkAlpha <= 0.01 ||
+    !progressiveLayers.streets;
   const tracesRender = useMemo(() => {
     if (transitionHideNetwork) return [] as TraceDatum[];
     return traces;
@@ -9202,11 +9632,14 @@ function SandboxScene({
     return arterialTraces;
   }, [arterialTraces, transitionHideNetwork]);
   const trafficRender = useMemo(() => {
-    if (transitionHideNetwork) return [] as TrafficParticleDatum[];
+    if (transitionHideNetwork || !progressiveLayers.traffic) return [] as TrafficParticleDatum[];
     return trafficParticles;
-  }, [trafficParticles, transitionHideNetwork]);
-  const showParksLayer = layer2Visible && (!topFx || fx.introLifeAlpha > 0.001);
-  const showParkFireflies = layer2Visible && (!topFx || (!fx.introActive && fx.introProgress >= 0.995));
+  }, [progressiveLayers.traffic, trafficParticles, transitionHideNetwork]);
+  const showParksLayer = layer2Visible && progressiveLayers.parks && (!topFx || fx.introLifeAlpha > 0.001);
+  const showParkFireflies =
+    layer2Visible &&
+    progressiveLayers.parks &&
+    (!topFx || (!fx.introActive && fx.introProgress >= 0.995));
   const hoverStableRef = useRef<number | null>(hoveredTowerSequence);
   const hoverIntentRef = useRef<number | null>(hoveredTowerSequence);
   const hoverCandidateRef = useRef<number | null>(null);
@@ -9355,7 +9788,9 @@ function SandboxScene({
         clutter={fx.clutter}
       />
       <TrafficParticles particles={trafficRender} focusMode={focusMode} introLifeAlpha={fx.introLifeAlpha} clutter={fx.clutter} />
-      {layer2Visible ? <TopBirdFlock towers={renderedTowers} cityRadius={bounds.radius} introLifeAlpha={fx.introLifeAlpha} /> : null}
+      {layer2Visible && progressiveLayers.birds ? (
+        <TopBirdFlock towers={renderedTowers} cityRadius={bounds.radius} introLifeAlpha={fx.introLifeAlpha} />
+      ) : null}
       <HoverProjectionTracker tower={hoveredTower} onHudUpdate={onHoverHudUpdate} />
 
       {/* Render band 6: tower bodies and holo layers remain the top visual anchors */}
@@ -9372,6 +9807,8 @@ function SandboxScene({
             onHoverTower={requestHoverTower}
             onSelectTower={requestSelectTower}
             topFx={fx}
+            topCoinsRuntimeProfile={topCoinsRuntimeProfile}
+            discTexturesReady={progressiveLayers.discs}
           />
         ))}
       </group>
@@ -9393,8 +9830,9 @@ function SandboxScene({
 export function TopCoinsSkylineSandbox({ onModeChange }: { onModeChange?: (nextMode: CityMode) => void }) {
   const mode: CityMode = 'top200';
   const { latest: topSnapshot } = useTopCoinsStore();
+  const runtimeProfile = useTopCoinsRuntimeProfile();
   const { introBootAlpha: topGroundIntroBootAlpha, layer2Ready: topLayer2Ready } = useTopGroundIntroBoot();
-  const topData = useTopCoinsSkyline(topSnapshot, topLayer2Ready);
+  const topData = useTopCoinsSkyline(topSnapshot, topLayer2Ready, runtimeProfile);
   const active = topData;
   const {
     towers,
@@ -9424,6 +9862,13 @@ export function TopCoinsSkylineSandbox({ onModeChange }: { onModeChange?: (nextM
     setSelectedTowerSequence(null);
     setHoverHud(HOVER_HUD_HIDDEN);
   }, [mode]);
+
+  useEffect(() => {
+    clearTopCoinTextureCaches();
+    return () => {
+      clearTopCoinTextureCaches();
+    };
+  }, [runtimeProfile.cacheStrategyKey]);
 
   useEffect(() => {
     if (hoveredTowerSequence == null) return;
@@ -9472,6 +9917,7 @@ export function TopCoinsSkylineSandbox({ onModeChange }: { onModeChange?: (nextM
         bounds={bounds}
         marketMoodTarget={marketMoodTarget}
         topFx={topFx}
+        topCoinsRuntimeProfile={runtimeProfile}
         layer2Visible={topLayer2Ready}
         groundIntroBootAlpha={topGroundIntroBootAlpha}
         hoveredTowerSequence={hoveredTowerSequence}
