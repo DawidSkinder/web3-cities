@@ -665,6 +665,7 @@ canvas {
     width: auto;
     height: 24px;
     align-self: center;
+    transform: translateY(-1px);
   }
 
   .web3-ui__body {
@@ -720,18 +721,18 @@ canvas {
   }
 
   .web3-ui__panel--mode .web3-ui__help-trigger--icon {
-    width: 32px;
-    min-width: 32px;
-    height: 32px;
-    min-height: 32px;
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
     padding: 0;
     justify-content: center;
     border-radius: 999px;
   }
 
   .web3-ui__panel--mode .web3-ui__glyph {
-    width: 12px;
-    height: 12px;
+    width: 14px;
+    height: 14px;
   }
 
   .web3-ui__panel--mobile-notice {
