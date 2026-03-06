@@ -4298,6 +4298,7 @@ function MinimalOrbitRig({
   const { camera, gl } = useThree();
   const initializedRef = useRef(false);
   const modeRef = useRef<CameraMode>('auto');
+  const clearFocusTargetRef = useRef(onClearFocusTarget);
 
   const actualRef = useRef<OrbitState>({ angle: 0, distance: 28, elevation: 12, lookY: 4 });
   const controlRef = useRef<OrbitState>({ angle: 0, distance: 28, elevation: 12, lookY: 4 });
@@ -4318,6 +4319,10 @@ function MinimalOrbitRig({
   const keysRef = useRef<Record<string, boolean>>({});
   const dragRef = useRef({ dragging: false, pointerId: -1, lastX: 0, lastY: 0 });
   const debugEmitAtRef = useRef(0);
+
+  useEffect(() => {
+    clearFocusTargetRef.current = onClearFocusTarget;
+  }, [onClearFocusTarget]);
 
   useLayoutEffect(() => {
     if (initializedRef.current) return;
@@ -4501,8 +4506,8 @@ function MinimalOrbitRig({
   useEffect(() => {
     if (resetSignal <= 0) return;
     modeRef.current = 'auto';
-    onClearFocusTarget?.();
-  }, [onClearFocusTarget, resetSignal]);
+    clearFocusTargetRef.current?.();
+  }, [resetSignal]);
 
   useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime();
