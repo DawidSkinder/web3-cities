@@ -4347,7 +4347,9 @@ function MinimalOrbitRig({
   onClearFocusTarget,
   onCameraDebug,
   storyBeatUntilMs = 0,
-  resetSignal = 0
+  resetSignal = 0,
+  zoomInSignal = 0,
+  zoomOutSignal = 0
 }: {
   bounds: SandboxBounds;
   focusTarget?: CameraFocusTarget | null;
@@ -4355,6 +4357,8 @@ function MinimalOrbitRig({
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
   storyBeatUntilMs?: number;
   resetSignal?: number;
+  zoomInSignal?: number;
+  zoomOutSignal?: number;
 }) {
   const { camera, gl } = useThree();
   const initializedRef = useRef(false);
@@ -4525,6 +4529,30 @@ function MinimalOrbitRig({
     modeRef.current = 'auto';
     clearFocusTargetRef.current?.();
   }, [resetSignal]);
+
+  useEffect(() => {
+    if (zoomInSignal <= 0 && zoomOutSignal <= 0) return;
+
+    const control = controlRef.current;
+    const px = smoothPosition.lengthSq() > 0 ? smoothPosition.x : camera.position.x;
+    const pz = smoothPosition.lengthSq() > 0 ? smoothPosition.z : camera.position.z;
+    control.angle = Math.atan2(px, pz);
+    control.distance = Math.max(0.001, Math.hypot(px, pz));
+    control.elevation = smoothPosition.lengthSq() > 0 ? smoothPosition.y : camera.position.y;
+    control.lookY = smoothTarget.lengthSq() > 0 ? smoothTarget.y : 4;
+
+    if (focusTarget) {
+      clearFocusTargetRef.current?.();
+    }
+    modeRef.current = 'user';
+
+    if (zoomInSignal > 0) {
+      control.distance -= 8;
+    }
+    if (zoomOutSignal > 0) {
+      control.distance += 8;
+    }
+  }, [camera, focusTarget, zoomInSignal, zoomOutSignal]);
 
   useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime();
@@ -9262,7 +9290,9 @@ function SandboxScene({
   onHoverHudUpdate,
   onCameraDebug,
   onBirdCountChange,
-  resetCameraSignal = 0
+  resetCameraSignal = 0,
+  zoomInCameraSignal = 0,
+  zoomOutCameraSignal = 0
 }: {
   mode: CityMode;
   towers: TowerDatum[];
@@ -9296,6 +9326,8 @@ function SandboxScene({
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
   onBirdCountChange?: (count: number) => void;
   resetCameraSignal?: number;
+  zoomInCameraSignal?: number;
+  zoomOutCameraSignal?: number;
 }) {
   const fx = topFx ?? {
     introBootAlpha: 1,
@@ -9479,6 +9511,8 @@ function SandboxScene({
         onCameraDebug={onCameraDebug}
         storyBeatUntilMs={fx.storyBeatUntilMs}
         resetSignal={resetCameraSignal}
+        zoomInSignal={zoomInCameraSignal}
+        zoomOutSignal={zoomOutCameraSignal}
       />
 
       <CircuitBoardGround
@@ -9573,6 +9607,8 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
   const [selectedTowerSequence, setSelectedTowerSequence] = useState<number | null>(null);
   const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
   const [resetCameraSignal, setResetCameraSignal] = useState(0);
+  const [zoomInCameraSignal, setZoomInCameraSignal] = useState(0);
+  const [zoomOutCameraSignal, setZoomOutCameraSignal] = useState(0);
   const btcGroundIntroBootAlpha = useBtcGroundIntroBootAlpha();
   const topFx = undefined;
   const metricPanel = useMemo(() => deriveBtcCityMetrics({ towers, events }), [events, towers]);
@@ -9636,6 +9672,8 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
         selectedTowerSequence={selectedTowerSequence}
         tallestTowerSequence={tallestTowerSequence}
         resetCameraSignal={resetCameraSignal}
+        zoomInCameraSignal={zoomInCameraSignal}
+        zoomOutCameraSignal={zoomOutCameraSignal}
         onHoverTowerChange={setHoveredTowerSequence}
         onSelectTowerChange={setSelectedTowerSequence}
         onHoverHudUpdate={setHoverHud}
@@ -9647,6 +9685,8 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
         onModeChange={onModeChange}
         metricPanel={metricPanel}
         onResetCamera={handleResetCamera}
+        onZoomIn={() => setZoomInCameraSignal((current) => current + 1)}
+        onZoomOut={() => setZoomOutCameraSignal((current) => current + 1)}
       />
     </div>
   );

@@ -632,7 +632,7 @@ canvas {
     width: auto;
     display: flex;
     align-items: center;
-    min-height: 42px;
+    height: 42px;
   }
 
   .web3-ui__corner--top-right {
@@ -642,7 +642,7 @@ canvas {
     width: auto;
     display: flex;
     align-items: center;
-    min-height: 42px;
+    height: 42px;
   }
 
   .web3-ui__corner--bottom-left {
@@ -664,6 +664,7 @@ canvas {
   .web3-ui__logo--mobile {
     width: auto;
     height: 24px;
+    align-self: center;
   }
 
   .web3-ui__body {
@@ -716,6 +717,16 @@ canvas {
     padding: 0 10px;
     gap: 7px;
     font-size: 11px;
+  }
+
+  .web3-ui__panel--mode .web3-ui__help-trigger--icon {
+    width: 32px;
+    min-width: 32px;
+    height: 32px;
+    min-height: 32px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 999px;
   }
 
   .web3-ui__panel--mode .web3-ui__glyph {

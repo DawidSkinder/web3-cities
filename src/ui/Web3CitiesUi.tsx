@@ -6,6 +6,8 @@ import dawidPhotoUrl from '../../ds_photo.png';
 
 type HelpKey = 'mouse' | 'keyboard' | null;
 const MOBILE_BREAKPOINT_PX = 640;
+const MOBILE_ZOOM_OUT_LABEL = 'Zoom out camera';
+const MOBILE_ZOOM_IN_LABEL = 'Zoom in camera';
 const WEB3_CITIES_SITE_URL = 'https://web3cities.dawidskinder.pl';
 
 const MODE_COPY: Record<
@@ -72,6 +74,36 @@ function HamburgerIcon() {
   );
 }
 
+function RefreshIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="web3-ui__glyph">
+      <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+      <polyline points="20 4 20 10 14 10" />
+    </svg>
+  );
+}
+
+function ZoomOutIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="web3-ui__glyph">
+      <circle cx="10.5" cy="10.5" r="5.5" />
+      <line x1="7.75" y1="10.5" x2="13.25" y2="10.5" />
+      <line x1="15.2" y1="15.2" x2="20" y2="20" />
+    </svg>
+  );
+}
+
+function ZoomInIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="web3-ui__glyph">
+      <circle cx="10.5" cy="10.5" r="5.5" />
+      <line x1="7.75" y1="10.5" x2="13.25" y2="10.5" />
+      <line x1="10.5" y1="7.75" x2="10.5" y2="13.25" />
+      <line x1="15.2" y1="15.2" x2="20" y2="20" />
+    </svg>
+  );
+}
+
 function ControlsPopover({
   id,
   title,
@@ -100,12 +132,16 @@ export function Web3CitiesUi({
   mode,
   onModeChange,
   metricPanel,
-  onResetCamera
+  onResetCamera,
+  onZoomOut,
+  onZoomIn
 }: {
   mode: CityMode;
   onModeChange?: (nextMode: CityMode) => void;
   metricPanel: UiMetricPanel;
   onResetCamera?: () => void;
+  onZoomOut?: () => void;
+  onZoomIn?: () => void;
 }) {
   const [hoverPopover, setHoverPopover] = useState<HelpKey>(null);
   const [pinnedPopover, setPinnedPopover] = useState<HelpKey>(null);
@@ -333,14 +369,32 @@ export function Web3CitiesUi({
 
           <div ref={controlsRef} className="web3-ui__controls" aria-label="Controls help">
             {isMobile ? (
-              <button
-                type="button"
-                className="web3-ui__help-trigger"
-                aria-label="Reset camera"
-                onClick={onResetCamera}
-              >
-                <span>Reset Camera</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="web3-ui__help-trigger web3-ui__help-trigger--icon"
+                  aria-label="Reset camera"
+                  onClick={onResetCamera}
+                >
+                  <RefreshIcon />
+                </button>
+                <button
+                  type="button"
+                  className="web3-ui__help-trigger web3-ui__help-trigger--icon"
+                  aria-label={MOBILE_ZOOM_OUT_LABEL}
+                  onClick={onZoomOut}
+                >
+                  <ZoomOutIcon />
+                </button>
+                <button
+                  type="button"
+                  className="web3-ui__help-trigger web3-ui__help-trigger--icon"
+                  aria-label={MOBILE_ZOOM_IN_LABEL}
+                  onClick={onZoomIn}
+                >
+                  <ZoomInIcon />
+                </button>
+              </>
             ) : (
               <>
                 <div
