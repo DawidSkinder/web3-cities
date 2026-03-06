@@ -6159,7 +6159,7 @@ function AnimatedHoloTower({
         !runtimeProfile.mobileSafeDiscMode ||
         isHovered ||
         isSelected ||
-        (isPriority && discTexturesReady);
+        isPriority;
       return {
         allowTextureAllocation,
         fallbackTextureSize: runtimeProfile.fallbackTextureSize,
@@ -6167,7 +6167,7 @@ function AnimatedHoloTower({
         allowTextureAnisotropy: runtimeProfile.allowTextureAnisotropy,
         fallbackCacheLimit: runtimeProfile.fallbackCacheLimit,
         logoCacheLimit: runtimeProfile.logoCacheLimit,
-        eagerFallbackForLogos: !runtimeProfile.mobileSafeDiscMode
+        eagerFallbackForLogos: !runtimeProfile.mobileSafeDiscMode || allowTextureAllocation
       };
     },
     [discTexturesReady, isHovered, isSelected, topCoinsRuntimeProfile, tower.isDiscPriority]

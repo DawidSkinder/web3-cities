@@ -165,7 +165,7 @@ canvas {
 
 .web3-ui__logo--mobile {
   width: auto;
-  height: 42px;
+  height: 24px;
   margin-bottom: 0;
 }
 
@@ -663,7 +663,7 @@ canvas {
 
   .web3-ui__logo--mobile {
     width: auto;
-    height: 42px;
+    height: 24px;
   }
 
   .web3-ui__body {
