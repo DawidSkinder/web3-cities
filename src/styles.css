@@ -158,13 +158,14 @@ canvas {
 
 .web3-ui__logo {
   display: block;
-  width: min(188px, 100%);
+  width: min(207px, 100%);
   height: auto;
   margin-bottom: 14px;
 }
 
 .web3-ui__logo--mobile {
-  width: 120px;
+  width: auto;
+  height: 42px;
   margin-bottom: 0;
 }
 
@@ -360,8 +361,8 @@ canvas {
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--ui-divider);
+  padding-top: 0;
+  border-top: 0;
 }
 
 .web3-ui__help {
@@ -661,7 +662,8 @@ canvas {
   }
 
   .web3-ui__logo--mobile {
-    width: 108px;
+    width: auto;
+    height: 42px;
   }
 
   .web3-ui__body {
