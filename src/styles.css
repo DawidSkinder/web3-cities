@@ -288,7 +288,7 @@ canvas {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 16px;
   min-height: 42px;
   padding: 0 18px;
   border-radius: 999px;
@@ -308,7 +308,6 @@ canvas {
 
 .web3-ui__action-row .web3-ui__cta {
   flex: 1 1 auto;
-  justify-content: space-between;
 }
 
 .web3-ui__action-row .web3-ui__text-action {
