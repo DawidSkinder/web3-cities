@@ -438,8 +438,8 @@ export const CRYPTO_CITY_PRESETS: Record<CryptoCityMode, CryptoCityPreset> = {
     binanceSymbol: 'LUNCUSDT',
     logoPath: '/data/logos/LUNCUSDT.svg?v=2',
     engine: {
-      windowMs: 12000,
-      graceMs: 1500
+      windowMs: 3000,
+      graceMs: 0
     },
     theme: {
       primary: '#37a3ff',
