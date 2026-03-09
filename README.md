@@ -1,5 +1,7 @@
 # Web3 Cities by DawidSkinder.pl
-Personal website
+Designing clarity for complex Web3 systems.
+
+Web3 Cities transforms live crypto data into interactive worlds - showing how brand, product thinking, and UX can make complex systems feel legible, alive, and worth exploring.
 
 ## License
 
