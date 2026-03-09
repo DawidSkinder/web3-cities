@@ -4561,6 +4561,10 @@ function MinimalOrbitRig({
 
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
+      if (modeRef.current === 'flyover') {
+        markUserInteraction();
+        event.preventDefault();
+      }
       dragRef.current.dragging = true;
       dragRef.current.pointerId = event.pointerId;
       dragRef.current.lastX = event.clientX;
@@ -4699,7 +4703,8 @@ function MinimalOrbitRig({
       startTarget,
       boundsRadius: bounds.radius,
       maxY: bounds.maxY,
-      reducedMotion: RUNTIME_QUALITY_CONFIG.reducedMotion
+      reducedMotion: RUNTIME_QUALITY_CONFIG.reducedMotion,
+      sceneKind: 'crypto'
     });
 
     if (!plan) return;
@@ -9963,7 +9968,7 @@ export function BtcSpotBuysSandbox({
 
   const handleCinematicFlyover = () => {
     if (!cinematicFlyoverEnabled) return;
-    const nextTargets = pickCinematicFlyoverTargets(towers);
+    const nextTargets = pickCinematicFlyoverTargets(towers, { mode: 'crypto' });
     if (nextTargets.length === 0) return;
     setHoveredTowerSequence(null);
     setSelectedTowerSequence(null);
