@@ -1,13 +1,24 @@
 import { MathUtils, Vector3 } from 'three';
 
-const TAU = Math.PI * 2;
-const LOOK_AHEAD_SECONDS = 0.48;
+const LOOK_AHEAD_SECONDS = 0.28;
+const CAMERA_CLEARANCE_PAD = 4.4;
+const CAMERA_CLEARANCE_Y = 7.2;
+const MAX_DOWNWARD_PITCH_DEG = 48;
 
 export type CinematicFlyoverTarget = {
   sequence: number;
   x: number;
   z: number;
   height: number;
+  radius?: number;
+};
+
+export type CinematicFlyoverObstacle = {
+  sequence?: number;
+  x: number;
+  z: number;
+  height: number;
+  radius: number;
 };
 
 type Point3 = {
@@ -16,19 +27,32 @@ type Point3 = {
   z: number;
 };
 
+type Direction2 = {
+  x: number;
+  z: number;
+};
+
 type FlyoverWaypoint = {
+  sequence: number;
+  focusX: number;
+  focusZ: number;
   x: number;
   z: number;
   elevation: number;
   lookY: number;
   height: number;
+  radius: number;
+  viewDirectionX: number;
+  viewDirectionZ: number;
 };
 
-type LinearSegment = {
+type EntrySegment = {
   kind: 'entry';
   startTime: number;
   duration: number;
   startPosition: Point3;
+  controlPositionA: Point3;
+  controlPositionB: Point3;
   endPosition: Point3;
   startFocus: Point3;
   endFocus: Point3;
@@ -38,25 +62,23 @@ type LinearSegment = {
   lookAheadTo: number;
 };
 
-type SpiralSegment = {
+type TransferSegment = {
   kind: 'transfer';
   startTime: number;
   duration: number;
   startPosition: Point3;
+  controlPositionA: Point3;
+  controlPositionB: Point3;
   endPosition: Point3;
   startFocus: Point3;
   endFocus: Point3;
-  maxRadius: number;
-  turnCount: number;
-  startAngle: number;
-  verticalLift: number;
   focusBlendFrom: number;
   focusBlendTo: number;
   lookAheadFrom: number;
   lookAheadTo: number;
 };
 
-type CinematicFlyoverSegment = LinearSegment | SpiralSegment;
+type CinematicFlyoverSegment = EntrySegment | TransferSegment;
 
 type PoseSample = {
   complete: boolean;
@@ -67,6 +89,7 @@ type PoseSample = {
 export type CinematicFlyoverPlan = {
   segments: CinematicFlyoverSegment[];
   totalDuration: number;
+  obstacles: CinematicFlyoverObstacle[];
 };
 
 const currentPositionScratch = new Vector3();
@@ -86,46 +109,40 @@ function smoothstep01(value: number) {
   return t * t * (3 - 2 * t);
 }
 
+function easeOutCubic01(value: number) {
+  const t = MathUtils.clamp(value, 0, 1);
+  return 1 - Math.pow(1 - t, 3);
+}
+
 function setPoint(out: Vector3, input: Point3) {
   out.set(input.x, input.y, input.z);
 }
 
-function sampleLinearSegment(segment: LinearSegment, progress: number, outPosition: Vector3, outFocus: Vector3): PoseSample {
-  const t = smoothstep01(progress);
-  outPosition.set(
-    MathUtils.lerp(segment.startPosition.x, segment.endPosition.x, t),
-    MathUtils.lerp(segment.startPosition.y, segment.endPosition.y, t),
-    MathUtils.lerp(segment.startPosition.z, segment.endPosition.z, t)
-  );
-  outFocus.set(
-    MathUtils.lerp(segment.startFocus.x, segment.endFocus.x, t),
-    MathUtils.lerp(segment.startFocus.y, segment.endFocus.y, t),
-    MathUtils.lerp(segment.startFocus.z, segment.endFocus.z, t)
-  );
-
-  return {
-    complete: progress >= 1,
-    focusBlend: MathUtils.lerp(segment.focusBlendFrom, segment.focusBlendTo, t),
-    lookAheadDistance: MathUtils.lerp(segment.lookAheadFrom, segment.lookAheadTo, t)
-  };
+function cubicBezierCoordinate(a: number, b: number, c: number, d: number, t: number) {
+  const omt = 1 - t;
+  return omt * omt * omt * a + 3 * omt * omt * t * b + 3 * omt * t * t * c + t * t * t * d;
 }
 
-function sampleSpiralSegment(segment: SpiralSegment, progress: number, outPosition: Vector3, outFocus: Vector3): PoseSample {
-  const t = smoothstep01(progress);
-  const spiralWeight = Math.pow(Math.sin(Math.PI * t), 0.92);
-  const angle = segment.startAngle + segment.turnCount * TAU * t;
-  const radius = segment.maxRadius * spiralWeight;
-
+function sampleSegmentPosition(segment: CinematicFlyoverSegment, t: number, outPosition: Vector3) {
   outPosition.set(
-    MathUtils.lerp(segment.startPosition.x, segment.endPosition.x, t) + Math.sin(angle) * radius,
-    MathUtils.lerp(segment.startPosition.y, segment.endPosition.y, t) + Math.pow(spiralWeight, 1.12) * segment.verticalLift,
-    MathUtils.lerp(segment.startPosition.z, segment.endPosition.z, t) + Math.cos(angle) * radius
+    cubicBezierCoordinate(segment.startPosition.x, segment.controlPositionA.x, segment.controlPositionB.x, segment.endPosition.x, t),
+    cubicBezierCoordinate(segment.startPosition.y, segment.controlPositionA.y, segment.controlPositionB.y, segment.endPosition.y, t),
+    cubicBezierCoordinate(segment.startPosition.z, segment.controlPositionA.z, segment.controlPositionB.z, segment.endPosition.z, t)
   );
+}
+
+function sampleSegmentFocus(segment: CinematicFlyoverSegment, t: number, outFocus: Vector3) {
   outFocus.set(
     MathUtils.lerp(segment.startFocus.x, segment.endFocus.x, t),
     MathUtils.lerp(segment.startFocus.y, segment.endFocus.y, t),
     MathUtils.lerp(segment.startFocus.z, segment.endFocus.z, t)
   );
+}
+
+function sampleSplineSegment(segment: CinematicFlyoverSegment, progress: number, outPosition: Vector3, outFocus: Vector3): PoseSample {
+  const t = segment.kind === 'entry' ? easeOutCubic01(progress) : smoothstep01(progress);
+  sampleSegmentPosition(segment, t, outPosition);
+  sampleSegmentFocus(segment, t, outFocus);
 
   return {
     complete: progress >= 1,
@@ -148,20 +165,19 @@ function samplePlanState(plan: CinematicFlyoverPlan, elapsedSeconds: number, out
 
   const localElapsed = safeElapsed - segment.startTime;
   const progress = segment.duration <= 0 ? 1 : localElapsed / segment.duration;
-  if (segment.kind === 'entry') {
-    return sampleLinearSegment(segment, progress, outPosition, outFocus);
-  }
-  return sampleSpiralSegment(segment, progress, outPosition, outFocus);
+  return sampleSplineSegment(segment, progress, outPosition, outFocus);
 }
 
-function buildWaypoint(target: CinematicFlyoverTarget, maxY: number) {
-  return {
-    x: target.x,
-    z: target.z,
-    elevation: MathUtils.clamp(target.height + Math.max(8, target.height * 0.26), 14, maxY + 78),
-    lookY: MathUtils.clamp(target.height * 0.66, 2.6, target.height + 22),
-    height: target.height
-  };
+function normalizeDirection2(x: number, z: number, fallbackX = 0, fallbackZ = 1): Direction2 {
+  const length = Math.hypot(x, z);
+  if (length > 0.001) {
+    return { x: x / length, z: z / length };
+  }
+  const fallbackLength = Math.hypot(fallbackX, fallbackZ);
+  if (fallbackLength > 0.001) {
+    return { x: fallbackX / fallbackLength, z: fallbackZ / fallbackLength };
+  }
+  return { x: 0, z: 1 };
 }
 
 function resolveTurnSign(
@@ -185,6 +201,124 @@ function resolveTurnSign(
   return cross >= 0 ? 1 : -1;
 }
 
+function computeObstacleSafeY(x: number, z: number, baseY: number, obstacles: readonly CinematicFlyoverObstacle[]) {
+  let safeY = baseY;
+  for (const obstacle of obstacles) {
+    const avoidRadius = obstacle.radius + CAMERA_CLEARANCE_PAD;
+    const distance = Math.hypot(x - obstacle.x, z - obstacle.z);
+    if (distance >= avoidRadius) continue;
+    const influence = smoothstep01(1 - distance / avoidRadius);
+    const obstacleSafeY = obstacle.height + CAMERA_CLEARANCE_Y;
+    safeY = Math.max(safeY, MathUtils.lerp(baseY, obstacleSafeY, influence));
+  }
+  return safeY;
+}
+
+function pushOutsideObstacles(
+  x: number,
+  z: number,
+  obstacles: readonly CinematicFlyoverObstacle[],
+  padding: number,
+  fallbackX: number,
+  fallbackZ: number
+) {
+  let currentX = x;
+  let currentZ = z;
+
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (const obstacle of obstacles) {
+      const minDistance = obstacle.radius + padding;
+      const offsetX = currentX - obstacle.x;
+      const offsetZ = currentZ - obstacle.z;
+      const distance = Math.hypot(offsetX, offsetZ);
+      if (distance >= minDistance) continue;
+      const normal = distance > 0.001 ? { x: offsetX / distance, z: offsetZ / distance } : normalizeDirection2(fallbackX, fallbackZ);
+      currentX = obstacle.x + normal.x * minDistance;
+      currentZ = obstacle.z + normal.z * minDistance;
+    }
+  }
+
+  return { x: currentX, z: currentZ };
+}
+
+function buildWaypoint(
+  target: CinematicFlyoverTarget,
+  targetIndex: number,
+  targets: readonly CinematicFlyoverTarget[],
+  startPosition: Vector3,
+  safeMaxY: number,
+  safeBoundsRadius: number,
+  obstacles: readonly CinematicFlyoverObstacle[],
+  reducedMotion: boolean,
+  fallbackSideSign: number
+) {
+  const previous = targetIndex > 0 ? targets[targetIndex - 1] : null;
+  const next = targetIndex < targets.length - 1 ? targets[targetIndex + 1] : null;
+
+  const incoming = normalizeDirection2(
+    target.x - (previous ? previous.x : startPosition.x),
+    target.z - (previous ? previous.z : startPosition.z)
+  );
+  const outgoing = next
+    ? normalizeDirection2(next.x - target.x, next.z - target.z, incoming.x, incoming.z)
+    : incoming;
+  const travel = normalizeDirection2(incoming.x * 0.65 + outgoing.x, incoming.z * 0.65 + outgoing.z, outgoing.x, outgoing.z);
+  const sideSign = resolveTurnSign(incoming.x, incoming.z, outgoing.x, outgoing.z, fallbackSideSign);
+  const side = { x: travel.z, z: -travel.x };
+  const towerRadius = Math.max(3.4, target.radius ?? Math.max(3.4, 2.8 + target.height * 0.06));
+  const retreat = MathUtils.clamp(
+    towerRadius + Math.max(7.8, target.height * (reducedMotion ? 0.13 : 0.16)),
+    10.5,
+    Math.max(15.5, safeBoundsRadius * 0.24)
+  );
+  const lateral = retreat * (reducedMotion ? 0.16 : 0.24) * sideSign;
+  const viewX = target.x - travel.x * retreat + side.x * lateral;
+  const viewZ = target.z - travel.z * retreat + side.z * lateral;
+  const adjustedView = pushOutsideObstacles(viewX, viewZ, obstacles, 2.8, -travel.x + side.x * sideSign, -travel.z + side.z * sideSign);
+  const baseElevation = MathUtils.clamp(target.height + Math.max(9.5, target.height * 0.18), 18, safeMaxY + 88);
+  const elevation = computeObstacleSafeY(adjustedView.x, adjustedView.z, baseElevation, obstacles);
+
+  return {
+    sequence: target.sequence,
+    focusX: target.x,
+    focusZ: target.z,
+    x: adjustedView.x,
+    z: adjustedView.z,
+    elevation,
+    lookY: MathUtils.clamp(target.height * 0.56, 3.4, target.height + 18),
+    height: target.height,
+    radius: towerRadius,
+    viewDirectionX: travel.x,
+    viewDirectionZ: travel.z
+  };
+}
+
+function buildEntryControlPoint(start: Point3, end: FlyoverWaypoint, travelX: number, travelZ: number, distance: number, progress: number, lift: number): Point3 {
+  const sideX = travelZ;
+  const sideZ = -travelX;
+  const sideOffset = distance * 0.08 * (progress < 0.5 ? 1 : 0.6);
+  return point(
+    MathUtils.lerp(start.x, end.x, progress) + sideX * sideOffset,
+    MathUtils.lerp(start.y, end.elevation, progress) + lift,
+    MathUtils.lerp(start.z, end.z, progress) + sideZ * sideOffset
+  );
+}
+
+function enforceDownwardPitchLimit(position: Vector3, target: Vector3, travelDirection: Vector3) {
+  const drop = position.y - target.y;
+  if (drop <= 0) return;
+
+  const horizontalX = target.x - position.x;
+  const horizontalZ = target.z - position.z;
+  const horizontalDistance = Math.hypot(horizontalX, horizontalZ);
+  const minHorizontalDistance = drop / Math.tan(MathUtils.degToRad(MAX_DOWNWARD_PITCH_DEG));
+  if (horizontalDistance >= minHorizontalDistance) return;
+
+  const travel = normalizeDirection2(travelDirection.x, travelDirection.z, horizontalX, horizontalZ);
+  target.x = position.x + travel.x * minHorizontalDistance;
+  target.z = position.z + travel.z * minHorizontalDistance;
+}
+
 export function pickCinematicFlyoverTargets<T extends CinematicFlyoverTarget>(
   towers: readonly T[],
   limit = 10
@@ -192,11 +326,12 @@ export function pickCinematicFlyoverTargets<T extends CinematicFlyoverTarget>(
   return [...towers]
     .sort((left, right) => right.height - left.height || right.sequence - left.sequence)
     .slice(0, limit)
-    .map(({ sequence, x, z, height }) => ({ sequence, x, z, height }));
+    .map(({ sequence, x, z, height, radius }) => ({ sequence, x, z, height, radius }));
 }
 
 export function buildCinematicFlyoverPlan({
   targets,
+  obstacles = [],
   startPosition,
   startTarget,
   boundsRadius,
@@ -204,6 +339,7 @@ export function buildCinematicFlyoverPlan({
   reducedMotion = false
 }: {
   targets: readonly CinematicFlyoverTarget[];
+  obstacles?: readonly CinematicFlyoverObstacle[];
   startPosition: Vector3;
   startTarget: Vector3;
   boundsRadius: number;
@@ -214,7 +350,39 @@ export function buildCinematicFlyoverPlan({
 
   const safeBoundsRadius = Math.max(18, boundsRadius);
   const safeMaxY = Math.max(8, maxY);
-  const waypoints = targets.map((target) => buildWaypoint(target, safeMaxY));
+  const normalizedObstacles = obstacles
+    .filter((obstacle) => Number.isFinite(obstacle.x) && Number.isFinite(obstacle.z) && Number.isFinite(obstacle.height))
+    .map((obstacle) => ({
+      sequence: obstacle.sequence,
+      x: obstacle.x,
+      z: obstacle.z,
+      height: Math.max(0, obstacle.height),
+      radius: Math.max(2.8, obstacle.radius)
+    }));
+  const waypoints: FlyoverWaypoint[] = [];
+  let fallbackSideSign = 1;
+  for (let index = 0; index < targets.length; index += 1) {
+    const waypoint = buildWaypoint(
+      targets[index],
+      index,
+      targets,
+      startPosition,
+      safeMaxY,
+      safeBoundsRadius,
+      normalizedObstacles,
+      reducedMotion,
+      fallbackSideSign
+    );
+    waypoints.push(waypoint);
+    fallbackSideSign = resolveTurnSign(
+      waypoint.viewDirectionX,
+      waypoint.viewDirectionZ,
+      index < targets.length - 1 ? targets[index + 1].x - targets[index].x : waypoint.viewDirectionX,
+      index < targets.length - 1 ? targets[index + 1].z - targets[index].z : waypoint.viewDirectionZ,
+      fallbackSideSign
+    );
+  }
+
   const segments: CinematicFlyoverSegment[] = [];
   let elapsedCursor = 0;
 
@@ -222,91 +390,94 @@ export function buildCinematicFlyoverPlan({
   const firstPosition = point(firstWaypoint.x, firstWaypoint.elevation, firstWaypoint.z);
   const straightDistance = startPosition.distanceTo(pointScratch.set(firstPosition.x, firstPosition.y, firstPosition.z));
   const entryDuration = MathUtils.clamp(
-    (reducedMotion ? 3.2 : 4.4) + straightDistance * (reducedMotion ? 0.02 : 0.03),
-    reducedMotion ? 3.2 : 4.6,
-    reducedMotion ? 5.6 : 8.4
+    (reducedMotion ? 2.8 : 3.6) + straightDistance * (reducedMotion ? 0.018 : 0.024),
+    reducedMotion ? 2.9 : 3.4,
+    reducedMotion ? 4.8 : 6.8
   );
+  const entryTravel = normalizeDirection2(firstPosition.x - startPosition.x, firstPosition.z - startPosition.z, firstWaypoint.viewDirectionX, firstWaypoint.viewDirectionZ);
+  const entryLift = MathUtils.clamp(Math.abs(firstPosition.y - startPosition.y) * 0.14 + 4.4, 3.4, 11.5);
 
   segments.push({
     kind: 'entry',
     startTime: elapsedCursor,
     duration: entryDuration,
     startPosition: point(startPosition.x, startPosition.y, startPosition.z),
+    controlPositionA: buildEntryControlPoint(point(startPosition.x, startPosition.y, startPosition.z), firstWaypoint, entryTravel.x, entryTravel.z, straightDistance, 0.18, entryLift * 0.2),
+    controlPositionB: buildEntryControlPoint(point(startPosition.x, startPosition.y, startPosition.z), firstWaypoint, entryTravel.x, entryTravel.z, straightDistance, 0.72, entryLift),
     endPosition: firstPosition,
     startFocus: point(startTarget.x, startTarget.y, startTarget.z),
-    endFocus: point(firstWaypoint.x, firstWaypoint.lookY, firstWaypoint.z),
-    focusBlendFrom: 0.18,
-    focusBlendTo: 0.22,
-    lookAheadFrom: 14,
-    lookAheadTo: 12
+    endFocus: point(firstWaypoint.focusX, firstWaypoint.lookY, firstWaypoint.focusZ),
+    focusBlendFrom: 0,
+    focusBlendTo: 0.12,
+    lookAheadFrom: 0,
+    lookAheadTo: 8.5
   });
   elapsedCursor += entryDuration;
 
-  let currentDirectionX = firstWaypoint.x - startPosition.x;
-  let currentDirectionZ = firstWaypoint.z - startPosition.z;
   let lastTurnSign = 1;
-
   for (let index = 0; index < waypoints.length - 1; index += 1) {
     const current = waypoints[index];
     const next = waypoints[index + 1];
-    const nextDirectionX = next.x - current.x;
-    const nextDirectionZ = next.z - current.z;
-    const distance = Math.hypot(nextDirectionX, nextDirectionZ);
-    const currentLength = Math.max(0.001, Math.hypot(currentDirectionX, currentDirectionZ));
-    const nextLength = Math.max(0.001, distance);
-    const headingDot = (currentDirectionX / currentLength) * (nextDirectionX / nextLength) + (currentDirectionZ / currentLength) * (nextDirectionZ / nextLength);
-    const turnSign = resolveTurnSign(currentDirectionX, currentDirectionZ, nextDirectionX, nextDirectionZ, lastTurnSign);
-    const needsFullTurn = distance < Math.max(18, safeBoundsRadius * 0.24) || headingDot < 0.05;
-    const turnMagnitude = needsFullTurn
-      ? reducedMotion
-        ? 0.88
-        : 1
-      : distance < Math.max(34, safeBoundsRadius * 0.44)
-        ? reducedMotion
-          ? 0.72
-          : 0.84
-        : reducedMotion
-          ? 0.58
-          : 0.68;
-    const maxRadius = MathUtils.clamp(
-      distance * 0.14 + Math.max(current.height, next.height) * 0.05,
-      5.2,
-      Math.max(11.5, safeBoundsRadius * 0.18)
+    const bridgeDirection = normalizeDirection2(next.x - current.x, next.z - current.z, current.viewDirectionX, current.viewDirectionZ);
+    const distance = Math.hypot(next.x - current.x, next.z - current.z);
+    const turnSign = resolveTurnSign(current.viewDirectionX, current.viewDirectionZ, next.viewDirectionX, next.viewDirectionZ, lastTurnSign);
+    const sideX = bridgeDirection.z;
+    const sideZ = -bridgeDirection.x;
+    const lateral = MathUtils.clamp(
+      distance * (reducedMotion ? 0.08 : 0.12) + Math.max(current.radius, next.radius) * 0.35,
+      3.5,
+      Math.max(8.5, safeBoundsRadius * 0.14)
+    ) * turnSign;
+    const verticalLift = MathUtils.clamp(5.4 + distance * 0.08 + Math.abs(next.height - current.height) * 0.04, 6.5, 18);
+    const controlPointA = point(
+      current.x + bridgeDirection.x * (distance * 0.26) + sideX * lateral,
+      computeObstacleSafeY(
+        current.x + bridgeDirection.x * (distance * 0.26) + sideX * lateral,
+        current.z + bridgeDirection.z * (distance * 0.26) + sideZ * lateral,
+        current.elevation + verticalLift * 0.52,
+        normalizedObstacles
+      ),
+      current.z + bridgeDirection.z * (distance * 0.26) + sideZ * lateral
+    );
+    const controlPointB = point(
+      next.x - bridgeDirection.x * (distance * 0.24) + sideX * lateral * 0.72,
+      computeObstacleSafeY(
+        next.x - bridgeDirection.x * (distance * 0.24) + sideX * lateral * 0.72,
+        next.z - bridgeDirection.z * (distance * 0.24) + sideZ * lateral * 0.72,
+        next.elevation + verticalLift,
+        normalizedObstacles
+      ),
+      next.z - bridgeDirection.z * (distance * 0.24) + sideZ * lateral * 0.72
     );
     const duration = MathUtils.clamp(
-      (reducedMotion ? 2.8 : 3.9) + distance * (reducedMotion ? 0.03 : 0.045) + turnMagnitude * (reducedMotion ? 0.5 : 0.85),
-      reducedMotion ? 3.1 : 4.2,
-      reducedMotion ? 5.3 : 7.8
+      (reducedMotion ? 2.6 : 3.2) + distance * (reducedMotion ? 0.028 : 0.04),
+      reducedMotion ? 2.9 : 3.5,
+      reducedMotion ? 5 : 6.8
     );
-    const startAngle = Math.atan2(currentDirectionX, currentDirectionZ) + turnSign * Math.PI * 0.55;
-    const verticalLift = MathUtils.clamp(1.6 + maxRadius * 0.26 + Math.abs(next.height - current.height) * 0.04, 2, 6.8);
 
     segments.push({
       kind: 'transfer',
       startTime: elapsedCursor,
       duration,
       startPosition: point(current.x, current.elevation, current.z),
+      controlPositionA: controlPointA,
+      controlPositionB: controlPointB,
       endPosition: point(next.x, next.elevation, next.z),
-      startFocus: point(current.x, current.lookY, current.z),
-      endFocus: point(next.x, next.lookY, next.z),
-      maxRadius,
-      turnCount: turnSign * turnMagnitude,
-      startAngle,
-      verticalLift,
-      focusBlendFrom: 0.28,
-      focusBlendTo: 0.34,
-      lookAheadFrom: 12.5,
-      lookAheadTo: 14
+      startFocus: point(current.focusX, current.lookY, current.focusZ),
+      endFocus: point(next.focusX, next.lookY, next.focusZ),
+      focusBlendFrom: 0.1,
+      focusBlendTo: 0.18,
+      lookAheadFrom: 8,
+      lookAheadTo: 10.5
     });
     elapsedCursor += duration;
-    currentDirectionX = nextDirectionX;
-    currentDirectionZ = nextDirectionZ;
     lastTurnSign = turnSign;
   }
 
   return {
     segments,
-    totalDuration: elapsedCursor
+    totalDuration: elapsedCursor,
+    obstacles: normalizedObstacles
   };
 }
 
@@ -317,22 +488,29 @@ export function sampleCinematicFlyoverPlan(
   outTarget: Vector3
 ) {
   const currentSample = samplePlanState(plan, elapsedSeconds, currentPositionScratch, currentFocusScratch);
+  currentPositionScratch.y = computeObstacleSafeY(currentPositionScratch.x, currentPositionScratch.z, currentPositionScratch.y, plan.obstacles);
+
   samplePlanState(plan, Math.min(plan.totalDuration, elapsedSeconds + LOOK_AHEAD_SECONDS), futurePositionScratch, futureFocusScratch);
+  futurePositionScratch.y = computeObstacleSafeY(futurePositionScratch.x, futurePositionScratch.z, futurePositionScratch.y, plan.obstacles);
 
   forwardScratch.copy(futurePositionScratch).sub(currentPositionScratch);
+  if (forwardScratch.lengthSq() < 0.0001) {
+    forwardScratch.copy(futureFocusScratch).sub(currentPositionScratch);
+  }
   if (forwardScratch.lengthSq() < 0.0001) {
     forwardScratch.copy(currentFocusScratch).sub(currentPositionScratch);
   }
   if (forwardScratch.lengthSq() < 0.0001) {
-    forwardScratch.set(0, -0.1, -1);
+    forwardScratch.set(0, -0.08, -1);
   }
   forwardScratch.normalize();
 
   forwardLookScratch.copy(currentPositionScratch).addScaledVector(forwardScratch, currentSample.lookAheadDistance);
-  forwardLookScratch.y = Math.max(currentFocusScratch.y - 3.5, forwardLookScratch.y + 0.6);
+  forwardLookScratch.y = Math.max(currentFocusScratch.y + 1, currentPositionScratch.y - 6.8);
 
   outPosition.copy(currentPositionScratch);
   outTarget.copy(currentFocusScratch).lerp(forwardLookScratch, currentSample.focusBlend);
+  enforceDownwardPitchLimit(outPosition, outTarget, forwardScratch);
 
   return {
     complete: elapsedSeconds >= plan.totalDuration

@@ -47,7 +47,7 @@ import {
   pickCinematicFlyoverTargets,
   sampleCinematicFlyoverPlan
 } from './cinematicFlyover';
-import type { CinematicFlyoverPlan, CinematicFlyoverTarget } from './cinematicFlyover';
+import type { CinematicFlyoverObstacle, CinematicFlyoverPlan, CinematicFlyoverTarget } from './cinematicFlyover';
 import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
 
 type TowerArchetypeId = 0 | 1 | 2 | 3 | 4 | 5;
@@ -670,6 +670,17 @@ const desiredTarget = new Vector3();
 const smoothPosition = new Vector3();
 const smoothTarget = new Vector3();
 const tempDir = new Vector3();
+
+function toCinematicFlyoverObstacle(tower: TowerDatum): CinematicFlyoverObstacle {
+  const radius = Math.max(tower.baseW * 0.52, tower.baseD * 0.52, tower.footprintX * 0.34, tower.footprintZ * 0.34);
+  return {
+    sequence: tower.sequence,
+    x: tower.x,
+    z: tower.z,
+    height: tower.height,
+    radius: Math.max(2.8, radius + 1.6)
+  };
+}
 const tempColorA = new Color();
 const tempColorB = new Color();
 const tempColorC = new Color();
@@ -4397,6 +4408,7 @@ function MinimalOrbitRig({
   onClearFocusTarget,
   onCameraDebug,
   flyoverTargets,
+  flyoverObstacles,
   flyoverSignal = 0,
   onFlyoverActiveChange,
   storyBeatUntilMs = 0,
@@ -4409,6 +4421,7 @@ function MinimalOrbitRig({
   onClearFocusTarget?: () => void;
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
   flyoverTargets?: readonly CinematicFlyoverTarget[];
+  flyoverObstacles?: readonly CinematicFlyoverObstacle[];
   flyoverSignal?: number;
   onFlyoverActiveChange?: (active: boolean) => void;
   storyBeatUntilMs?: number;
@@ -4681,6 +4694,7 @@ function MinimalOrbitRig({
     const startTarget = smoothTarget.lengthSq() > 0 ? smoothTarget : desiredTarget.set(0, 4, 0);
     const plan = buildCinematicFlyoverPlan({
       targets: flyoverTargets,
+      obstacles: flyoverObstacles,
       startPosition,
       startTarget,
       boundsRadius: bounds.radius,
@@ -4695,7 +4709,7 @@ function MinimalOrbitRig({
     autoReturnBoostUntilRef.current = 0;
     modeRef.current = 'flyover';
     flyoverActiveChangeRef.current?.(true);
-  }, [bounds.maxY, bounds.radius, camera, flyoverSignal, flyoverTargets]);
+  }, [bounds.maxY, bounds.radius, camera, flyoverObstacles, flyoverSignal, flyoverTargets]);
 
   useEffect(() => {
     const zoomInDelta = Math.max(0, zoomInSignal - lastZoomInSignalRef.current);
@@ -9609,6 +9623,7 @@ function SandboxScene({
         : null,
     [selectedTower]
   );
+  const flyoverObstacles = useMemo(() => towers.map((tower) => toCinematicFlyoverObstacle(tower)), [towers]);
   const discFocusAnchor = useMemo(
     () =>
       selectedTower
@@ -9758,6 +9773,7 @@ function SandboxScene({
         onClearFocusTarget={() => onSelectTowerChange?.(null)}
         onCameraDebug={onCameraDebug}
         flyoverTargets={cinematicFlyoverTargets}
+        flyoverObstacles={flyoverObstacles}
         flyoverSignal={cinematicFlyoverSignal}
         onFlyoverActiveChange={onCinematicFlyoverActiveChange}
         storyBeatUntilMs={fx.storyBeatUntilMs}
