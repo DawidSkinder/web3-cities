@@ -284,11 +284,18 @@ canvas {
 
 .web3-ui__tab--select {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 2px;
-  padding: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 12px;
+}
+
+.web3-ui__tab-select-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  white-space: nowrap;
 }
 
 .web3-ui__tab-detail {
@@ -296,6 +303,26 @@ canvas {
   font-size: 11px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.web3-ui__tab-chevron {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  opacity: 0.72;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  transition:
+    transform 180ms ease,
+    opacity 180ms ease;
+}
+
+.web3-ui__tab--select[aria-expanded='true'] .web3-ui__tab-chevron {
+  opacity: 1;
+  transform: rotate(180deg);
 }
 
 .web3-ui__tab.is-active {

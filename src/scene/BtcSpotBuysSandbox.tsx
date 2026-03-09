@@ -8647,7 +8647,7 @@ function MountainsBackdrop({
             color={preset.theme.mountainFarCore}
             roughness={0.96}
             metalness={0.03}
-            emissive="#1f130c"
+            emissive={preset.theme.mountainFarCore}
             emissiveIntensity={0.05}
             flatShading
             side={DoubleSide}
@@ -8663,7 +8663,7 @@ function MountainsBackdrop({
             color={preset.theme.mountainFarShoulder}
             roughness={0.98}
             metalness={0.02}
-            emissive="#170e09"
+            emissive={preset.theme.mountainFarShoulder}
             emissiveIntensity={0.04}
             flatShading
             side={DoubleSide}
@@ -8679,7 +8679,7 @@ function MountainsBackdrop({
             color={preset.theme.mountainFarFoothill}
             roughness={0.99}
             metalness={0.01}
-            emissive="#120b07"
+            emissive={preset.theme.mountainFarFoothill}
             emissiveIntensity={0.035}
             flatShading
             side={DoubleSide}
@@ -8697,7 +8697,7 @@ function MountainsBackdrop({
             color={preset.theme.mountainMidCore}
             roughness={0.95}
             metalness={0.03}
-            emissive="#24160d"
+            emissive={preset.theme.mountainMidCore}
             emissiveIntensity={0.06}
             flatShading
             side={DoubleSide}
@@ -8713,7 +8713,7 @@ function MountainsBackdrop({
             color={preset.theme.mountainMidShoulder}
             roughness={0.97}
             metalness={0.02}
-            emissive="#1c110a"
+            emissive={preset.theme.mountainMidShoulder}
             emissiveIntensity={0.05}
             flatShading
             side={DoubleSide}
@@ -8729,7 +8729,7 @@ function MountainsBackdrop({
             color={preset.theme.mountainMidFoothill}
             roughness={0.99}
             metalness={0.01}
-            emissive="#150d08"
+            emissive={preset.theme.mountainMidFoothill}
             emissiveIntensity={0.04}
             flatShading
             side={DoubleSide}
@@ -8747,7 +8747,7 @@ function MountainsBackdrop({
             color={preset.theme.mountainPeakCore}
             roughness={0.93}
             metalness={0.04}
-            emissive="#2d1b10"
+            emissive={preset.theme.mountainPeakCore}
             emissiveIntensity={0.07}
             flatShading
             side={DoubleSide}
@@ -8763,7 +8763,7 @@ function MountainsBackdrop({
             color={preset.theme.mountainPeakShoulder}
             roughness={0.96}
             metalness={0.03}
-            emissive="#21140c"
+            emissive={preset.theme.mountainPeakShoulder}
             emissiveIntensity={0.06}
             flatShading
             side={DoubleSide}
@@ -8779,7 +8779,7 @@ function MountainsBackdrop({
             color={preset.theme.mountainPeakFoothill}
             roughness={0.98}
             metalness={0.02}
-            emissive="#180f09"
+            emissive={preset.theme.mountainPeakFoothill}
             emissiveIntensity={0.05}
             flatShading
             side={DoubleSide}
@@ -9542,10 +9542,15 @@ function SandboxScene({
         <MarketMoodLightRig mood={marketMoodTarget} />
       ) : (
         <>
-          <ambientLight intensity={0.32} color="#9bb8d6" />
-          <hemisphereLight args={['#9cc4ee', '#090b10', 0.34]} />
-          <directionalLight position={[10, 18, 8]} intensity={0.72} color="#d6e8ff" castShadow={RUNTIME_QUALITY_CONFIG.shadows} />
-          <directionalLight position={[-14, 20, -10]} intensity={0.34} color="#7fd3ff" />
+          <ambientLight intensity={0.32} color={preset.theme.pale} />
+          <hemisphereLight args={[preset.theme.warm, '#090b10', 0.34]} />
+          <directionalLight
+            position={[10, 18, 8]}
+            intensity={0.72}
+            color={preset.theme.warm}
+            castShadow={RUNTIME_QUALITY_CONFIG.shadows}
+          />
+          <directionalLight position={[-14, 20, -10]} intensity={0.34} color={preset.theme.primary} />
         </>
       )}
       <MinimalOrbitRig

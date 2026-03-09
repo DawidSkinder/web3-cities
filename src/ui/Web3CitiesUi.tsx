@@ -106,6 +106,14 @@ function ZoomInIcon() {
   );
 }
 
+function ChevronDownIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="web3-ui__tab-chevron">
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  );
+}
+
 function ControlsPopover({
   id,
   title,
@@ -172,6 +180,7 @@ export function Web3CitiesUi({
   const hasShownMobileNoticeRef = useRef(false);
   const modeCopy = MODE_COPY[mode];
   const currentCryptoLabel = MODE_COPY[cryptoSelection].title;
+  const currentCryptoLabelUpper = currentCryptoLabel.toUpperCase();
 
   useEffect(() => {
     setHoverPopover(null);
@@ -362,8 +371,11 @@ export function Web3CitiesUi({
                     className={`web3-ui__tab web3-ui__tab--select${isCryptoCityMode(mode) ? ' is-active' : ''}`}
                     onClick={() => setCryptoMenuOpen((current) => !current)}
                   >
-                    <span>Crypto City</span>
-                    <span className="web3-ui__tab-detail">{currentCryptoLabel}</span>
+                    <span className="web3-ui__tab-select-copy">
+                      <span>Crypto City</span>
+                      <span className="web3-ui__tab-detail">{currentCryptoLabelUpper}</span>
+                    </span>
+                    <ChevronDownIcon />
                   </button>
                 </div>
                 {cryptoMenuOpen ? (
@@ -416,8 +428,11 @@ export function Web3CitiesUi({
                 className={`web3-ui__tab web3-ui__tab--select${isCryptoCityMode(mode) ? ' is-active' : ''}`}
                 onClick={() => setCryptoMenuOpen((current) => !current)}
               >
-                <span>Crypto City</span>
-                <span className="web3-ui__tab-detail">{currentCryptoLabel}</span>
+                <span className="web3-ui__tab-select-copy">
+                  <span>Crypto City</span>
+                  <span className="web3-ui__tab-detail">{currentCryptoLabelUpper}</span>
+                </span>
+                <ChevronDownIcon />
               </button>
             </div>
             {cryptoMenuOpen ? (
