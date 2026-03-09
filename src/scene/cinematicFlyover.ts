@@ -248,26 +248,10 @@ function computeSceneRadius(center: SceneCenter, items: readonly { x: number; z:
 }
 
 function computeObstacleSafeY(x: number, z: number, baseY: number, obstacles: readonly CinematicFlyoverObstacle[]) {
-  let safeY = baseY;
-
-  for (const obstacle of obstacles) {
-    const actualRadius = Math.max(0.001, obstacle.radius);
-    const avoidRadius = actualRadius + CAMERA_CLEARANCE_PAD;
-    const distance = Math.hypot(x - obstacle.x, z - obstacle.z);
-    const obstacleSafeY = obstacle.height + CAMERA_CLEARANCE_Y;
-
-    if (distance <= actualRadius) {
-      safeY = Math.max(safeY, obstacleSafeY);
-      continue;
-    }
-
-    if (distance >= avoidRadius) continue;
-
-    const influence = MathUtils.smoothstep(1 - (distance - actualRadius) / Math.max(0.001, avoidRadius - actualRadius), 0, 1);
-    safeY = Math.max(safeY, MathUtils.lerp(baseY, obstacleSafeY, influence));
-  }
-
-  return safeY;
+  void x;
+  void z;
+  void obstacles;
+  return Math.max(4, baseY);
 }
 
 function enforceDownwardPitchLimit(position: Vector3, target: Vector3) {
@@ -1054,8 +1038,11 @@ export function buildCinematicFlyoverPlan({
     }
   ];
   const durationScale = 2;
+  const latePhaseScale = 2;
   const flyoverSeconds = (reducedSeconds: number, normalSeconds: number) =>
     (reducedMotion ? reducedSeconds : normalSeconds) * durationScale;
+  const lateFlyoverSeconds = (reducedSeconds: number, normalSeconds: number) =>
+    flyoverSeconds(reducedSeconds, normalSeconds) * latePhaseScale;
 
   pushKeyframe(keyframes, flyoverSeconds(1.05, 1.2), widePosition, revealTarget, 'slow');
   pushKeyframe(keyframes, flyoverSeconds(2.55, 3.1), revealApproach, revealTarget, 'slow');
@@ -1080,14 +1067,16 @@ export function buildCinematicFlyoverPlan({
   );
 
   let previousPoint = ringShotB.position;
+  const lateHeroStartIndex = Math.ceil(routeTargets.length * 0.5);
   for (let index = 0; index < routeTargets.length; index += 1) {
     const hero = routeTargets[index];
     const nextAnchor = index < routeTargets.length - 1 ? routeTargets[index + 1] : primary;
     const closeEmphasis = routeTargets.length <= 2 || index === 0 || hero.height >= primary.height * 0.72;
     const sign = turnSign * (index % 2 === 0 ? 1 : -1);
     const shots = buildHeroPassShots(hero, previousPoint, nextAnchor, center, sceneRadius, safeMaxY, normalizedObstacles, sign, closeEmphasis);
-    pushKeyframe(keyframes, flyoverSeconds(1.15, 1.35), shots.shotA, shots.targetA, 'glide');
-    pushKeyframe(keyframes, flyoverSeconds(0.78, 0.92), shots.shotB, shots.targetB, closeEmphasis ? 'surge' : 'glide');
+    const heroPhaseSeconds = index >= lateHeroStartIndex ? lateFlyoverSeconds : flyoverSeconds;
+    pushKeyframe(keyframes, heroPhaseSeconds(1.15, 1.35), shots.shotA, shots.targetA, 'glide');
+    pushKeyframe(keyframes, heroPhaseSeconds(0.78, 0.92), shots.shotB, shots.targetB, closeEmphasis ? 'surge' : 'glide');
     previousPoint = shots.shotB;
   }
 
@@ -1098,16 +1087,16 @@ export function buildCinematicFlyoverPlan({
   }
 
   const canyon = buildCanyonShot(normalizedObstacles, center, sceneRadius, safeMaxY, previousPoint, primary);
-  pushKeyframe(keyframes, flyoverSeconds(1.02, 1.2), canyon.startPosition, canyon.startTarget, 'surge');
-  pushKeyframe(keyframes, flyoverSeconds(1.02, 1.15), canyon.endPosition, canyon.endTarget, 'surge');
+  pushKeyframe(keyframes, lateFlyoverSeconds(1.02, 1.2), canyon.startPosition, canyon.startTarget, 'surge');
+  pushKeyframe(keyframes, lateFlyoverSeconds(1.02, 1.15), canyon.endPosition, canyon.endTarget, 'surge');
 
   const climax = buildClimaxShots(primary, canyon.endPosition, center, sceneRadius, safeMaxY, normalizedObstacles, turnSign);
-  pushKeyframe(keyframes, flyoverSeconds(1.0, 1.18), climax.shotA, climax.targetA, 'glide');
-  pushKeyframe(keyframes, flyoverSeconds(1.02, 1.2), climax.shotB, climax.targetB, 'calm');
-  pushKeyframe(keyframes, flyoverSeconds(1.18, 1.4), climax.shotC, climax.targetC, 'calm');
+  pushKeyframe(keyframes, lateFlyoverSeconds(1.0, 1.18), climax.shotA, climax.targetA, 'glide');
+  pushKeyframe(keyframes, lateFlyoverSeconds(1.02, 1.2), climax.shotB, climax.targetB, 'calm');
+  pushKeyframe(keyframes, lateFlyoverSeconds(1.18, 1.4), climax.shotC, climax.targetC, 'calm');
 
   const returnShot = buildReturnShot(center, sceneRadius, safeMaxY, climax.shotC);
-  pushKeyframe(keyframes, flyoverSeconds(1.48, 1.8), returnShot.position, returnShot.target, 'slow');
+  pushKeyframe(keyframes, lateFlyoverSeconds(1.48, 1.8), returnShot.position, returnShot.target, 'slow');
 
   return {
     keyframes,

@@ -677,27 +677,8 @@ function toCinematicFlyoverObstacle(tower: TowerDatum): CinematicFlyoverObstacle
     sequence: tower.sequence,
     x: tower.x,
     z: tower.z,
-    height: tower.height + 14,
-    radius: Math.max(2.8, radius + 5.2)
-  };
-}
-
-function toParkFlyoverObstacle(park: ParkDatum): CinematicFlyoverObstacle {
-  return {
-    x: park.x,
-    z: park.z,
-    height: 4.2,
-    radius: Math.max(park.radius, park.w * 0.45, park.d * 0.45) + 1.5
-  };
-}
-
-function toParkTreeFlyoverObstacle(tree: ParkTreeDatum, index: number): CinematicFlyoverObstacle | null {
-  if (index % 2 === 1) return null;
-  return {
-    x: tree.x,
-    z: tree.z,
-    height: tree.trunkH + tree.crownH + 1.4,
-    radius: tree.crownR + 0.9
+    height: tower.height,
+    radius: Math.max(2.8, radius + 1.6)
   };
 }
 const tempColorA = new Color();
@@ -9682,14 +9663,7 @@ function SandboxScene({
         : null,
     [selectedTower]
   );
-  const flyoverObstacles = useMemo(
-    () => [
-      ...towers.map((tower) => toCinematicFlyoverObstacle(tower)),
-      ...parks.map((park) => toParkFlyoverObstacle(park)),
-      ...parkTrees.map((tree, index) => toParkTreeFlyoverObstacle(tree, index)).filter((entry): entry is CinematicFlyoverObstacle => entry != null)
-    ],
-    [parkTrees, parks, towers]
-  );
+  const flyoverObstacles = useMemo(() => towers.map((tower) => toCinematicFlyoverObstacle(tower)), [towers]);
   const discFocusAnchor = useMemo(
     () =>
       selectedTower
