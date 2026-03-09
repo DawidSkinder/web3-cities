@@ -534,12 +534,13 @@ export function Web3CitiesUi({
                 <button
                   type="button"
                   title="Cinematic flyover"
-                  className={`web3-ui__help-trigger web3-ui__help-trigger--icon${cinematicFlyoverActive ? ' is-active' : ''}`}
+                  className={`web3-ui__help-trigger${cinematicFlyoverActive ? ' is-active' : ''}`}
                   aria-label={cinematicFlyoverActive ? 'Restart cinematic flyover' : 'Start cinematic flyover'}
                   aria-pressed={cinematicFlyoverActive}
                   onClick={onCinematicFlyover}
                 >
                   <FlyoverIcon />
+                  <span>Cinematic Flyover</span>
                 </button>
 
                 <div

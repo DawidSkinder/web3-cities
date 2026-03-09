@@ -1,7 +1,7 @@
 import { MathUtils, Vector3 } from 'three';
 
 const TAU = Math.PI * 2;
-const LOOK_AHEAD_SECONDS = 0.38;
+const LOOK_AHEAD_SECONDS = 0.48;
 
 export type CinematicFlyoverTarget = {
   sequence: number;
@@ -10,31 +10,53 @@ export type CinematicFlyoverTarget = {
   height: number;
 };
 
-type OrbitAnchor = {
-  centerX: number;
-  centerZ: number;
-  radius: number;
-  elevation: number;
-  lookY: number;
-  focusHeight: number;
+type Point3 = {
+  x: number;
+  y: number;
+  z: number;
 };
 
-type CinematicFlyoverSegmentKind = 'entry' | 'orbit' | 'transfer';
+type FlyoverWaypoint = {
+  x: number;
+  z: number;
+  elevation: number;
+  lookY: number;
+  height: number;
+};
 
-type CinematicFlyoverSegment = {
-  kind: CinematicFlyoverSegmentKind;
+type LinearSegment = {
+  kind: 'entry';
   startTime: number;
   duration: number;
-  startAngle: number;
-  turns: number;
-  holdCenterUntil: number;
+  startPosition: Point3;
+  endPosition: Point3;
+  startFocus: Point3;
+  endFocus: Point3;
   focusBlendFrom: number;
   focusBlendTo: number;
   lookAheadFrom: number;
   lookAheadTo: number;
-  from: OrbitAnchor;
-  to: OrbitAnchor;
 };
+
+type SpiralSegment = {
+  kind: 'transfer';
+  startTime: number;
+  duration: number;
+  startPosition: Point3;
+  endPosition: Point3;
+  startFocus: Point3;
+  endFocus: Point3;
+  maxRadius: number;
+  turnCount: number;
+  startAngle: number;
+  verticalLift: number;
+  focusBlendFrom: number;
+  focusBlendTo: number;
+  lookAheadFrom: number;
+  lookAheadTo: number;
+};
+
+type CinematicFlyoverSegment = LinearSegment | SpiralSegment;
 
 type PoseSample = {
   complete: boolean;
@@ -53,67 +75,62 @@ const futurePositionScratch = new Vector3();
 const futureFocusScratch = new Vector3();
 const forwardScratch = new Vector3();
 const forwardLookScratch = new Vector3();
+const pointScratch = new Vector3();
+
+function point(x: number, y: number, z: number): Point3 {
+  return { x, y, z };
+}
 
 function smoothstep01(value: number) {
   const t = MathUtils.clamp(value, 0, 1);
   return t * t * (3 - 2 * t);
 }
 
-function clampOrbitRadius(radius: number, boundsRadius: number) {
-  return MathUtils.clamp(radius, 10, Math.max(30, boundsRadius * 2.9 + 20));
+function setPoint(out: Vector3, input: Point3) {
+  out.set(input.x, input.y, input.z);
 }
 
-function buildTowerOrbitAnchors(target: CinematicFlyoverTarget, boundsRadius: number, maxY: number) {
-  const baseRadius = MathUtils.clamp(8.6 + target.height * 0.19 + boundsRadius * 0.016, 10.5, 28);
-  const baseElevation = MathUtils.clamp(target.height + Math.max(8.5, target.height * 0.34), 14, maxY + 78);
-  const lookY = MathUtils.clamp(target.height * 0.64, 2.8, target.height + 24);
+function sampleLinearSegment(segment: LinearSegment, progress: number, outPosition: Vector3, outFocus: Vector3): PoseSample {
+  const t = smoothstep01(progress);
+  outPosition.set(
+    MathUtils.lerp(segment.startPosition.x, segment.endPosition.x, t),
+    MathUtils.lerp(segment.startPosition.y, segment.endPosition.y, t),
+    MathUtils.lerp(segment.startPosition.z, segment.endPosition.z, t)
+  );
+  outFocus.set(
+    MathUtils.lerp(segment.startFocus.x, segment.endFocus.x, t),
+    MathUtils.lerp(segment.startFocus.y, segment.endFocus.y, t),
+    MathUtils.lerp(segment.startFocus.z, segment.endFocus.z, t)
+  );
 
   return {
-    entry: {
-      centerX: target.x,
-      centerZ: target.z,
-      radius: baseRadius * 1.16,
-      elevation: baseElevation + Math.max(1.8, target.height * 0.04),
-      lookY,
-      focusHeight: target.height
-    },
-    exit: {
-      centerX: target.x,
-      centerZ: target.z,
-      radius: baseRadius * 0.92,
-      elevation: Math.max(target.height + 6, baseElevation - Math.max(1.4, target.height * 0.03)),
-      lookY: Math.min(baseElevation, lookY + Math.max(0.8, target.height * 0.06)),
-      focusHeight: target.height
-    }
+    complete: progress >= 1,
+    focusBlend: MathUtils.lerp(segment.focusBlendFrom, segment.focusBlendTo, t),
+    lookAheadDistance: MathUtils.lerp(segment.lookAheadFrom, segment.lookAheadTo, t)
   };
 }
 
-function sampleSegmentAtProgress(
-  segment: CinematicFlyoverSegment,
-  progress: number,
-  outPosition: Vector3,
-  outFocus: Vector3
-): PoseSample {
-  const clampedProgress = MathUtils.clamp(progress, 0, 1);
-  const blendT = smoothstep01(clampedProgress);
-  const moveT =
-    clampedProgress <= segment.holdCenterUntil
-      ? 0
-      : smoothstep01((clampedProgress - segment.holdCenterUntil) / Math.max(0.0001, 1 - segment.holdCenterUntil));
-  const angle = segment.startAngle + segment.turns * TAU * clampedProgress;
-  const centerX = MathUtils.lerp(segment.from.centerX, segment.to.centerX, moveT);
-  const centerZ = MathUtils.lerp(segment.from.centerZ, segment.to.centerZ, moveT);
-  const radius = MathUtils.lerp(segment.from.radius, segment.to.radius, blendT);
-  const elevation = MathUtils.lerp(segment.from.elevation, segment.to.elevation, blendT);
-  const lookY = MathUtils.lerp(segment.from.lookY, segment.to.lookY, blendT);
+function sampleSpiralSegment(segment: SpiralSegment, progress: number, outPosition: Vector3, outFocus: Vector3): PoseSample {
+  const t = smoothstep01(progress);
+  const spiralWeight = Math.pow(Math.sin(Math.PI * t), 0.92);
+  const angle = segment.startAngle + segment.turnCount * TAU * t;
+  const radius = segment.maxRadius * spiralWeight;
 
-  outPosition.set(centerX + Math.sin(angle) * radius, elevation, centerZ + Math.cos(angle) * radius);
-  outFocus.set(centerX, lookY, centerZ);
+  outPosition.set(
+    MathUtils.lerp(segment.startPosition.x, segment.endPosition.x, t) + Math.sin(angle) * radius,
+    MathUtils.lerp(segment.startPosition.y, segment.endPosition.y, t) + Math.pow(spiralWeight, 1.12) * segment.verticalLift,
+    MathUtils.lerp(segment.startPosition.z, segment.endPosition.z, t) + Math.cos(angle) * radius
+  );
+  outFocus.set(
+    MathUtils.lerp(segment.startFocus.x, segment.endFocus.x, t),
+    MathUtils.lerp(segment.startFocus.y, segment.endFocus.y, t),
+    MathUtils.lerp(segment.startFocus.z, segment.endFocus.z, t)
+  );
 
   return {
-    complete: clampedProgress >= 1,
-    focusBlend: MathUtils.lerp(segment.focusBlendFrom, segment.focusBlendTo, blendT),
-    lookAheadDistance: MathUtils.lerp(segment.lookAheadFrom, segment.lookAheadTo, blendT)
+    complete: progress >= 1,
+    focusBlend: MathUtils.lerp(segment.focusBlendFrom, segment.focusBlendTo, t),
+    lookAheadDistance: MathUtils.lerp(segment.lookAheadFrom, segment.lookAheadTo, t)
   };
 }
 
@@ -131,7 +148,41 @@ function samplePlanState(plan: CinematicFlyoverPlan, elapsedSeconds: number, out
 
   const localElapsed = safeElapsed - segment.startTime;
   const progress = segment.duration <= 0 ? 1 : localElapsed / segment.duration;
-  return sampleSegmentAtProgress(segment, progress, outPosition, outFocus);
+  if (segment.kind === 'entry') {
+    return sampleLinearSegment(segment, progress, outPosition, outFocus);
+  }
+  return sampleSpiralSegment(segment, progress, outPosition, outFocus);
+}
+
+function buildWaypoint(target: CinematicFlyoverTarget, maxY: number) {
+  return {
+    x: target.x,
+    z: target.z,
+    elevation: MathUtils.clamp(target.height + Math.max(8, target.height * 0.26), 14, maxY + 78),
+    lookY: MathUtils.clamp(target.height * 0.66, 2.6, target.height + 22),
+    height: target.height
+  };
+}
+
+function resolveTurnSign(
+  currentDirectionX: number,
+  currentDirectionZ: number,
+  nextDirectionX: number,
+  nextDirectionZ: number,
+  fallbackSign: number
+) {
+  const currentLength = Math.hypot(currentDirectionX, currentDirectionZ);
+  const nextLength = Math.hypot(nextDirectionX, nextDirectionZ);
+  if (currentLength < 0.001 || nextLength < 0.001) return fallbackSign;
+
+  const currentX = currentDirectionX / currentLength;
+  const currentZ = currentDirectionZ / currentLength;
+  const nextX = nextDirectionX / nextLength;
+  const nextZ = nextDirectionZ / nextLength;
+  const cross = currentX * nextZ - currentZ * nextX;
+
+  if (Math.abs(cross) < 0.08) return fallbackSign;
+  return cross >= 0 ? 1 : -1;
 }
 
 export function pickCinematicFlyoverTargets<T extends CinematicFlyoverTarget>(
@@ -163,96 +214,94 @@ export function buildCinematicFlyoverPlan({
 
   const safeBoundsRadius = Math.max(18, boundsRadius);
   const safeMaxY = Math.max(8, maxY);
-  const currentAnchor: OrbitAnchor = {
-    centerX: startTarget.x,
-    centerZ: startTarget.z,
-    radius: clampOrbitRadius(Math.hypot(startPosition.x - startTarget.x, startPosition.z - startTarget.z), safeBoundsRadius),
-    elevation: MathUtils.clamp(startPosition.y, 8, safeMaxY + 96),
-    lookY: MathUtils.clamp(startTarget.y, 1.2, safeMaxY + 32),
-    focusHeight: Math.max(4, startTarget.y * 1.35)
-  };
-  const towerAnchors = targets.map((target) => buildTowerOrbitAnchors(target, safeBoundsRadius, safeMaxY));
+  const waypoints = targets.map((target) => buildWaypoint(target, safeMaxY));
   const segments: CinematicFlyoverSegment[] = [];
-
   let elapsedCursor = 0;
-  let angleCursor = Math.atan2(startPosition.x - currentAnchor.centerX, startPosition.z - currentAnchor.centerZ);
 
-  const pushSegment = (
-    kind: CinematicFlyoverSegmentKind,
-    from: OrbitAnchor,
-    to: OrbitAnchor,
-    turns: number,
-    duration: number,
-    holdCenterUntil: number,
-    focusBlendFrom: number,
-    focusBlendTo: number,
-    lookAheadFrom: number,
-    lookAheadTo: number
-  ) => {
-    segments.push({
-      kind,
-      startTime: elapsedCursor,
-      duration,
-      startAngle: angleCursor,
-      turns,
-      holdCenterUntil,
-      focusBlendFrom,
-      focusBlendTo,
-      lookAheadFrom,
-      lookAheadTo,
-      from,
-      to
-    });
-    elapsedCursor += duration;
-    angleCursor += turns * TAU;
-  };
-
-  pushSegment(
-    'entry',
-    currentAnchor,
-    towerAnchors[0].entry,
-    reducedMotion ? 0.72 : 0.92,
-    reducedMotion ? 1.65 : 2.15,
-    0.12,
-    0.58,
-    0.48,
-    16,
-    13
+  const firstWaypoint = waypoints[0];
+  const firstPosition = point(firstWaypoint.x, firstWaypoint.elevation, firstWaypoint.z);
+  const straightDistance = startPosition.distanceTo(pointScratch.set(firstPosition.x, firstPosition.y, firstPosition.z));
+  const entryDuration = MathUtils.clamp(
+    (reducedMotion ? 3.2 : 4.4) + straightDistance * (reducedMotion ? 0.02 : 0.03),
+    reducedMotion ? 3.2 : 4.6,
+    reducedMotion ? 5.6 : 8.4
   );
 
-  for (let index = 0; index < towerAnchors.length; index += 1) {
-    const current = towerAnchors[index];
-    pushSegment(
-      'orbit',
-      current.entry,
-      current.exit,
-      reducedMotion ? 0.94 : 1.08,
-      reducedMotion ? 1.35 : 1.8,
-      0,
-      0.42,
-      0.36,
-      12,
-      10.5
-    );
+  segments.push({
+    kind: 'entry',
+    startTime: elapsedCursor,
+    duration: entryDuration,
+    startPosition: point(startPosition.x, startPosition.y, startPosition.z),
+    endPosition: firstPosition,
+    startFocus: point(startTarget.x, startTarget.y, startTarget.z),
+    endFocus: point(firstWaypoint.x, firstWaypoint.lookY, firstWaypoint.z),
+    focusBlendFrom: 0.18,
+    focusBlendTo: 0.22,
+    lookAheadFrom: 14,
+    lookAheadTo: 12
+  });
+  elapsedCursor += entryDuration;
 
-    const next = towerAnchors[index + 1];
-    if (!next) continue;
+  let currentDirectionX = firstWaypoint.x - startPosition.x;
+  let currentDirectionZ = firstWaypoint.z - startPosition.z;
+  let lastTurnSign = 1;
 
-    const distance = Math.hypot(next.entry.centerX - current.exit.centerX, next.entry.centerZ - current.exit.centerZ);
-    const turnScale = reducedMotion ? 0.36 : 0.46;
-    const durationBase = reducedMotion ? 1.05 : 1.35;
-    pushSegment(
-      'transfer',
-      current.exit,
-      next.entry,
-      MathUtils.clamp(0.62 + (distance / Math.max(28, safeBoundsRadius * 1.3 + 18)) * turnScale, reducedMotion ? 0.58 : 0.72, reducedMotion ? 0.92 : 1.18),
-      MathUtils.clamp(durationBase + distance * 0.022, reducedMotion ? 1.05 : 1.25, reducedMotion ? 2.05 : 2.75),
-      distance < 20 ? 0.42 : 0.18,
-      0.52,
-      0.46,
-      13.5,
-      14.5
+  for (let index = 0; index < waypoints.length - 1; index += 1) {
+    const current = waypoints[index];
+    const next = waypoints[index + 1];
+    const nextDirectionX = next.x - current.x;
+    const nextDirectionZ = next.z - current.z;
+    const distance = Math.hypot(nextDirectionX, nextDirectionZ);
+    const currentLength = Math.max(0.001, Math.hypot(currentDirectionX, currentDirectionZ));
+    const nextLength = Math.max(0.001, distance);
+    const headingDot = (currentDirectionX / currentLength) * (nextDirectionX / nextLength) + (currentDirectionZ / currentLength) * (nextDirectionZ / nextLength);
+    const turnSign = resolveTurnSign(currentDirectionX, currentDirectionZ, nextDirectionX, nextDirectionZ, lastTurnSign);
+    const needsFullTurn = distance < Math.max(18, safeBoundsRadius * 0.24) || headingDot < 0.05;
+    const turnMagnitude = needsFullTurn
+      ? reducedMotion
+        ? 0.88
+        : 1
+      : distance < Math.max(34, safeBoundsRadius * 0.44)
+        ? reducedMotion
+          ? 0.72
+          : 0.84
+        : reducedMotion
+          ? 0.58
+          : 0.68;
+    const maxRadius = MathUtils.clamp(
+      distance * 0.14 + Math.max(current.height, next.height) * 0.05,
+      5.2,
+      Math.max(11.5, safeBoundsRadius * 0.18)
     );
+    const duration = MathUtils.clamp(
+      (reducedMotion ? 2.8 : 3.9) + distance * (reducedMotion ? 0.03 : 0.045) + turnMagnitude * (reducedMotion ? 0.5 : 0.85),
+      reducedMotion ? 3.1 : 4.2,
+      reducedMotion ? 5.3 : 7.8
+    );
+    const startAngle = Math.atan2(currentDirectionX, currentDirectionZ) + turnSign * Math.PI * 0.55;
+    const verticalLift = MathUtils.clamp(1.6 + maxRadius * 0.26 + Math.abs(next.height - current.height) * 0.04, 2, 6.8);
+
+    segments.push({
+      kind: 'transfer',
+      startTime: elapsedCursor,
+      duration,
+      startPosition: point(current.x, current.elevation, current.z),
+      endPosition: point(next.x, next.elevation, next.z),
+      startFocus: point(current.x, current.lookY, current.z),
+      endFocus: point(next.x, next.lookY, next.z),
+      maxRadius,
+      turnCount: turnSign * turnMagnitude,
+      startAngle,
+      verticalLift,
+      focusBlendFrom: 0.28,
+      focusBlendTo: 0.34,
+      lookAheadFrom: 12.5,
+      lookAheadTo: 14
+    });
+    elapsedCursor += duration;
+    currentDirectionX = nextDirectionX;
+    currentDirectionZ = nextDirectionZ;
+    lastTurnSign = turnSign;
   }
 
   return {
