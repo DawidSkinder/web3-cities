@@ -1,4 +1,5 @@
 import type { FeedHandlers, NormalizedTrade, TradeFeed } from './types';
+import type { CryptoCityMockProfile } from '../cryptoCity/presets';
 
 type MockRegime = 'calm' | 'balanced' | 'burst';
 
@@ -48,15 +49,21 @@ function gaussianRandom() {
 
 export class MockTradeFeed implements TradeFeed {
   readonly source = 'mock' as const;
+  private readonly profile: CryptoCityMockProfile;
 
   private handlers: FeedHandlers | null = null;
   private running = false;
   private timer: number | null = null;
-  private price = 64000 + Math.random() * 4000;
+  private price = 0;
   private driftBias = 0;
   private regime: MockRegime = 'balanced';
   private regimeUntil = 0;
   private tradeId = 0;
+
+  constructor(profile: CryptoCityMockProfile) {
+    this.profile = profile;
+    this.price = profile.initialPrice * (0.96 + Math.random() * 0.08);
+  }
 
   start(handlers: FeedHandlers) {
     this.stop();
@@ -64,6 +71,7 @@ export class MockTradeFeed implements TradeFeed {
     this.running = true;
     this.regimeUntil = 0;
     this.tradeId = 0;
+    this.price = this.profile.initialPrice * (0.96 + Math.random() * 0.08);
 
     this.handlers.onStatus?.({
       source: this.source,
@@ -135,22 +143,24 @@ export class MockTradeFeed implements TradeFeed {
 
     this.driftBias = this.driftBias * 0.985 + gaussianRandom() * 0.03;
     const deltaBps = noiseBps + jumpBps + this.driftBias * 0.2;
-    this.price = Math.max(1000, this.price * (1 + deltaBps / 10000));
+    this.price = Math.max(this.profile.minPrice, this.price * (1 + deltaBps / 10000));
 
     const sideScore = deltaBps + gaussianRandom() * cfg.volatilityBps * 0.35;
     const aggressorSide = sideScore >= 0 ? 'buy' : 'sell';
     const isBuyerMaker = aggressorSide === 'sell';
 
-    const baseQty = 0.001 + Math.pow(Math.random(), 2.2) * 0.09 * cfg.quantityScale;
-    const blockPrint = Math.random() > 0.992 ? randomBetween(0.15, 0.65) : 0;
+    const baseQty =
+      this.profile.baseQtyMin +
+      Math.pow(Math.random(), 2.2) * this.profile.baseQtyMax * cfg.quantityScale;
+    const blockPrint = Math.random() > 0.992 ? randomBetween(this.profile.blockPrintMin, this.profile.blockPrintMax) : 0;
     const quantity = Math.max(0.0001, baseQty + blockPrint);
 
     const trade: NormalizedTrade = {
       id: ++this.tradeId,
       idKind: 'mock',
       timestamp: Date.now(),
-      price: Number(this.price.toFixed(2)),
-      quantity: Number(quantity.toFixed(6)),
+      price: Number(this.price.toFixed(this.profile.pricePrecision)),
+      quantity: Number(quantity.toFixed(this.profile.quantityPrecision)),
       isBuyerMaker,
       aggressorSide,
       side: aggressorSide,

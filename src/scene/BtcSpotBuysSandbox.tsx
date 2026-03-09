@@ -32,10 +32,13 @@ import {
 import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import type { CryptoCityPreset } from '../data/cryptoCity/presets';
 import { useTopCoinsStore } from '../data/topCoins/topCoinsStore';
 import type { TopCoinsSnapshot } from '../data/topCoins/types';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import type { BlockEvent } from '../data/trades/types';
+import type { CryptoCityMode } from '../lib/cityMode';
+import { isCryptoCityMode } from '../lib/cityMode';
 import type { CityMode } from '../lib/cityMode';
 import { deriveBtcCityMetrics } from '../ui/cityMetrics';
 import { Web3CitiesUi } from '../ui/Web3CitiesUi';
@@ -767,6 +770,14 @@ function fmtBtc(v: number) {
   return v.toFixed(5);
 }
 
+function fmtAssetAmount(v: number, ticker: string) {
+  return `${fmtBtc(v)} ${ticker}`;
+}
+
+function withAlpha(rgb: string, alpha: number) {
+  return `rgba(${rgb},${alpha})`;
+}
+
 function fmtFixed(v: number, digits = 2) {
   if (!Number.isFinite(v)) return '0';
   return v.toFixed(digits);
@@ -1065,7 +1076,7 @@ function buildTowerShapeParams(sequence: number, heightScore: number): {
   };
 }
 
-function createEmptyAccum(): AccumState {
+function createEmptyAccum(preset: CryptoCityPreset): AccumState {
   const shockwaves = Array.from({ length: SHOCKWAVE_POOL_CAP }, () => ({
     serial: 0,
     active: false,
@@ -1076,7 +1087,7 @@ function createEmptyAccum(): AccumState {
     startRadius: 0.4,
     maxRadius: 8,
     thickness: 0.05,
-    color: '#f7931a',
+    color: preset.theme.primary,
     peakOpacity: 0.28
   })) as ShockwaveDatum[];
   const recordCeremonies = Array.from({ length: RECORD_CEREMONY_POOL_CAP }, () => ({
@@ -1190,10 +1201,10 @@ function pushRecordCeremony(state: AccumState, tower: TowerDatum) {
   slot.durationMs = RUNTIME_QUALITY_CONFIG.reducedMotion ? 1000 : 1600;
 }
 
-function ensureDistrictForNextTower(state: AccumState, tower: TowerDatum) {
+function ensureDistrictForNextTower(state: AccumState, tower: TowerDatum, preset: CryptoCityPreset) {
   if (!ENABLE_SPECTACLE_LAYER || !ENABLE_DISTRICTS) {
     tower.districtId = 0;
-    tower.districtAccentColor = '#f2dec0';
+    tower.districtAccentColor = preset.theme.districtBase;
     return;
   }
   const nextIndex = state.towers.length;
@@ -1201,7 +1212,7 @@ function ensureDistrictForNextTower(state: AccumState, tower: TowerDatum) {
   while (state.districts.length <= districtId) {
     const id = state.districts.length;
     const seed = hash01(id, 9101);
-    const tint = new Color('#f4ead6').lerp(new Color('#ffd4a0'), seed * 0.28);
+    const tint = new Color(preset.theme.districtBase).lerp(new Color(preset.theme.districtAccent), seed * 0.28);
     state.districts.push({
       id,
       memberCount: 0,
@@ -1223,7 +1234,7 @@ function ensureDistrictForNextTower(state: AccumState, tower: TowerDatum) {
   tower.districtAccentColor = district.tintColor;
 }
 
-function appendArteriesForNewTower(state: AccumState, tower: TowerDatum) {
+function appendArteriesForNewTower(state: AccumState, tower: TowerDatum, preset: CryptoCityPreset) {
   if (BTC_STRICT_ADJACENT_ROADS) return;
   if (!ENABLE_SPECTACLE_LAYER || !ENABLE_ARTERIALS) return;
   if (state.arterialTraces.length >= ARTERY_MAX_COUNT) return;
@@ -1286,8 +1297,8 @@ function appendArteriesForNewTower(state: AccumState, tower: TowerDatum) {
 
     state.arteryKeySet.add(key);
     const warm = hash01(aSeq, bSeq, 9901);
-    const core = new Color('#f9c57b').lerp(new Color('#ffe9c9'), warm * 0.22);
-    const glow = new Color('#f7931a').lerp(new Color('#ffd59a'), warm * 0.16);
+    const core = new Color(preset.theme.pale).lerp(new Color(preset.theme.warm), warm * 0.22);
+    const glow = new Color(preset.theme.primary).lerp(new Color(preset.theme.pale), warm * 0.16);
     const y = ARTERY_TRACE_BASE_Y + i * ARTERY_TRACE_STEP_Y;
     const width = 0.14 + hash01(aSeq, bSeq, 9907) * 0.045;
     const glowWidth = width * 3.05;
@@ -1410,7 +1421,7 @@ function traceCrossesPark(state: AccumState, ax: number, az: number, bx: number,
   return false;
 }
 
-function appendParkAtTowerSlot(state: AccumState, sourceTower: TowerDatum, seed: number) {
+function appendParkAtTowerSlot(state: AccumState, sourceTower: TowerDatum, seed: number, preset: CryptoCityPreset) {
   state.parksAttempted += 1;
   if (state.parks.length >= MAX_PARKS_VISIBLE) {
     state.lastParkSkipReason = 'park-cap';
@@ -1437,8 +1448,10 @@ function appendParkAtTowerSlot(state: AccumState, sourceTower: TowerDatum, seed:
     }
   }
 
-  const patchColor = CORE_GRAPHITE.clone().lerp(CORE_GRAPHITE_HI, 0.52).lerp(BTC_ORANGE, 0.03);
-  const edgeColor = BTC_SELL_WARM.clone().lerp(BTC_PALE_AMBER, 0.34).lerp(BTC_ORANGE, 0.18);
+  const patchColor = CORE_GRAPHITE.clone().lerp(CORE_GRAPHITE_HI, 0.52).lerp(new Color(preset.theme.primary), 0.03);
+  const edgeColor = new Color(preset.theme.warm)
+    .lerp(new Color(preset.theme.pale), 0.34)
+    .lerp(new Color(preset.theme.primary), 0.18);
 
   const treeStart = state.parkTrees.length;
   const requestedTreeCount = Math.max(
@@ -1530,7 +1543,7 @@ function parkSpiralCandidate(seed: number, state: AccumState, attempt: number) {
   };
 }
 
-function appendPark(state: AccumState, seed: number) {
+function appendPark(state: AccumState, seed: number, preset: CryptoCityPreset) {
   state.parksAttempted += 1;
   if (state.parks.length >= MAX_PARKS_VISIBLE) {
     state.lastParkSkipReason = 'park-cap';
@@ -1630,8 +1643,11 @@ function appendPark(state: AccumState, seed: number) {
 
   const patchColor = CORE_GRAPHITE.clone()
     .lerp(CORE_GRAPHITE_HI, 0.4 + hash01(seed, 7201) * 0.35)
-    .lerp(BTC_ORANGE, 0.04 + hash01(seed, 7207) * 0.05);
-  const edgeColor = BTC_SELL_WARM.clone().lerp(BTC_ORANGE, 0.25 + hash01(seed, 7211) * 0.28);
+    .lerp(new Color(preset.theme.primary), 0.04 + hash01(seed, 7207) * 0.05);
+  const edgeColor = new Color(preset.theme.warm).lerp(
+    new Color(preset.theme.primary),
+    0.25 + hash01(seed, 7211) * 0.28
+  );
 
   const treeStart = state.parkTrees.length;
   const requestedTreeCount = Math.floor(MathUtils.lerp(12, 40, hash01(seed, 7217)));
@@ -1720,11 +1736,11 @@ function appendPark(state: AccumState, seed: number) {
   return true;
 }
 
-function maybeAppendPark(state: AccumState, seed: number) {
+function maybeAppendPark(state: AccumState, seed: number, preset: CryptoCityPreset) {
   const towerCount = state.towers.length;
   if (ENABLE_PARKS_V2 && state.parks.length === 0 && towerCount >= PARK_FORCE_FIRST_BY_TOWER_COUNT) {
     for (let i = 0; i < 4 && state.parks.length === 0; i++) {
-      appendPark(state, seed + i * 97);
+      appendPark(state, seed + i * 97, preset);
     }
     if (state.parks.length > 0) {
       state.nextParkAtCount = towerCount + nextParkInterval(seed + towerCount);
@@ -1732,7 +1748,7 @@ function maybeAppendPark(state: AccumState, seed: number) {
     }
   }
   if (towerCount < state.nextParkAtCount) return;
-  const placed = appendPark(state, seed);
+  const placed = appendPark(state, seed, preset);
   if (!placed && state.lastParkSkipReason === 'too-early') {
     state.nextParkAtCount = Math.max(state.nextParkAtCount, 24);
     return;
@@ -1740,7 +1756,7 @@ function maybeAppendPark(state: AccumState, seed: number) {
   state.nextParkAtCount = towerCount + nextParkInterval(seed + towerCount);
 }
 
-function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
+function appendTracesForNewTower(state: AccumState, tower: TowerDatum, preset: CryptoCityPreset) {
   if (state.towers.length <= 1) return;
 
   const existing = state.towers.slice(0, -1);
@@ -1808,8 +1824,13 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
     state.traceKeySet.add(traceKey);
     const warmBias = hash01(aSeq, bSeq, seg.length);
     const imbalanceBias = hash01(tower.sequence, neighbor.sequence, 7);
-    const core = TRACE_ORANGE.clone().lerp(TRACE_PALE, 0.22 + warmBias * 0.22).lerp(TRACE_WARM, imbalanceBias > 0.82 ? 0.24 : 0);
-    const glow = TRACE_ORANGE.clone().lerp(TRACE_WARM, warmBias > 0.88 ? 0.35 : 0.12);
+    const core = new Color(preset.theme.tracePrimary)
+      .lerp(new Color(preset.theme.tracePale), 0.22 + warmBias * 0.22)
+      .lerp(new Color(preset.theme.traceWarm), imbalanceBias > 0.82 ? 0.24 : 0);
+    const glow = new Color(preset.theme.tracePrimary).lerp(
+      new Color(preset.theme.traceWarm),
+      warmBias > 0.88 ? 0.35 : 0.12
+    );
     const width = 0.08 + hash01(aSeq, bSeq, 3) * 0.03;
     const glowWidth = width * 2.6;
     const y = TRACE_BASE_Y + i * TRACE_LAYER_STEP_Y;
@@ -1860,10 +1881,10 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
       const orangeBias = hash01(aSeq, bSeq, p, 31);
       const particleColor =
         orangeBias > 0.86
-          ? TRACE_ORANGE.clone()
+          ? new Color(preset.theme.tracePrimary)
           : orangeBias > 0.52
-            ? TRACE_WARM.clone()
-            : TRACE_PALE.clone();
+            ? new Color(preset.theme.traceWarm)
+            : new Color(preset.theme.tracePale);
 
       state.trafficParticles.push({
         id: `${traceId}-P-${p}`,
@@ -1887,7 +1908,7 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum) {
   }
 }
 
-function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
+function mapEventToTower(event: BlockEvent, state: AccumState, preset: CryptoCityPreset): TowerDatum {
   const idx = Math.max(0, Math.floor(event.sequence) - 1);
   const angle = idx * GOLDEN_ANGLE;
   const radius = Math.sqrt(idx) * SPIRAL_STEP * BTC_BUILDING_SPACING_MULT;
@@ -1993,7 +2014,9 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
   const dominance = MathUtils.clamp(clampFinite(event.metrics.imbalance, 0), -1, 1);
   const imbalance = Math.abs(dominance);
   const dominance01 = (dominance + 1) * 0.5;
-  const glow = BTC_SELL_WARM.clone().lerp(BTC_PALE_AMBER, 0.38).lerp(BTC_ORANGE, dominance01);
+  const glow = new Color(preset.theme.warm)
+    .lerp(new Color(preset.theme.pale), 0.38)
+    .lerp(new Color(preset.theme.primary), dominance01);
   const core = CORE_GRAPHITE.clone().lerp(CORE_GRAPHITE_HI, 0.2 + imbalance * 0.22);
   let glowStrength = MathUtils.clamp(0.7 + intensity * 0.45 + imbalance * 0.55, 0.75, 1.55);
   let bandCount = (2 + Math.min(2, Math.floor(imbalance * 3))) as 2 | 3 | 4;
@@ -2308,7 +2331,7 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     intensity,
     imbalance,
     districtId: 0,
-    districtAccentColor: '#f4ead6',
+    districtAccentColor: preset.theme.districtBase,
     btcVolume: totalVolume,
     usdNotional,
     usdSource: usdDerived.source,
@@ -2319,12 +2342,13 @@ function mapEventToTower(event: BlockEvent, state: AccumState): TowerDatum {
     tradeCount,
     windowStart: event.windowStart,
     windowEnd: event.windowEnd,
-    emittedAt: Math.max(0, clampFinite(event.emittedAt, Date.now()))
+    emittedAt: Math.max(0, clampFinite(event.emittedAt, Date.now())),
+    mode: preset.mode
   };
 }
 
-function useAppendOnlyTowers(events: BlockEvent[]) {
-  const accumRef = useRef<AccumState>(createEmptyAccum());
+function useAppendOnlyTowers(events: BlockEvent[], preset: CryptoCityPreset) {
+  const accumRef = useRef<AccumState>(createEmptyAccum(preset));
   const [version, setVersion] = useState(0);
 
   useEffect(() => {
@@ -2332,7 +2356,7 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
 
     if (events.length === 0) {
       if (state.lastSequence > 0) {
-        accumRef.current = createEmptyAccum();
+        accumRef.current = createEmptyAccum(preset);
         setVersion((v) => v + 1);
       }
       return;
@@ -2342,13 +2366,13 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
     let appended = false;
 
     if (state.lastSequence > 0 && ordered[ordered.length - 1]?.sequence < state.lastSequence && ordered.length < 8) {
-      accumRef.current = createEmptyAccum();
+      accumRef.current = createEmptyAccum(preset);
     }
 
     const target = accumRef.current;
     for (const event of ordered) {
       if (target.processedSequences.has(event.sequence)) continue;
-      const tower = mapEventToTower(event, target);
+      const tower = mapEventToTower(event, target, preset);
       const processedCount = target.processedSequences.size + 1;
       const parkEligible =
         ENABLE_PARKS_V2 &&
@@ -2357,7 +2381,7 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
         !tower.isHero &&
         tower.height < target.tallestTowerHeight * 0.92;
       if (parkEligible) {
-        const placedPark = appendParkAtTowerSlot(target, tower, tower.sequence);
+        const placedPark = appendParkAtTowerSlot(target, tower, tower.sequence, preset);
         target.processedSequences.add(event.sequence);
         target.lastSequence = Math.max(target.lastSequence, event.sequence);
         target.bounds.radius = Math.max(target.bounds.radius, Math.hypot(tower.x, tower.z) + 8);
@@ -2367,7 +2391,7 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
           continue;
         }
       }
-      ensureDistrictForNextTower(target, tower);
+      ensureDistrictForNextTower(target, tower, preset);
       const nowWallMs = Date.now();
       const pacedBirthAt =
         target.lastTowerBirthAt <= 0
@@ -2376,10 +2400,10 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
       target.lastTowerBirthAt = pacedBirthAt;
       tower.emittedAt = pacedBirthAt;
       target.towers.push(tower);
-      appendTracesForNewTower(target, tower);
+      appendTracesForNewTower(target, tower, preset);
       if (ENABLE_SHOCKWAVES) {
         const dir = MathUtils.clamp(clampFinite(event.metrics.imbalance, 0), -1, 1);
-        pushShockwave(target, tower, dir >= 0 ? '#ffb566' : '#d29a62');
+        pushShockwave(target, tower, dir >= 0 ? preset.theme.shockwavePositive : preset.theme.shockwaveNegative);
       }
       target.processedSequences.add(event.sequence);
       target.lastSequence = Math.max(target.lastSequence, event.sequence);
@@ -2396,14 +2420,14 @@ function useAppendOnlyTowers(events: BlockEvent[]) {
         recordChanged = true;
       }
       if (recordChanged) pushRecordCeremony(target, tower);
-      appendArteriesForNewTower(target, tower);
+      appendArteriesForNewTower(target, tower, preset);
       appended = true;
     }
 
     if (appended) {
       setVersion((v) => v + 1);
     }
-  }, [events]);
+  }, [events, preset]);
 
   return {
     version,
@@ -4774,53 +4798,18 @@ function buildTowerSegments(tower: TowerDatum): TowerSegmentSpec[] {
   return segments;
 }
 
-function TallestBtcDecals({
+function TallestCryptoDecals({
   tower,
+  preset,
   focusMode,
   isHovered
 }: {
   tower: TowerDatum;
+  preset: CryptoCityPreset;
   focusMode: boolean;
   isHovered: boolean;
 }) {
-  const texture = useMemo(() => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 256;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    ctx.save();
-    ctx.translate(canvas.width / 2, canvas.height / 2);
-    drawRoundedRect(ctx, -86, -96, 172, 192, 20);
-    ctx.fillStyle = 'rgba(9,12,17,0.72)';
-    ctx.fill();
-    ctx.lineWidth = 8;
-    ctx.strokeStyle = 'rgba(247,147,26,0.82)';
-    ctx.stroke();
-
-    ctx.font = '700 142px serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.shadowBlur = 20;
-    ctx.shadowColor = 'rgba(247,147,26,0.42)';
-    ctx.strokeStyle = 'rgba(22,28,35,0.88)';
-    ctx.lineWidth = 6;
-    ctx.strokeText('₿', 0, 8);
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = 'rgba(255,255,255,0.98)';
-    ctx.fillText('₿', 0, 8);
-    ctx.restore();
-
-    return finalizeCanvasTexture(new CanvasTexture(canvas));
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      texture?.dispose();
-    };
-  }, [texture]);
+  const { texture } = useTopCoinDiscTexture(preset.logoPath, preset.assetTicker);
 
   if (!texture) return null;
 
@@ -4870,7 +4859,7 @@ function TallestBtcDecals({
               alphaMap={texture}
               transparent
               opacity={rimOpacity}
-              color={isHovered ? '#ffb14f' : '#f7931a'}
+              color={isHovered ? preset.theme.primaryHover : preset.theme.primary}
               toneMapped={false}
               depthTest
               depthWrite={false}
@@ -4888,11 +4877,13 @@ function TallestBtcDecals({
 
 function TallestBeacon({
   tower,
+  preset,
   sceneMaxY,
   focusMode,
   isHovered
 }: {
   tower: TowerDatum;
+  preset: CryptoCityPreset;
   sceneMaxY: number;
   focusMode: boolean;
   isHovered: boolean;
@@ -4929,7 +4920,7 @@ function TallestBeacon({
       <mesh ref={beamOuterRef} position={[0, beamCenterY, 0]} renderOrder={6.71}>
         <cylinderGeometry args={[0.62, 0.22, beamLength, 18, 1, true]} />
         <meshBasicMaterial
-          color="#f7931a"
+          color={preset.theme.beaconOuter}
           transparent
           opacity={0.16}
           toneMapped={false}
@@ -4942,7 +4933,7 @@ function TallestBeacon({
       <mesh ref={beamInnerRef} position={[0, beamCenterY, 0]} renderOrder={6.72}>
         <cylinderGeometry args={[0.22, 0.08, beamLength, 14, 1, true]} />
         <meshBasicMaterial
-          color="#ffe2b7"
+          color={preset.theme.beaconInner}
           transparent
           opacity={0.28}
           toneMapped={false}
@@ -4955,7 +4946,7 @@ function TallestBeacon({
       <mesh position={[0, tower.height + 0.2, 0]} renderOrder={6.73}>
         <cylinderGeometry args={[0.56, 0.56, 0.04, 24]} />
         <meshBasicMaterial
-          color="#f7931a"
+          color={preset.theme.beaconOuter}
           transparent
           opacity={0.22}
           toneMapped={false}
@@ -4967,7 +4958,7 @@ function TallestBeacon({
       <mesh ref={topHaloRef} position={[0, tower.height + 0.32, 0]} renderOrder={6.74}>
         <cylinderGeometry args={[0.42, 0.42, 0.05, 20]} />
         <meshBasicMaterial
-          color="#fff3df"
+          color={preset.theme.beaconInner}
           transparent
           opacity={0.34}
           toneMapped={false}
@@ -5543,9 +5534,11 @@ function HoverProjectionTracker({
 
 function HoverHudOverlay({
   tower,
+  preset,
   hud
 }: {
   tower: TowerDatum | null;
+  preset: CryptoCityPreset;
   hud: HoverHudSnapshot;
 }) {
   if (!tower || !hud.visible || hud.towerSequence !== tower.sequence) return null;
@@ -5578,10 +5571,10 @@ function HoverHudOverlay({
           width: HOVER_LABEL_WIDTH_PX,
           height: HOVER_LABEL_HEIGHT_PX,
           borderRadius: 12,
-          border: '1px solid rgba(247,147,26,0.55)',
+          border: `1px solid ${withAlpha(preset.theme.hudAccentRgb, 0.55)}`,
           background: 'linear-gradient(180deg, rgba(12,15,20,0.96), rgba(8,10,14,0.92))',
-          boxShadow: '0 0 0 1px rgba(247,147,26,0.08) inset, 0 8px 22px rgba(0,0,0,0.35)',
-          color: '#fff7ec',
+          boxShadow: `0 0 0 1px ${withAlpha(preset.theme.hudAccentRgb, 0.08)} inset, 0 8px 22px rgba(0,0,0,0.35)`,
+          color: preset.theme.labelTextPrimary,
           padding: '10px 12px',
           backdropFilter: 'blur(2px)'
         }}
@@ -5593,8 +5586,8 @@ function HoverHudOverlay({
             top: 8,
             width: 16,
             height: 16,
-            borderLeft: '2px solid rgba(247,147,26,0.95)',
-            borderTop: '2px solid rgba(247,147,26,0.95)'
+            borderLeft: `2px solid ${withAlpha(preset.theme.hudAccentRgb, 0.95)}`,
+            borderTop: `2px solid ${withAlpha(preset.theme.hudAccentRgb, 0.95)}`
           }}
         />
         <div
@@ -5612,20 +5605,20 @@ function HoverHudOverlay({
             marginTop: 8,
             fontSize: 13,
             fontWeight: 600,
-            color: 'rgba(246,226,197,0.92)',
+            color: preset.theme.labelTextSecondary,
             letterSpacing: '0.03em'
           }}
         >
           {isTopCoins
             ? `${fmtSignedPct(tower.priceChangePercent ?? 0)} · ${fmtUsdCompact(tower.quoteVolume24h ?? 0)}`
-            : `${fmtBtc(tower.btcVolume)} BTC`}
+            : `${fmtAssetAmount(tower.btcVolume, preset.assetTicker)}`}
         </div>
         <div
           style={{
             marginTop: 4,
             fontSize: 11,
             fontWeight: 600,
-            color: 'rgba(240,222,196,0.82)',
+            color: preset.theme.labelTextMuted,
             letterSpacing: '0.03em'
           }}
         >
@@ -5638,7 +5631,7 @@ function HoverHudOverlay({
             marginTop: 2,
             fontSize: 10,
             fontWeight: 600,
-            color: 'rgba(240,222,196,0.68)',
+            color: withAlpha(preset.theme.hudAccentRgb, 0.68),
             letterSpacing: '0.04em'
           }}
         >
@@ -5652,7 +5645,7 @@ function HoverHudOverlay({
               marginTop: 4,
               fontSize: 11,
               fontWeight: 600,
-              color: 'rgba(240,222,196,0.72)',
+              color: withAlpha(preset.theme.hudAccentRgb, 0.72),
               letterSpacing: '0.06em',
               textTransform: 'uppercase'
             }}
@@ -5669,10 +5662,13 @@ function HoverHudOverlay({
           top: lineStartY,
           width: lineLen,
           height: 2,
-          background: 'linear-gradient(90deg, rgba(247,147,26,0.65), rgba(247,147,26,0.9))',
+          background: `linear-gradient(90deg, ${withAlpha(preset.theme.hudAccentRgb, 0.65)}, ${withAlpha(
+            preset.theme.hudAccentRgb,
+            0.9
+          )})`,
           transformOrigin: '0 50%',
           transform: `rotate(${lineAngle}rad)`,
-          boxShadow: '0 0 8px rgba(247,147,26,0.35)'
+          boxShadow: `0 0 8px ${withAlpha(preset.theme.hudAccentRgb, 0.35)}`
         }}
       />
       <div
@@ -5683,8 +5679,8 @@ function HoverHudOverlay({
           width: 6,
           height: 6,
           borderRadius: 999,
-          background: '#f7931a',
-          boxShadow: '0 0 10px rgba(247,147,26,0.75)'
+          background: preset.theme.primary,
+          boxShadow: `0 0 10px ${withAlpha(preset.theme.hudAccentRgb, 0.75)}`
         }}
       />
     </div>
@@ -5700,6 +5696,7 @@ function AnimatedHoloTower({
   isTallest,
   onHoverTower,
   onSelectTower,
+  preset,
   topFx
 }: {
   tower: TowerDatum;
@@ -5710,6 +5707,7 @@ function AnimatedHoloTower({
   isTallest: boolean;
   onHoverTower?: (sequence: number | null) => void;
   onSelectTower?: (sequence: number) => void;
+  preset: CryptoCityPreset;
   topFx?: {
     introBootAlpha: number;
     introLifeAlpha: number;
@@ -5740,7 +5738,10 @@ function AnimatedHoloTower({
   const glowColor = useMemo(() => new Color(tower.glowColor), [tower.glowColor]);
   const coreColor = useMemo(() => new Color(tower.coreColor), [tower.coreColor]);
   const districtAccentColor = useMemo(() => new Color(tower.districtAccentColor), [tower.districtAccentColor]);
-  const strokeColor = BTC_SELL_WARM;
+  const presetPrimaryColor = useMemo(() => new Color(preset.theme.primary), [preset.theme.primary]);
+  const presetWarmColor = useMemo(() => new Color(preset.theme.warm), [preset.theme.warm]);
+  const presetPaleColor = useMemo(() => new Color(preset.theme.pale), [preset.theme.pale]);
+  const strokeColor = useMemo(() => new Color(preset.theme.warm), [preset.theme.warm]);
   const segments = useMemo(() => buildTowerSegments(tower), [tower]);
   const outlineGeometries = useMemo(
     () => segments.map((seg) => new EdgesGeometry(new BoxGeometry(seg.sx, seg.height, seg.sz))),
@@ -5848,7 +5849,7 @@ function AnimatedHoloTower({
       delta
     );
     outlineMaterial.color.copy(
-      tempColorA.copy(BTC_SELL_WARM).lerp(BTC_ORANGE, hoverMixRef.current * 0.92 + (tower.isHero ? 0.08 : 0))
+      tempColorA.copy(strokeColor).lerp(presetPrimaryColor, hoverMixRef.current * 0.92 + (tower.isHero ? 0.08 : 0))
     );
 
     const crownMat = crownRef.current?.material as { opacity?: number; color?: Color } | undefined;
@@ -5857,7 +5858,7 @@ function AnimatedHoloTower({
         tempColorA
           .copy(glowColor)
           .lerp(districtAccentColor, 0.14)
-          .lerp(BTC_ORANGE, hoverMixRef.current * 0.72)
+          .lerp(presetPrimaryColor, hoverMixRef.current * 0.72)
       );
     }
     if (crownMat) {
@@ -5878,7 +5879,7 @@ function AnimatedHoloTower({
     }
     const volumeBandMat = topVolumeBandRef.current?.material as { opacity?: number; color?: Color } | undefined;
     if (volumeBandMat?.color) {
-      volumeBandMat.color.copy(tempColorA.set('#f9d39c').lerp(BTC_ORANGE, 0.2 + hoverMixRef.current * 0.5));
+      volumeBandMat.color.copy(tempColorA.copy(presetPaleColor).lerp(presetPrimaryColor, 0.2 + hoverMixRef.current * 0.5));
     }
     if (volumeBandMat) {
       const volumeTarget =
@@ -5889,7 +5890,7 @@ function AnimatedHoloTower({
     }
     const gainerHaloMat = topGainerHaloRef.current?.material as { opacity?: number; color?: Color } | undefined;
     if (gainerHaloMat?.color) {
-      gainerHaloMat.color.copy(tempColorA.set('#ffd9a4').lerp(BTC_ORANGE, 0.3 + hoverMixRef.current * 0.5));
+      gainerHaloMat.color.copy(tempColorA.copy(presetPaleColor).lerp(presetPrimaryColor, 0.3 + hoverMixRef.current * 0.5));
     }
     if (gainerHaloMat) {
       const pulse = 0.72 + Math.sin(Date.now() * 0.0022 + tower.sequence * 0.12) * 0.18;
@@ -5901,7 +5902,7 @@ function AnimatedHoloTower({
     }
     const sparkleMat = sparkleRef.current?.material as { opacity?: number; color?: Color } | undefined;
     if (sparkleMat?.color) {
-      sparkleMat.color.copy(tempColorA.set('#fff4cc').lerp(BTC_ORANGE, hoverMixRef.current * 0.4));
+      sparkleMat.color.copy(tempColorA.copy(presetWarmColor).lerp(presetPrimaryColor, hoverMixRef.current * 0.4));
     }
     if (sparkleMat) {
       const now = performance.now();
@@ -5929,14 +5930,14 @@ function AnimatedHoloTower({
       if (coreMat?.color) {
         const colorTarget = tempColorA.copy(coreColor);
         if (focusMode && !isHovered) colorTarget.lerp(tempColorB.set('#11161d'), 0.68);
-        if (tower.isHero && !isHovered) colorTarget.lerp(BTC_ORANGE, 0.04);
-        if (isHovered) colorTarget.lerp(BTC_ORANGE, 0.54 * hoverMixRef.current);
+        if (tower.isHero && !isHovered) colorTarget.lerp(presetPrimaryColor, 0.04);
+        if (isHovered) colorTarget.lerp(presetPrimaryColor, 0.54 * hoverMixRef.current);
         coreMat.color.copy(colorTarget);
       }
       if (coreMat?.emissive) {
         const emissiveTarget = tempColorB.copy(coreColor).lerp(glowColor, 0.18 + tower.heightScore * 0.12);
         if (focusMode && !isHovered) emissiveTarget.multiplyScalar(0.44);
-        if (isHovered) emissiveTarget.lerp(BTC_ORANGE, 0.74 * hoverMixRef.current);
+        if (isHovered) emissiveTarget.lerp(presetPrimaryColor, 0.74 * hoverMixRef.current);
         coreMat.emissive.copy(emissiveTarget);
       }
       if (typeof coreMat?.emissiveIntensity === 'number') {
@@ -5950,7 +5951,7 @@ function AnimatedHoloTower({
       }
 
       if (shellMat?.color) {
-        shellMat.color.copy(tempColorA.copy(glowColor).lerp(BTC_ORANGE, hoverMixRef.current * 0.85));
+        shellMat.color.copy(tempColorA.copy(glowColor).lerp(presetPrimaryColor, hoverMixRef.current * 0.85));
       }
       if (shellMat) {
         const shellTarget = GLOW_SHELL_OPACITY * tower.glowStrength * segBoost * birthGlowAlpha * focusDim * hoverBoost;
@@ -5958,7 +5959,7 @@ function AnimatedHoloTower({
       }
 
       if (edgeMat?.color) {
-        edgeMat.color.copy(tempColorA.copy(BTC_SELL_WARM).lerp(BTC_ORANGE, hoverMixRef.current * 0.95));
+        edgeMat.color.copy(tempColorA.copy(strokeColor).lerp(presetPrimaryColor, hoverMixRef.current * 0.95));
       }
       if (edgeMat) {
         const edgeTarget = GLOW_EDGE_OPACITY * tower.glowStrength * segBoost * birthGlowAlpha * focusDim * hoverBoost;
@@ -5978,7 +5979,7 @@ function AnimatedHoloTower({
             tempColorA
               .copy(glowColor)
               .lerp(districtAccentColor, 0.1 + i * 0.02)
-              .lerp(BTC_ORANGE, hoverMixRef.current * 0.75)
+              .lerp(presetPrimaryColor, hoverMixRef.current * 0.75)
           );
         }
         const bandTarget = BAND_OPACITY * tower.glowStrength * birthGlowAlpha * localFade * focusDim * hoverBoost;
@@ -5994,7 +5995,9 @@ function AnimatedHoloTower({
       const scan = 0.5 + 0.5 * Math.sin(phase);
       band.position.y = tower.height * microPanelFractions[i] + (scan - 0.5) * 0.03;
       if (mat?.color) {
-        mat.color.copy(tempColorA.copy(districtAccentColor).lerp(glowColor, 0.55).lerp(BTC_ORANGE, hoverMixRef.current * 0.3));
+        mat.color.copy(
+          tempColorA.copy(districtAccentColor).lerp(glowColor, 0.55).lerp(presetPrimaryColor, hoverMixRef.current * 0.3)
+        );
       }
       if (mat) {
         const base = (i === 0 ? 0.08 : 0.06) * (ENABLE_DATA_FORM_EXTRAS ? 1 : 0);
@@ -6008,7 +6011,9 @@ function AnimatedHoloTower({
       const mat = tip.material as { opacity?: number; color?: Color } | undefined;
       const blink = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(Date.now() * 0.0012 + tower.sequence * 0.21 + i * 1.3));
       if (mat?.color) {
-        mat.color.copy(tempColorA.copy(BTC_PALE_AMBER).lerp(BTC_ORANGE, 0.35 + hoverMixRef.current * 0.45));
+        mat.color.copy(
+          tempColorA.copy(presetPaleColor).lerp(presetPrimaryColor, 0.35 + hoverMixRef.current * 0.45)
+        );
       }
       if (mat) {
         mat.opacity = MathUtils.damp(mat.opacity ?? 0, 0.24 * blink * focusDim, 7.5, delta);
@@ -6025,7 +6030,7 @@ function AnimatedHoloTower({
       const fallPhase = ((Date.now() * 0.00032 + tower.sequence * 0.043 + i * 0.31) % 1 + 1) % 1;
       rain.position.y = tower.height + 1.1 + fallPhase * 2.2;
       if (mat?.color) {
-        mat.color.copy(tempColorA.set('#ffe3bd').lerp(BTC_ORANGE, 0.28 + i * 0.06));
+        mat.color.copy(tempColorA.copy(presetWarmColor).lerp(presetPrimaryColor, 0.28 + i * 0.06));
       }
       if (mat) {
         const rainTarget = rain.visible ? (1 - fallPhase) * 0.08 * focusDim : 0;
@@ -6304,7 +6309,9 @@ function AnimatedHoloTower({
           transitionLoad={topFx?.transitionLoad ?? 0}
         />
       ) : null}
-      {isTallest && tower.mode !== 'top200' ? <TallestBtcDecals tower={tower} focusMode={focusMode} isHovered={isHovered} /> : null}
+      {isTallest && tower.mode !== 'top200' ? (
+        <TallestCryptoDecals tower={tower} preset={preset} focusMode={focusMode} isHovered={isHovered} />
+      ) : null}
       <mesh
         ref={topLoserHazeRef}
         position={[0, 0.12, 0]}
@@ -6575,11 +6582,13 @@ function ScreenSpaceGroundLine({
 
 function CircuitBoardGround({
   bounds,
+  preset,
   focusMode = false,
   marketPulse = 0,
   introBootAlpha = 1
 }: {
   bounds: SandboxBounds;
+  preset: CryptoCityPreset;
   focusMode?: boolean;
   marketPulse?: number;
   introBootAlpha?: number;
@@ -6610,11 +6619,11 @@ function CircuitBoardGround({
   const innerRingPoints = useMemo(() => buildCircleLinePoints(windRoseRadius * 0.62, 72), [windRoseRadius]);
   const glowUniforms = useMemo(
     () => ({
-      uCenterColor: { value: new Color('#F5D8AE') },
-      uRingColor: { value: new Color('#F7931A') },
+      uCenterColor: { value: new Color(preset.theme.groundGlowCenter) },
+      uRingColor: { value: new Color(preset.theme.groundGlowRingHot) },
       uOpacity: { value: 1.02 }
     }),
-    []
+    [preset.theme.groundGlowCenter, preset.theme.groundGlowRingHot]
   );
   const glowMaterial = useMemo(() => {
     const material = new ShaderMaterial({
@@ -6669,8 +6678,12 @@ function CircuitBoardGround({
         deckMat.emissiveIntensity = MathUtils.damp(deckMat.emissiveIntensity, 0.05 * introBoot, 7, delta);
       }
     }
-    glowUniforms.uCenterColor.value.copy(tempColorA.set('#F0D0A7').lerp(tempColorB.set('#FFD8A1'), mood * 0.35));
-    glowUniforms.uRingColor.value.copy(tempColorA.set('#e1891a').lerp(tempColorB.set('#f7931a'), 0.55 + mood * 0.3));
+    glowUniforms.uCenterColor.value.copy(
+      tempColorA.set(preset.theme.groundGlowCenter).lerp(tempColorB.set(preset.theme.groundGlowCenterHot), mood * 0.35)
+    );
+    glowUniforms.uRingColor.value.copy(
+      tempColorA.set(preset.theme.groundGlowRing).lerp(tempColorB.set(preset.theme.groundGlowRingHot), 0.55 + mood * 0.3)
+    );
   });
 
   const focusStaticScale = focusMode ? FOCUS_GROUND_DIM : 1;
@@ -6725,7 +6738,7 @@ function CircuitBoardGround({
             key={`grid-${i}`}
             points={points}
             y={groundGraphicY + 0.0005}
-            color={i % 2 === 0 ? '#d2b788' : '#bca173'}
+            color={i % 2 === 0 ? preset.theme.groundGridMajor : preset.theme.groundGridMinor}
             opacity={(i % 4 === 0 ? 0.085 : 0.05) * intro}
             lineWidth={i % 4 === 0 ? 1.25 : 0.95}
             renderOrder={2.02}
@@ -6738,7 +6751,7 @@ function CircuitBoardGround({
             key={`wr-diag-${i}`}
             points={points}
             y={groundGraphicY + 0.0007}
-            color="#d7c09a"
+            color={preset.theme.groundWindDiag}
             opacity={0.24 * intro}
             lineWidth={2.6}
             renderOrder={2.08}
@@ -6752,7 +6765,7 @@ function CircuitBoardGround({
             key={`wr-axis-${i}`}
             points={points}
             y={groundGraphicY + 0.0009}
-            color={i % 2 === 0 ? '#F4D3A2' : '#F7931A'}
+            color={i % 2 === 0 ? preset.theme.groundWindAxisPrimary : preset.theme.groundWindAxisSecondary}
             opacity={(i % 2 === 0 ? 0.33 : 0.3) * intro}
             lineWidth={3.6}
             renderOrder={2.1}
@@ -6766,7 +6779,7 @@ function CircuitBoardGround({
             key={`wr-cross-${i}`}
             points={points}
             y={groundGraphicY + 0.001}
-            color="#f6ead7"
+            color={preset.theme.groundWindCross}
             opacity={0.2 * intro}
             lineWidth={2.4}
             renderOrder={2.12}
@@ -6777,7 +6790,7 @@ function CircuitBoardGround({
         <ScreenSpaceGroundLine
           points={outerRingPoints}
           y={groundGraphicY + 0.0011}
-          color="#F7931A"
+          color={preset.theme.groundWindAxisSecondary}
           opacity={0.24 * intro}
           lineWidth={3.0}
           renderOrder={2.16}
@@ -6788,7 +6801,7 @@ function CircuitBoardGround({
         <ScreenSpaceGroundLine
           points={innerRingPoints}
           y={groundGraphicY + 0.00115}
-          color="#f2e4cf"
+          color={preset.theme.groundArterySecondary}
           opacity={0.14 * intro}
           lineWidth={2.0}
           renderOrder={2.14}
@@ -6799,7 +6812,7 @@ function CircuitBoardGround({
         <mesh position={[0, groundGraphicY + 0.002, 0]} renderOrder={3}>
           <boxGeometry args={[0.18, 0.01, arteryLen]} />
           <meshBasicMaterial
-            color="#F7931A"
+            color={preset.theme.groundArteryPrimary}
             transparent
             opacity={0.34 * focusStaticScale * intro}
             toneMapped={false}
@@ -6810,7 +6823,7 @@ function CircuitBoardGround({
         <mesh position={[0, groundGraphicY + 0.0025, 0]} renderOrder={3}>
           <boxGeometry args={[arteryLen * 0.72, 0.01, 0.16]} />
           <meshBasicMaterial
-            color="#f4e8d6"
+            color={preset.theme.groundArterySecondary}
             transparent
             opacity={0.18 * focusStaticScale * intro}
             toneMapped={false}
@@ -6821,7 +6834,7 @@ function CircuitBoardGround({
         <mesh rotation={[0, Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
           <boxGeometry args={[0.12, 0.008, arteryLen * 0.8]} />
           <meshBasicMaterial
-            color="#F7931A"
+            color={preset.theme.groundArteryPrimary}
             transparent
             opacity={0.2 * focusStaticScale * intro}
             toneMapped={false}
@@ -6832,7 +6845,7 @@ function CircuitBoardGround({
         <mesh rotation={[0, -Math.PI / 4, 0]} position={[0, groundGraphicY + 0.003, 0]} renderOrder={3}>
           <boxGeometry args={[0.12, 0.008, arteryLen * 0.62]} />
           <meshBasicMaterial
-            color="#ffe7c4"
+            color={preset.theme.groundArteryTertiary}
             transparent
             opacity={0.15 * focusStaticScale * intro}
             toneMapped={false}
@@ -6848,11 +6861,13 @@ function CircuitBoardGround({
 function ParksLayer({
   parks,
   trees,
+  preset,
   focusMode = false,
   showFireflies = true
 }: {
   parks: ParkDatum[];
   trees: ParkTreeDatum[];
+  preset: CryptoCityPreset;
   focusMode?: boolean;
   showFireflies?: boolean;
 }) {
@@ -6949,14 +6964,24 @@ function ParksLayer({
       scl.set(tree.crownR, tree.crownH, tree.crownR);
       matrix.compose(pos, quat, scl);
       crown.setMatrixAt(i, matrix);
-      crown.setColorAt(i, crownColor.set('#f5efe4').lerp(new Color('#ffe0b4'), 0.22 + tree.tintMix * 0.24));
+      crown.setColorAt(
+        i,
+        crownColor
+          .set(preset.theme.warm)
+          .lerp(new Color(preset.theme.treeGlowLow), 0.18 + tree.tintMix * 0.24)
+      );
       scl.set(tree.crownR * 1.06, tree.crownH * 1.03, tree.crownR * 1.06);
       matrix.compose(pos, quat, scl);
       crownWire.setMatrixAt(i, matrix);
       scl.set(tree.crownR * 1.22, tree.crownH * 1.18, tree.crownR * 1.22);
       matrix.compose(pos, quat, scl);
       crownGlow.setMatrixAt(i, matrix);
-      crownGlow.setColorAt(i, crownColor.set('#ffd7a0').lerp(new Color('#f7931a'), 0.25 + tree.tintMix * 0.35));
+      crownGlow.setColorAt(
+        i,
+        crownColor
+          .set(preset.theme.treeGlowLow)
+          .lerp(new Color(preset.theme.treeGlowHigh), 0.25 + tree.tintMix * 0.35)
+      );
 
       if (showFireflies && firefly && i < firefly.count) {
         const fireflyTree = trees[fireflySources[i] ?? i] ?? tree;
@@ -6982,7 +7007,14 @@ function ParksLayer({
     if (crown.instanceColor) crown.instanceColor.needsUpdate = true;
     if (crownGlow.instanceColor) crownGlow.instanceColor.needsUpdate = true;
     if (firefly?.instanceColor) firefly.instanceColor.needsUpdate = true;
-  }, [fireflySources.length, showFireflies, trees.length]);
+  }, [
+    fireflySources.length,
+    preset.theme.treeGlowHigh,
+    preset.theme.treeGlowLow,
+    preset.theme.warm,
+    showFireflies,
+    trees.length
+  ]);
 
   useFrame((_, delta) => {
     focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 7.5, delta);
@@ -7077,7 +7109,9 @@ function ParksLayer({
     const crownMat = crownRef.current?.material as { opacity?: number; color?: Color } | undefined;
     if (crownMat) {
       crownMat.opacity = MathUtils.damp(crownMat.opacity ?? 0.96, 0.96 * dimScale, 8.5, delta);
-      if (crownMat.color) crownMat.color.copy(tempColorA.set('#f7f0e5').lerp(tempColorB.set('#d9c7ae'), focusMixRef.current * 0.35));
+      if (crownMat.color) {
+        crownMat.color.copy(tempColorA.set(preset.theme.warm).lerp(tempColorB.set(preset.theme.treeGlowLow), focusMixRef.current * 0.35));
+      }
     }
     const trunkWireMat = trunkWireRef.current?.material as { opacity?: number } | undefined;
     if (trunkWireMat) trunkWireMat.opacity = MathUtils.damp(trunkWireMat.opacity ?? 0.72, 0.72 * dimScale, 8.5, delta);
@@ -7183,7 +7217,7 @@ function ParksLayer({
                   <mesh position={[0, 0.004, 0]} renderOrder={2.57}>
                     <ringGeometry args={[Math.max(0.4, park.radius * 0.9), Math.max(0.45, park.radius * 1.08), 32]} />
                     <meshBasicMaterial
-                      color="#f7931a"
+                      color={preset.theme.primary}
                       transparent
                       opacity={0.07}
                       toneMapped={false}
@@ -7279,7 +7313,7 @@ function ParksLayer({
                   >
                     <boxGeometry args={[Math.max(0.12, park.w * 0.08), 0.012, lineLen * 0.58]} />
                     <meshBasicMaterial
-                      color="#f7931a"
+                      color={preset.theme.primary}
                       transparent
                       opacity={0.025}
                       toneMapped={false}
@@ -7302,8 +7336,8 @@ function ParksLayer({
                 <mesh renderOrder={2.66}>
                   <boxGeometry args={[0.028, 0.01, footpathSeg.length]} />
                   <meshBasicMaterial
-                  color="#f0dfc6"
-                  transparent
+                    color={preset.theme.groundArterySecondary}
+                    transparent
                     opacity={0.11}
                     toneMapped={false}
                     depthTest
@@ -7316,8 +7350,8 @@ function ParksLayer({
                 <mesh position={[0, 0.0015, 0]} renderOrder={2.67}>
                   <boxGeometry args={[0.012, 0.009, footpathSeg.length * 0.96]} />
                   <meshBasicMaterial
-                  color="#f7931a"
-                  transparent
+                    color={preset.theme.primary}
+                    transparent
                     opacity={0.09}
                     toneMapped={false}
                     depthTest
@@ -8324,10 +8358,12 @@ function buildFacetMountainGeometry(kind: 'core' | 'shoulder') {
 function MountainsBackdrop({
   cityRadius,
   cityScaleMetric,
+  preset,
   introBootAlpha
 }: {
   cityRadius: number;
   cityScaleMetric: number;
+  preset: CryptoCityPreset;
   introBootAlpha: number;
 }) {
   const farCoreRef = useRef<ThreeInstancedMesh>(null);
@@ -8608,7 +8644,7 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER}
         >
           <meshStandardMaterial
-            color="#6f4429"
+            color={preset.theme.mountainFarCore}
             roughness={0.96}
             metalness={0.03}
             emissive="#1f130c"
@@ -8624,7 +8660,7 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.01}
         >
           <meshStandardMaterial
-            color="#5a361f"
+            color={preset.theme.mountainFarShoulder}
             roughness={0.98}
             metalness={0.02}
             emissive="#170e09"
@@ -8640,7 +8676,7 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.005}
         >
           <meshStandardMaterial
-            color="#40281a"
+            color={preset.theme.mountainFarFoothill}
             roughness={0.99}
             metalness={0.01}
             emissive="#120b07"
@@ -8658,7 +8694,7 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.02}
         >
           <meshStandardMaterial
-            color="#815135"
+            color={preset.theme.mountainMidCore}
             roughness={0.95}
             metalness={0.03}
             emissive="#24160d"
@@ -8674,7 +8710,7 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.03}
         >
           <meshStandardMaterial
-            color="#684128"
+            color={preset.theme.mountainMidShoulder}
             roughness={0.97}
             metalness={0.02}
             emissive="#1c110a"
@@ -8690,7 +8726,7 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.025}
         >
           <meshStandardMaterial
-            color="#4c301e"
+            color={preset.theme.mountainMidFoothill}
             roughness={0.99}
             metalness={0.01}
             emissive="#150d08"
@@ -8708,7 +8744,7 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER - 0.02}
         >
           <meshStandardMaterial
-            color="#98613c"
+            color={preset.theme.mountainPeakCore}
             roughness={0.93}
             metalness={0.04}
             emissive="#2d1b10"
@@ -8724,7 +8760,7 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.04}
         >
           <meshStandardMaterial
-            color="#774b2d"
+            color={preset.theme.mountainPeakShoulder}
             roughness={0.96}
             metalness={0.03}
             emissive="#21140c"
@@ -8740,7 +8776,7 @@ function MountainsBackdrop({
           renderOrder={BTC_MOUNTAIN_RENDER_ORDER + 0.035}
         >
           <meshStandardMaterial
-            color="#583822"
+            color={preset.theme.mountainPeakFoothill}
             roughness={0.98}
             metalness={0.02}
             emissive="#180f09"
@@ -9274,6 +9310,7 @@ function MarketMoodLightRig({ mood = 0.5 }: { mood?: number }) {
 
 function SandboxScene({
   mode,
+  preset,
   towers,
   traces,
   arterialTraces,
@@ -9301,6 +9338,7 @@ function SandboxScene({
   zoomOutCameraSignal = 0
 }: {
   mode: CityMode;
+  preset: CryptoCityPreset;
   towers: TowerDatum[];
   traces: TraceDatum[];
   arterialTraces: TraceDatum[];
@@ -9523,20 +9561,24 @@ function SandboxScene({
 
       <CircuitBoardGround
         bounds={bounds}
+        preset={preset}
         focusMode={focusMode}
         marketPulse={marketMoodTarget}
         introBootAlpha={groundIntroBootAlpha ?? fx.introBootAlpha}
       />
-      {mode === 'btc' ? (
+      {isCryptoCityMode(mode) ? (
         <MountainsBackdrop
           cityRadius={bounds.radius}
           cityScaleMetric={mountainScaleMetric}
+          preset={preset}
           introBootAlpha={groundIntroBootAlpha ?? fx.introBootAlpha}
         />
       ) : null}
       <DistrictBoundariesLayer districts={districts} focusMode={focusMode} />
       <ShockwaveLayer shockwaves={shockwaves} focusMode={focusMode} />
-      {showParksLayer ? <ParksLayer parks={parks} trees={parkTrees} focusMode={focusMode} showFireflies={showParkFireflies} /> : null}
+      {showParksLayer ? (
+        <ParksLayer parks={parks} trees={parkTrees} preset={preset} focusMode={focusMode} showFireflies={showParkFireflies} />
+      ) : null}
       <TraceStrips
         traces={tracesRender}
         focusMode={focusMode}
@@ -9553,7 +9595,7 @@ function SandboxScene({
         clutter={fx.clutter}
       />
       <TrafficParticles particles={trafficRender} focusMode={focusMode} introLifeAlpha={fx.introLifeAlpha} clutter={fx.clutter} />
-      {mode === 'btc' ? <BirdFlock towers={towers} cityRadius={bounds.radius} onBirdCountChange={onBirdCountChange} /> : null}
+      {isCryptoCityMode(mode) ? <BirdFlock towers={towers} cityRadius={bounds.radius} onBirdCountChange={onBirdCountChange} /> : null}
       <HoverProjectionTracker tower={hoveredTower} onHudUpdate={onHoverHudUpdate} />
 
       {/* Render band 6: tower bodies and holo layers remain the top visual anchors */}
@@ -9569,6 +9611,7 @@ function SandboxScene({
             isTallest={tallestTowerSequence === tower.sequence}
             onHoverTower={requestHoverTower}
             onSelectTower={requestSelectTower}
+            preset={preset}
             topFx={fx}
           />
         ))}
@@ -9577,6 +9620,7 @@ function SandboxScene({
       {tallestTower && tallestTower.mode !== 'top200' ? (
         <TallestBeacon
           tower={tallestTower}
+          preset={preset}
           sceneMaxY={bounds.maxY}
           focusMode={focusMode}
           isHovered={hoveredTowerSequence === tallestTower.sequence}
@@ -9588,10 +9632,19 @@ function SandboxScene({
   );
 }
 
-export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode: CityMode) => void }) {
-  const mode: CityMode = 'btc';
+export function BtcSpotBuysSandbox({
+  mode,
+  preset,
+  cryptoSelection,
+  onModeChange
+}: {
+  mode: CityMode;
+  preset: CryptoCityPreset;
+  cryptoSelection: CryptoCityMode;
+  onModeChange?: (nextMode: CityMode) => void;
+}) {
   const { events } = useBlockEventStore();
-  const btcData = useAppendOnlyTowers(events);
+  const btcData = useAppendOnlyTowers(events, preset);
   const active = btcData;
   const {
     towers,
@@ -9617,7 +9670,7 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
   const [zoomOutCameraSignal, setZoomOutCameraSignal] = useState(0);
   const btcGroundIntroBootAlpha = useBtcGroundIntroBootAlpha();
   const topFx = undefined;
-  const metricPanel = useMemo(() => deriveBtcCityMetrics({ towers, events }), [events, towers]);
+  const metricPanel = useMemo(() => deriveBtcCityMetrics({ towers, events, preset }), [events, preset, towers]);
 
   useEffect(() => {
     setHoveredTowerSequence(null);
@@ -9660,6 +9713,7 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
     <div className="minimal-viz">
       <SandboxScene
         mode={mode}
+        preset={preset}
         towers={towers}
         traces={traces}
         arterialTraces={arterialTraces}
@@ -9685,9 +9739,10 @@ export function BtcSpotBuysSandbox({ onModeChange }: { onModeChange?: (nextMode:
         onHoverHudUpdate={setHoverHud}
         onCameraDebug={setCameraDebug}
       />
-      <HoverHudOverlay tower={hoveredTower} hud={hoverHud} />
+      <HoverHudOverlay tower={hoveredTower} preset={preset} hud={hoverHud} />
       <Web3CitiesUi
         mode={mode}
+        cryptoSelection={cryptoSelection}
         onModeChange={onModeChange}
         metricPanel={metricPanel}
         onResetCamera={handleResetCamera}

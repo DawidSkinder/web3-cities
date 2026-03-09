@@ -34,6 +34,7 @@ import { useTopCoinsStore } from '../data/topCoins/topCoinsStore';
 import type { TopCoinsSnapshot } from '../data/topCoins/types';
 import { useBlockEventStore } from '../data/trades/blockEventStore';
 import type { BlockEvent } from '../data/trades/types';
+import type { CryptoCityMode } from '../lib/cityMode';
 import type { CityMode } from '../lib/cityMode';
 import { deriveMarketCityMetrics } from '../ui/cityMetrics';
 import { Web3CitiesUi } from '../ui/Web3CitiesUi';
@@ -9867,7 +9868,13 @@ function SandboxScene({
   );
 }
 
-export function TopCoinsSkylineSandbox({ onModeChange }: { onModeChange?: (nextMode: CityMode) => void }) {
+export function TopCoinsSkylineSandbox({
+  cryptoSelection,
+  onModeChange
+}: {
+  cryptoSelection: CryptoCityMode;
+  onModeChange?: (nextMode: CityMode) => void;
+}) {
   const mode: CityMode = 'top200';
   const { latest: topSnapshot } = useTopCoinsStore();
   const runtimeProfile = useTopCoinsRuntimeProfile();
@@ -9976,6 +9983,7 @@ export function TopCoinsSkylineSandbox({ onModeChange }: { onModeChange?: (nextM
       <HoverHudOverlay tower={hoveredTower} hud={hoverHud} />
       <Web3CitiesUi
         mode={mode}
+        cryptoSelection={cryptoSelection}
         onModeChange={onModeChange}
         metricPanel={metricPanel}
         onResetCamera={handleResetCamera}

@@ -1,3 +1,4 @@
+import type { CryptoCityPreset } from '../data/cryptoCity/presets';
 import type { TopCoinsSnapshot } from '../data/topCoins/types';
 import type { BlockEvent } from '../data/trades/types';
 
@@ -15,9 +16,9 @@ export type UiMetricPanel = {
   metrics: UiMetric[];
 };
 
-type BtcTowerLike = {
+type CryptoTowerLike = {
   usdNotional: number;
-  btcVolume: number;
+  baseVolume: number;
 };
 
 function clampPercent(value: number) {
@@ -38,11 +39,11 @@ function formatSignedPercent(value: number) {
   return `${sign}${Math.abs(value).toFixed(2)}%`;
 }
 
-function formatBtc(value: number) {
-  if (!Number.isFinite(value) || Math.abs(value) < 0.00000001) return '0 BTC';
+function formatCryptoBaseAmount(value: number, ticker: string) {
+  if (!Number.isFinite(value) || Math.abs(value) < 0.00000001) return `0 ${ticker}`;
   const abs = Math.abs(value);
   const decimals = abs >= 100 ? 2 : abs >= 10 ? 2 : abs >= 1 ? 3 : 4;
-  return `${value.toFixed(decimals)} BTC`;
+  return `${value.toFixed(decimals)} ${ticker}`;
 }
 
 function sumBuyNotional(events: BlockEvent[], rangeStartMs: number, rangeEndMs: number) {
@@ -56,18 +57,20 @@ function sumBuyNotional(events: BlockEvent[], rangeStartMs: number, rangeEndMs: 
   return total;
 }
 
-export function deriveBtcCityMetrics({
+export function deriveCryptoCityMetrics({
   towers,
   events,
+  preset,
   nowMs = Date.now()
 }: {
-  towers: BtcTowerLike[];
+  towers: CryptoTowerLike[];
   events: BlockEvent[];
+  preset: CryptoCityPreset;
   nowMs?: number;
 }): UiMetricPanel {
   const cityValue = towers.reduce((sum, tower) => sum + Math.max(0, tower.usdNotional || 0), 0);
   const largestBuyTower =
-    towers.reduce<BtcTowerLike | null>((largest, tower) => {
+    towers.reduce<CryptoTowerLike | null>((largest, tower) => {
       if (!largest) return tower;
       return tower.usdNotional > largest.usdNotional ? tower : largest;
     }, null) ?? null;
@@ -96,8 +99,8 @@ export function deriveBtcCityMetrics({
   }
 
   return {
-    title: 'BTC City Data',
-    microcopy: 'Live Bitcoin spot demand expressed as a city accumulating in real time.',
+    title: preset.metricTitle,
+    microcopy: preset.metricMicrocopy,
     metrics: [
       {
         label: 'City Value',
@@ -107,8 +110,11 @@ export function deriveBtcCityMetrics({
       {
         label: 'Largest Buy',
         value: largestBuyTower
-          ? `${formatUsdCompact(largestBuyTower.usdNotional)} · ${formatBtc(largestBuyTower.btcVolume)}`
-          : '$0 · 0 BTC'
+          ? `${formatUsdCompact(largestBuyTower.usdNotional)} · ${formatCryptoBaseAmount(
+              largestBuyTower.baseVolume,
+              preset.assetTicker
+            )}`
+          : `$0 · 0 ${preset.assetTicker}`
       },
       {
         label: 'Buy Flow (1m)',
@@ -121,6 +127,28 @@ export function deriveBtcCityMetrics({
       }
     ]
   };
+}
+
+export function deriveBtcCityMetrics({
+  towers,
+  events,
+  preset,
+  nowMs = Date.now()
+}: {
+  towers: Array<{ usdNotional: number; btcVolume: number }>;
+  events: BlockEvent[];
+  preset: CryptoCityPreset;
+  nowMs?: number;
+}) {
+  return deriveCryptoCityMetrics({
+    towers: towers.map((tower) => ({
+      usdNotional: tower.usdNotional,
+      baseVolume: tower.btcVolume
+    })),
+    events,
+    preset,
+    nowMs
+  });
 }
 
 export function deriveMarketCityMetrics(snapshot: TopCoinsSnapshot | null): UiMetricPanel {

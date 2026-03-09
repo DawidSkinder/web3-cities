@@ -1,4 +1,4 @@
-import { getCryptoCityPreset } from '../cryptoCity/presets';
+import type { CryptoCityPreset } from '../cryptoCity/presets';
 import { BinanceTradeFeed } from './BinanceTradeFeed';
 import { MockTradeFeed } from './MockTradeFeed';
 import { RecentTradeDeduper } from './RecentTradeDeduper';
@@ -14,6 +14,7 @@ import type {
 } from './types';
 
 type DataEngineConfig = {
+  preset: CryptoCityPreset;
   feedMode?: TradeFeedMode;
   windowMs?: number;
   graceMs?: number;
@@ -49,8 +50,8 @@ export function resolveTradeFeedMode(): TradeFeedMode {
   return 'auto';
 }
 
-export class BtcSpotCityDataEngine {
-  private readonly btcPreset = getCryptoCityPreset('btc');
+export class CryptoSpotCityDataEngine {
+  private readonly preset: CryptoCityPreset;
   private readonly feedMode: TradeFeedMode;
   private readonly windowMs: number;
   private readonly graceMs: number;
@@ -80,7 +81,8 @@ export class BtcSpotCityDataEngine {
   private sessionMaxBuyNotionalSequence = 0;
   private sessionMaxInitialized = false;
 
-  constructor(config: DataEngineConfig = {}) {
+  constructor(config: DataEngineConfig) {
+    this.preset = config.preset;
     this.feedMode = config.feedMode ?? resolveTradeFeedMode();
     this.windowMs = config.windowMs ?? 3000;
     this.graceMs = config.graceMs ?? 6000;
@@ -108,11 +110,11 @@ export class BtcSpotCityDataEngine {
     this.aggregator.start();
 
     if (this.feedMode === 'mock') {
-      this.startFeed(new MockTradeFeed(this.btcPreset.mock));
+      this.startFeed(new MockTradeFeed(this.preset.mock));
       return;
     }
 
-    this.startFeed(new BinanceTradeFeed({ symbol: this.btcPreset.binanceSymbol }));
+    this.startFeed(new BinanceTradeFeed({ symbol: this.preset.binanceSymbol }));
 
     if (this.feedMode === 'auto') {
       this.armInitialMockFallbackTimer();
@@ -160,7 +162,7 @@ export class BtcSpotCityDataEngine {
     if (trade.source === 'binance' && trade.transport === 'ws' && !this.liveTradeSeen) {
       this.liveTradeSeen = true;
       this.clearFallbackTimer();
-      console.info('[BTC Spot City] live trade stream active (Binance).');
+      console.info(`[${this.preset.title}] live trade stream active (Binance ${this.preset.binanceSymbol}).`);
     }
 
     if (trade.transport === 'rest') {
@@ -224,6 +226,7 @@ export class BtcSpotCityDataEngine {
     }
 
     const details = [
+      `symbol=${this.preset.binanceSymbol}`,
       `source=${event.source}`,
       `state=${event.state}`,
       event.channel ? `channel=${event.channel}` : '',
@@ -239,7 +242,7 @@ export class BtcSpotCityDataEngine {
       .filter(Boolean)
       .join(' ');
 
-    console.info(`[BTC Spot City][feed] ${details}`);
+    console.info(`[${this.preset.title}][feed] ${details}`);
 
     if (
       this.feedMode === 'auto' &&
@@ -276,8 +279,8 @@ export class BtcSpotCityDataEngine {
     }
 
     this.mockFallbackActivated = true;
-    console.warn(`[BTC Spot City] switching to mock trade feed (${reason}).`);
-    this.startFeed(new MockTradeFeed(this.btcPreset.mock));
+    console.warn(`[${this.preset.title}] switching to mock trade feed (${reason}).`);
+    this.startFeed(new MockTradeFeed(this.preset.mock));
   }
 
   private handleBlockEvent(event: BlockEvent) {
@@ -331,27 +334,19 @@ export class BtcSpotCityDataEngine {
   }
 
   private logBlockEvent(event: BlockEvent) {
-    const m = event.metrics;
-    const imbalancePct = m.imbalance * 100;
-    const intensityPct = clamp(m.intensity * 100, 0, 100);
-
+    const metrics = event.metrics;
+    const imbalancePct = metrics.imbalance * 100;
+    const intensityPct = clamp(metrics.intensity * 100, 0, 100);
     console.log(
-      `[BTC Spot City][${formatTimestamp(event.windowEnd)}] ` +
-        `${event.source}/${event.feedMode} ` +
-        `n=${m.tradeCount} ` +
-        `buyN=${m.buyTradeCount} ` +
-        `v=${m.totalVolume.toFixed(4)} ` +
-        `buyV=${m.buyBaseQty.toFixed(4)} ` +
-        `buyQ=${m.buyNotionalQuote.toFixed(2)} ` +
-        `maxBuyQ=${m.sessionMaxBuyNotional.toFixed(2)} ` +
-        `dup=${m.integrity.dedupDroppedWindow}/${m.integrity.dedupDroppedTotal} ` +
-        `late=${m.integrity.lateTradesBufferedWindow} ` +
-        `bf=${m.integrity.backfillTradesIngested}${m.integrity.backfillUsedRecently ? '*' : ''} ` +
-        `imb=${formatSigned(imbalancePct, 1)}% ` +
-        `avg=${m.averageTradeSize.toFixed(5)} ` +
-        `dp=${formatSigned(m.priceChange, 2)} ` +
-        `vol=${m.volatility.toFixed(2)} ` +
-        `I=${intensityPct.toFixed(0)}`
+      `[${this.preset.title}][${formatTimestamp(event.windowEnd)}] ${event.source}/${event.feedMode} ` +
+        `n=${metrics.tradeCount} buyN=${metrics.buyTradeCount} v=${metrics.totalVolume.toFixed(4)} ` +
+        `buyV=${metrics.buyBaseQty.toFixed(4)} buyQ=${metrics.buyNotionalQuote.toFixed(2)} ` +
+        `maxBuyQ=${metrics.sessionMaxBuyNotional.toFixed(2)} ` +
+        `dup=${metrics.integrity.dedupDroppedWindow}/${metrics.integrity.dedupDroppedTotal} ` +
+        `late=${metrics.integrity.lateTradesBufferedWindow} ` +
+        `bf=${metrics.integrity.backfillTradesIngested}${metrics.integrity.backfillUsedRecently ? '*' : ''} ` +
+        `imb=${formatSigned(imbalancePct, 1)}% avg=${metrics.averageTradeSize.toFixed(5)} ` +
+        `dp=${formatSigned(metrics.priceChange, 2)} vol=${metrics.volatility.toFixed(2)} I=${intensityPct.toFixed(0)}`
     );
   }
 }

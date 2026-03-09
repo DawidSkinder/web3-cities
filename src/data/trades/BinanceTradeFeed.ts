@@ -28,14 +28,20 @@ type BackfillRequest = {
   limit?: number;
 };
 
-const BINANCE_BTC_TRADE_WS = 'wss://stream.binance.com:9443/ws/btcusdt@trade';
-const BINANCE_BTC_AGG_TRADES_REST = 'https://api.binance.com/api/v3/aggTrades';
+type BinanceTradeFeedConfig = {
+  symbol: string;
+};
+
+const BINANCE_TRADE_WS_BASE = 'wss://stream.binance.com:9443/ws';
+const BINANCE_AGG_TRADES_REST = 'https://api.binance.com/api/v3/aggTrades';
 const BACKFILL_LIMIT = 1000;
 const BACKFILL_MAX_TRADES = 10_000;
 const BACKFILL_OVERLAP_GUARD_MS = 750;
 
 export class BinanceTradeFeed implements TradeFeed {
   readonly source = 'binance' as const;
+  private readonly symbol: string;
+  private readonly tradeWsUrl: string;
 
   private ws: WebSocket | null = null;
   private handlers: FeedHandlers | null = null;
@@ -54,6 +60,11 @@ export class BinanceTradeFeed implements TradeFeed {
   private lastSeenTradeTimestamp = 0;
   private lastSeenRawTradeId: number | null = null;
   private lastSeenAggTradeId: number | null = null;
+
+  constructor(config: BinanceTradeFeedConfig) {
+    this.symbol = config.symbol.trim().toUpperCase();
+    this.tradeWsUrl = `${BINANCE_TRADE_WS_BASE}/${this.symbol.toLowerCase()}@trade`;
+  }
 
   start(handlers: FeedHandlers) {
     this.stop();
@@ -109,7 +120,7 @@ export class BinanceTradeFeed implements TradeFeed {
 
     let ws: WebSocket;
     try {
-      ws = new WebSocket(BINANCE_BTC_TRADE_WS);
+      ws = new WebSocket(this.tradeWsUrl);
     } catch (error) {
       this.emitStatus({
         state: 'disconnected',
@@ -392,8 +403,8 @@ export class BinanceTradeFeed implements TradeFeed {
   }
 
   private async fetchAggTradesPage(request: BackfillRequest) {
-    const url = new URL(BINANCE_BTC_AGG_TRADES_REST);
-    url.searchParams.set('symbol', 'BTCUSDT');
+    const url = new URL(BINANCE_AGG_TRADES_REST);
+    url.searchParams.set('symbol', this.symbol);
     url.searchParams.set('limit', String(request.limit ?? BACKFILL_LIMIT));
     if (typeof request.fromId === 'number') {
       url.searchParams.set('fromId', String(request.fromId));

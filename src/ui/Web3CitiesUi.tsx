@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { CRYPTO_CITY_MODES, isCryptoCityMode } from '../lib/cityMode';
+import type { CryptoCityMode } from '../lib/cityMode';
 import type { CityMode } from '../lib/cityMode';
+import { CRYPTO_CITY_PRESETS } from '../data/cryptoCity/presets';
 import type { UiMetricPanel } from './cityMetrics';
 import web3CitiesLogoUrl from '../../dawidskinder_web3cities_logo_v1.svg';
 import dawidPhotoUrl from '../../ds_photo.png';
@@ -18,11 +21,9 @@ const MODE_COPY: Record<
     description: string;
   }
 > = {
-  btc: {
-    title: 'BTC City',
-    description:
-      'A living city generated from live Bitcoin spot buy activity, where each building reflects market demand as it happens.'
-  },
+  btc: CRYPTO_CITY_PRESETS.btc,
+  eth: CRYPTO_CITY_PRESETS.eth,
+  sol: CRYPTO_CITY_PRESETS.sol,
   top200: {
     title: 'Market City',
     description:
@@ -141,6 +142,7 @@ function detectDesktopSafari() {
 
 export function Web3CitiesUi({
   mode,
+  cryptoSelection,
   onModeChange,
   metricPanel,
   onResetCamera,
@@ -148,6 +150,7 @@ export function Web3CitiesUi({
   onZoomIn
 }: {
   mode: CityMode;
+  cryptoSelection: CryptoCityMode;
   onModeChange?: (nextMode: CityMode) => void;
   metricPanel: UiMetricPanel;
   onResetCamera?: () => void;
@@ -162,14 +165,18 @@ export function Web3CitiesUi({
   const [isDesktopSafari, setIsDesktopSafari] = useState(() => detectDesktopSafari());
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [mobileNoticeVisible, setMobileNoticeVisible] = useState(false);
+  const [cryptoMenuOpen, setCryptoMenuOpen] = useState(false);
   const controlsRef = useRef<HTMLDivElement | null>(null);
   const mobileMenuRef = useRef<HTMLDivElement | null>(null);
+  const desktopActionsRef = useRef<HTMLDivElement | null>(null);
   const hasShownMobileNoticeRef = useRef(false);
   const modeCopy = MODE_COPY[mode];
+  const currentCryptoLabel = MODE_COPY[cryptoSelection].title;
 
   useEffect(() => {
     setHoverPopover(null);
     setPinnedPopover(null);
+    setCryptoMenuOpen(false);
   }, [mode]);
 
   useEffect(() => {
@@ -238,6 +245,20 @@ export function Web3CitiesUi({
     };
   }, [isMobile, mobileMenuOpen]);
 
+  useEffect(() => {
+    if (isMobile || !cryptoMenuOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (desktopActionsRef.current?.contains(event.target as Node)) return;
+      setCryptoMenuOpen(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [cryptoMenuOpen, isMobile]);
+
   const currentUrl = typeof window !== 'undefined' ? window.location.href : WEB3_CITIES_SITE_URL;
   const shareHref = useMemo(() => {
     const text =
@@ -273,6 +294,13 @@ export function Web3CitiesUi({
       }
     }
     setMobileNoticeVisible(false);
+  };
+
+  const handleModeSelection = (nextMode: CityMode) => {
+    setCryptoMenuOpen(false);
+    setMobileMenuOpen(false);
+    if (nextMode === mode) return;
+    onModeChange?.(nextMode);
   };
 
   return (
@@ -319,26 +347,39 @@ export function Web3CitiesUi({
                   UX can make complex systems feel legible, alive, and worth exploring.
                 </p>
 
-                <div className="web3-ui__tabs" role="tablist" aria-label="City modes">
+                <div className="web3-ui__tabs" aria-label="City modes">
                   <button
                     type="button"
-                    role="tab"
-                    aria-selected={mode === 'top200'}
+                    aria-pressed={mode === 'top200'}
                     className={`web3-ui__tab${mode === 'top200' ? ' is-active' : ''}`}
-                    onClick={() => onModeChange?.('top200')}
+                    onClick={() => handleModeSelection('top200')}
                   >
                     Market City
                   </button>
                   <button
                     type="button"
-                    role="tab"
-                    aria-selected={mode === 'btc'}
-                    className={`web3-ui__tab${mode === 'btc' ? ' is-active' : ''}`}
-                    onClick={() => onModeChange?.('btc')}
+                    aria-expanded={cryptoMenuOpen}
+                    className={`web3-ui__tab web3-ui__tab--select${isCryptoCityMode(mode) ? ' is-active' : ''}`}
+                    onClick={() => setCryptoMenuOpen((current) => !current)}
                   >
-                    BTC City
+                    <span>Crypto City</span>
+                    <span className="web3-ui__tab-detail">{currentCryptoLabel}</span>
                   </button>
                 </div>
+                {cryptoMenuOpen ? (
+                  <div className="web3-ui__tab-menu" role="listbox" aria-label="Crypto City options">
+                    {CRYPTO_CITY_MODES.map((cryptoMode) => (
+                      <button
+                        key={cryptoMode}
+                        type="button"
+                        className={`web3-ui__tab-option${cryptoSelection === cryptoMode ? ' is-active' : ''}`}
+                        onClick={() => handleModeSelection(cryptoMode)}
+                      >
+                        {CRYPTO_CITY_PRESETS[cryptoMode].selectorLabel}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
 
                 <div className="web3-ui__action-row">
                   <a
@@ -359,27 +400,40 @@ export function Web3CitiesUi({
             ) : null}
           </div>
         ) : (
-          <div className="web3-ui__panel web3-ui__panel--actions">
-            <div className="web3-ui__tabs" role="tablist" aria-label="City modes">
+          <div ref={desktopActionsRef} className="web3-ui__panel web3-ui__panel--actions">
+            <div className="web3-ui__tabs" aria-label="City modes">
               <button
                 type="button"
-                role="tab"
-                aria-selected={mode === 'top200'}
+                aria-pressed={mode === 'top200'}
                 className={`web3-ui__tab${mode === 'top200' ? ' is-active' : ''}`}
-                onClick={() => onModeChange?.('top200')}
+                onClick={() => handleModeSelection('top200')}
               >
                 Market City
               </button>
               <button
                 type="button"
-                role="tab"
-                aria-selected={mode === 'btc'}
-                className={`web3-ui__tab${mode === 'btc' ? ' is-active' : ''}`}
-                onClick={() => onModeChange?.('btc')}
+                aria-expanded={cryptoMenuOpen}
+                className={`web3-ui__tab web3-ui__tab--select${isCryptoCityMode(mode) ? ' is-active' : ''}`}
+                onClick={() => setCryptoMenuOpen((current) => !current)}
               >
-                BTC City
+                <span>Crypto City</span>
+                <span className="web3-ui__tab-detail">{currentCryptoLabel}</span>
               </button>
             </div>
+            {cryptoMenuOpen ? (
+              <div className="web3-ui__tab-menu" role="listbox" aria-label="Crypto City options">
+                {CRYPTO_CITY_MODES.map((cryptoMode) => (
+                  <button
+                    key={cryptoMode}
+                    type="button"
+                    className={`web3-ui__tab-option${cryptoSelection === cryptoMode ? ' is-active' : ''}`}
+                    onClick={() => handleModeSelection(cryptoMode)}
+                  >
+                    {CRYPTO_CITY_PRESETS[cryptoMode].selectorLabel}
+                  </button>
+                ))}
+              </div>
+            ) : null}
 
             <div className="web3-ui__action-row">
               <a

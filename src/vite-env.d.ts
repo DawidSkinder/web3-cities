@@ -2,7 +2,8 @@
 
 interface ImportMetaEnv {
   readonly VITE_TRADE_FEED_MODE?: 'live' | 'mock' | 'auto';
-  readonly VITE_CITY_MODE?: 'top200' | 'btc';
+  readonly VITE_CITY_MODE?: 'top200' | 'crypto' | 'btc' | 'eth' | 'sol';
+  readonly VITE_CRYPTO_CITY_ASSET?: 'btc' | 'eth' | 'sol';
   readonly VITE_TOP_COINS_POLL_MS?: string;
   readonly VITE_TOP_COINS_LIMIT?: string;
 }
