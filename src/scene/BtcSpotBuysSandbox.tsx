@@ -9897,39 +9897,7 @@ export function BtcSpotBuysSandbox({
   const btcGroundIntroBootAlpha = useBtcGroundIntroBootAlpha();
   const topFx = undefined;
   const metricPanel = useMemo(() => deriveBtcCityMetrics({ towers, events, preset }), [events, preset, towers]);
-  const [cryptoFlyoverGateTick, setCryptoFlyoverGateTick] = useState(0);
-  const initialFlyoverGateTowers = useMemo(
-    () =>
-      [...towers]
-        .sort((left, right) => {
-          const leftEmittedAt = Number.isFinite(left.emittedAt) ? left.emittedAt : Number.POSITIVE_INFINITY;
-          const rightEmittedAt = Number.isFinite(right.emittedAt) ? right.emittedAt : Number.POSITIVE_INFINITY;
-          return leftEmittedAt - rightEmittedAt || left.sequence - right.sequence;
-        })
-        .slice(0, 10),
-    [towers]
-  );
-  const cryptoFlyoverIntroReady = useMemo(() => {
-    if (initialFlyoverGateTowers.length < 10) return false;
-    const wallNowMs = Date.now();
-    const perfNowMs = typeof performance === 'undefined' ? wallNowMs : performance.now();
-    return initialFlyoverGateTowers.every(
-      (tower) =>
-        Number.isFinite(tower.emittedAt) &&
-        resolveClockNowForEmittedAt(tower.emittedAt, perfNowMs, wallNowMs) >= tower.emittedAt + BIRTH_RISE_MS + BIRTH_GLOW_RAMP_MS
-    );
-  }, [cryptoFlyoverGateTick, initialFlyoverGateTowers]);
-  const cinematicFlyoverEnabled = btcGroundIntroBootAlpha >= 0.995 && cryptoFlyoverIntroReady;
-
-  useEffect(() => {
-    if (cryptoFlyoverIntroReady || initialFlyoverGateTowers.length < 10) return;
-    const timer = window.setTimeout(() => {
-      setCryptoFlyoverGateTick((current) => current + 1);
-    }, 120);
-    return () => {
-      window.clearTimeout(timer);
-    };
-  }, [cryptoFlyoverIntroReady, initialFlyoverGateTowers]);
+  const cinematicFlyoverEnabled = btcGroundIntroBootAlpha >= 0.995 && towers.length >= 10;
 
   useEffect(() => {
     setHoveredTowerSequence(null);
