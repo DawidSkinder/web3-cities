@@ -523,14 +523,13 @@ export function Web3CitiesUi({
                 >
                   <button
                     type="button"
-                    className="web3-ui__help-trigger"
+                    className="web3-ui__help-trigger web3-ui__help-trigger--icon"
                     aria-label="Show mouse controls"
                     aria-expanded={openPopover === 'mouse'}
                     aria-controls="mouse-controls-popover"
                     onClick={() => handlePopoverToggle('mouse')}
                   >
                     <MouseIcon />
-                    <span>Mouse</span>
                   </button>
                   {openPopover === 'mouse' ? (
                     <ControlsPopover id="mouse-controls-popover" title="Mouse controls" rows={MOUSE_CONTROLS} />
@@ -544,14 +543,13 @@ export function Web3CitiesUi({
                 >
                   <button
                     type="button"
-                    className="web3-ui__help-trigger"
+                    className="web3-ui__help-trigger web3-ui__help-trigger--icon"
                     aria-label="Show keyboard controls"
                     aria-expanded={openPopover === 'keyboard'}
                     aria-controls="keyboard-controls-popover"
                     onClick={() => handlePopoverToggle('keyboard')}
                   >
                     <KeyboardIcon />
-                    <span>Keyboard</span>
                   </button>
                   {openPopover === 'keyboard' ? (
                     <ControlsPopover id="keyboard-controls-popover" title="Keyboard controls" rows={KEYBOARD_CONTROLS} />

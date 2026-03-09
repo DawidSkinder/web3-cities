@@ -535,6 +535,17 @@ canvas {
   cursor: pointer;
 }
 
+.web3-ui__help-trigger--icon {
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  min-height: 42px;
+  padding: 0;
+  justify-content: center;
+  gap: 0;
+  border-radius: 999px;
+}
+
 .web3-ui__glyph {
   width: 16px;
   height: 16px;
