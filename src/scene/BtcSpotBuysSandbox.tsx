@@ -9897,7 +9897,45 @@ export function BtcSpotBuysSandbox({
   const btcGroundIntroBootAlpha = useBtcGroundIntroBootAlpha();
   const topFx = undefined;
   const metricPanel = useMemo(() => deriveBtcCityMetrics({ towers, events, preset }), [events, preset, towers]);
-  const cinematicFlyoverEnabled = btcGroundIntroBootAlpha >= 0.995 && towers.length >= 10;
+  const [cryptoFlyoverGateNow, setCryptoFlyoverGateNow] = useState(() => Date.now());
+  const initialFlyoverGateTowers = useMemo(
+    () =>
+      [...towers]
+        .sort((left, right) => left.sequence - right.sequence || left.emittedAt - right.emittedAt)
+        .slice(0, 10),
+    [towers]
+  );
+  const cryptoFlyoverIntroReady = useMemo(() => {
+    if (initialFlyoverGateTowers.length < 10) return false;
+    return initialFlyoverGateTowers.every(
+      (tower) => Number.isFinite(tower.emittedAt) && cryptoFlyoverGateNow >= tower.emittedAt + BIRTH_RISE_MS + BIRTH_GLOW_RAMP_MS
+    );
+  }, [cryptoFlyoverGateNow, initialFlyoverGateTowers]);
+  const cinematicFlyoverEnabled = btcGroundIntroBootAlpha >= 0.995 && cryptoFlyoverIntroReady;
+
+  useEffect(() => {
+    if (initialFlyoverGateTowers.length < 10) return;
+    let nextUnlockAt = 0;
+    for (const tower of initialFlyoverGateTowers) {
+      if (!Number.isFinite(tower.emittedAt)) {
+        nextUnlockAt = 0;
+        break;
+      }
+      nextUnlockAt = Math.max(nextUnlockAt, tower.emittedAt + BIRTH_RISE_MS + BIRTH_GLOW_RAMP_MS);
+    }
+    if (nextUnlockAt <= 0) return;
+    const now = Date.now();
+    if (now >= nextUnlockAt) {
+      setCryptoFlyoverGateNow(now);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setCryptoFlyoverGateNow(Date.now());
+    }, Math.max(16, nextUnlockAt - now + 16));
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [initialFlyoverGateTowers]);
 
   useEffect(() => {
     setHoveredTowerSequence(null);
