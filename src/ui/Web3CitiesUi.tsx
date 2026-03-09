@@ -168,6 +168,7 @@ export function Web3CitiesUi({
   onModeChange,
   metricPanel,
   onCinematicFlyover,
+  cinematicFlyoverEnabled = true,
   cinematicFlyoverActive = false,
   onResetCamera,
   onZoomOut,
@@ -178,6 +179,7 @@ export function Web3CitiesUi({
   onModeChange?: (nextMode: CityMode) => void;
   metricPanel: UiMetricPanel;
   onCinematicFlyover?: () => void;
+  cinematicFlyoverEnabled?: boolean;
   cinematicFlyoverActive?: boolean;
   onResetCamera?: () => void;
   onZoomOut?: () => void;
@@ -533,10 +535,11 @@ export function Web3CitiesUi({
               <>
                 <button
                   type="button"
-                  title="Cinematic flyover"
-                  className={`web3-ui__help-trigger${cinematicFlyoverActive ? ' is-active' : ''}`}
+                  title={cinematicFlyoverEnabled ? 'Cinematic flyover' : 'Cinematic flyover unavailable'}
+                  className={`web3-ui__help-trigger${cinematicFlyoverActive ? ' is-active' : ''}${!cinematicFlyoverEnabled ? ' is-disabled' : ''}`}
                   aria-label={cinematicFlyoverActive ? 'Restart cinematic flyover' : 'Start cinematic flyover'}
                   aria-pressed={cinematicFlyoverActive}
+                  disabled={!cinematicFlyoverEnabled}
                   onClick={onCinematicFlyover}
                 >
                   <FlyoverIcon />

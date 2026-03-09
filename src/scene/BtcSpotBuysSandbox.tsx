@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Group, InstancedMesh as ThreeInstancedMesh, Mesh, Texture } from 'three';
 import {
   AdditiveBlending,
@@ -4487,6 +4487,50 @@ function MinimalOrbitRig({
     }
   };
 
+  useLayoutEffect(() => {
+    if (initializedRef.current) return;
+
+    const radius = Math.max(18, bounds.radius);
+    const maxY = Math.max(8, bounds.maxY);
+    const autoAngle = 0;
+    const autoDistance = MathUtils.clamp(18 + radius * 1.65 + maxY * 0.55, 24, 170);
+    const autoElevation = MathUtils.clamp(8 + maxY * 0.9 + radius * 0.22, 10, 72);
+    const autoLookY = MathUtils.clamp(1.5 + maxY * 0.45, 2, 30);
+
+    const auto = autoRef.current;
+    auto.angle = autoAngle;
+    auto.distance = autoDistance;
+    auto.elevation = autoElevation;
+    auto.lookY = autoLookY;
+
+    const control = controlRef.current;
+    control.angle = autoAngle;
+    control.distance = autoDistance;
+    control.elevation = autoElevation;
+    control.lookY = autoLookY;
+
+    const actual = actualRef.current;
+    actual.angle = autoAngle;
+    actual.distance = autoDistance;
+    actual.elevation = autoElevation;
+    actual.lookY = autoLookY;
+
+    centerActualRef.current.x = 0;
+    centerActualRef.current.z = 0;
+    centerTargetRef.current.x = 0;
+    centerTargetRef.current.z = 0;
+
+    tempDir.set(Math.sin(autoAngle), 0, Math.cos(autoAngle));
+    desiredPosition.copy(tempDir).multiplyScalar(autoDistance);
+    desiredPosition.y = autoElevation;
+    desiredTarget.set(0, autoLookY, 0);
+    smoothPosition.copy(desiredPosition);
+    smoothTarget.copy(desiredTarget);
+    camera.position.copy(smoothPosition);
+    camera.lookAt(smoothTarget);
+    initializedRef.current = true;
+  }, [bounds.maxY, bounds.radius, camera]);
+
   useEffect(() => {
     const canvas = gl.domElement;
 
@@ -4514,7 +4558,7 @@ function MinimalOrbitRig({
     const onPointerMove = (event: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag.dragging || drag.pointerId !== event.pointerId) return;
-      if (modeRef.current === 'focus') {
+      if (modeRef.current === 'focus' || modeRef.current === 'flyover') {
         markUserInteraction();
       }
       const dx = event.clientX - drag.lastX;
@@ -4538,7 +4582,7 @@ function MinimalOrbitRig({
     };
 
     const onWheel = (event: WheelEvent) => {
-      if (modeRef.current === 'focus') {
+      if (modeRef.current === 'focus' || modeRef.current === 'flyover') {
         markUserInteraction();
       }
       const control = controlRef.current;
@@ -4551,8 +4595,10 @@ function MinimalOrbitRig({
     const onKeyDown = (event: KeyboardEvent) => {
       keysRef.current[event.code] = true;
       if (event.code === 'KeyR') {
+        clearFlyoverState();
+        syncControlFromCurrentView();
         modeRef.current = 'auto';
-        onClearFocusTarget?.();
+        clearFocusTargetRef.current?.();
         event.preventDefault();
         return;
       }
@@ -9835,6 +9881,7 @@ export function BtcSpotBuysSandbox({
   const btcGroundIntroBootAlpha = useBtcGroundIntroBootAlpha();
   const topFx = undefined;
   const metricPanel = useMemo(() => deriveBtcCityMetrics({ towers, events, preset }), [events, preset, towers]);
+  const cinematicFlyoverEnabled = btcGroundIntroBootAlpha >= 0.995 && towers.length >= 10;
 
   useEffect(() => {
     setHoveredTowerSequence(null);
@@ -9878,6 +9925,7 @@ export function BtcSpotBuysSandbox({
   };
 
   const handleCinematicFlyover = () => {
+    if (!cinematicFlyoverEnabled) return;
     const nextTargets = pickCinematicFlyoverTargets(towers);
     if (nextTargets.length === 0) return;
     setHoveredTowerSequence(null);
@@ -9929,6 +9977,7 @@ export function BtcSpotBuysSandbox({
         onModeChange={onModeChange}
         metricPanel={metricPanel}
         onCinematicFlyover={handleCinematicFlyover}
+        cinematicFlyoverEnabled={cinematicFlyoverEnabled}
         cinematicFlyoverActive={cinematicFlyoverActive}
         onResetCamera={handleResetCamera}
         onZoomIn={() => setZoomInCameraSignal((current) => current + 1)}

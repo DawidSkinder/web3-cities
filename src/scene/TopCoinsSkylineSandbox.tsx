@@ -4710,7 +4710,7 @@ function MinimalOrbitRig({
     const onPointerMove = (event: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag.dragging || drag.pointerId !== event.pointerId) return;
-      if (modeRef.current === 'focus') {
+      if (modeRef.current === 'focus' || modeRef.current === 'flyover') {
         markUserInteraction();
       }
       const dx = event.clientX - drag.lastX;
@@ -4734,7 +4734,7 @@ function MinimalOrbitRig({
     };
 
     const onWheel = (event: WheelEvent) => {
-      if (modeRef.current === 'focus') {
+      if (modeRef.current === 'focus' || modeRef.current === 'flyover') {
         markUserInteraction();
       }
       const control = controlRef.current;
@@ -4747,8 +4747,10 @@ function MinimalOrbitRig({
     const onKeyDown = (event: KeyboardEvent) => {
       keysRef.current[event.code] = true;
       if (event.code === 'KeyR') {
+        clearFlyoverState();
+        syncControlFromCurrentView();
         modeRef.current = 'auto';
-        onClearFocusTarget?.();
+        clearFocusTargetRef.current?.();
         event.preventDefault();
         return;
       }
@@ -10041,6 +10043,11 @@ export function TopCoinsSkylineSandbox({
   const [cinematicFlyoverActive, setCinematicFlyoverActive] = useState(false);
   const topFx = topData.topFx;
   const metricPanel = useMemo(() => deriveMarketCityMetrics(topSnapshot), [topSnapshot]);
+  const cinematicFlyoverEnabled =
+    topLayer2Ready &&
+    topGroundIntroBootAlpha >= 0.995 &&
+    !topFx.introActive &&
+    topFx.introProgress >= 0.995;
 
   useEffect(() => {
     setHoveredTowerSequence(null);
@@ -10088,6 +10095,7 @@ export function TopCoinsSkylineSandbox({
   };
 
   const handleCinematicFlyover = () => {
+    if (!cinematicFlyoverEnabled) return;
     const nextTargets = pickCinematicFlyoverTargets(towers);
     if (nextTargets.length === 0) return;
     setHoveredTowerSequence(null);
@@ -10139,6 +10147,7 @@ export function TopCoinsSkylineSandbox({
         onModeChange={onModeChange}
         metricPanel={metricPanel}
         onCinematicFlyover={handleCinematicFlyover}
+        cinematicFlyoverEnabled={cinematicFlyoverEnabled}
         cinematicFlyoverActive={cinematicFlyoverActive}
         onResetCamera={handleResetCamera}
         onZoomIn={() => setZoomInCameraSignal((current) => current + 1)}

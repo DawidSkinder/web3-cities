@@ -675,6 +675,15 @@ canvas {
   color: #f4cf99;
 }
 
+.web3-ui__help-trigger.is-disabled,
+.web3-ui__help-trigger:disabled {
+  border-color: rgba(231, 212, 191, 0.08);
+  background: rgba(255, 255, 255, 0.018);
+  color: rgba(231, 212, 191, 0.42);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
 .web3-ui__tab:hover,
 .web3-ui__tab-option:hover,
 .web3-ui__help-trigger:hover,
@@ -698,6 +707,13 @@ canvas {
 .web3-ui__cta:focus-visible {
   outline: none;
   box-shadow: var(--ui-focus-ring);
+}
+
+.web3-ui__help-trigger:disabled:hover,
+.web3-ui__help-trigger.is-disabled:hover {
+  border-color: rgba(231, 212, 191, 0.08);
+  background: rgba(255, 255, 255, 0.018);
+  color: rgba(231, 212, 191, 0.42);
 }
 
 .web3-ui__mobile-notice-wrap {
