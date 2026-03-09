@@ -24,6 +24,9 @@ const MODE_COPY: Record<
   btc: CRYPTO_CITY_PRESETS.btc,
   eth: CRYPTO_CITY_PRESETS.eth,
   sol: CRYPTO_CITY_PRESETS.sol,
+  bnb: CRYPTO_CITY_PRESETS.bnb,
+  xrp: CRYPTO_CITY_PRESETS.xrp,
+  lunc: CRYPTO_CITY_PRESETS.lunc,
   top200: {
     title: 'Market City',
     description:

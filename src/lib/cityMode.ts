@@ -1,14 +1,14 @@
-export type CryptoCityMode = 'btc' | 'eth' | 'sol';
+export type CryptoCityMode = 'btc' | 'eth' | 'sol' | 'bnb' | 'xrp' | 'lunc';
 export type CityMode = 'top200' | CryptoCityMode;
 
 const CITY_MODE_QUERY_PARAM = 'mode';
 const CRYPTO_ASSET_QUERY_PARAM = 'asset';
 
-export const CRYPTO_CITY_MODES = ['btc', 'eth', 'sol'] as const;
+export const CRYPTO_CITY_MODES = ['btc', 'eth', 'sol', 'bnb', 'xrp', 'lunc'] as const;
 
 export function isCryptoCityMode(value: string | null | undefined): value is CryptoCityMode {
   const raw = (value ?? '').trim().toLowerCase();
-  return raw === 'btc' || raw === 'eth' || raw === 'sol';
+  return raw === 'btc' || raw === 'eth' || raw === 'sol' || raw === 'bnb' || raw === 'xrp' || raw === 'lunc';
 }
 
 export function normalizeCityMode(

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="lunc-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#57b7ff" />
+      <stop offset="100%" stop-color="#2d63d8" />
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="48" fill="#f4f8ff" />
+  <circle cx="128" cy="128" r="78" fill="url(#lunc-bg)" />
+  <path
+    d="M154 54c-17 2-33 11-46 25-18 18-26 42-23 67 3 23 16 44 36 58-10-1-21-5-30-11-21-14-34-38-34-64 0-42 31-77 72-83 9-1 17 1 25 8z"
+    fill="#ffffff"
+    opacity="0.95"
+  />
+  <path
+    d="M101 202c16-3 31-12 43-26 18-19 26-43 22-68-3-22-15-42-33-56 10 1 20 5 29 11 22 14 36 39 36 66 0 40-29 74-69 82-10 2-19-1-28-9z"
+    fill="#dce8ff"
+    opacity="0.95"
+  />
+  <path
+    d="M111 82c13-11 31-15 47-10l-11 18c-9-2-19 0-27 6-12 9-17 24-13 38l-21 5c-5-22 3-44 25-57z"
+    fill="#214dbf"
+    opacity="0.9"
+  />
+</svg>
