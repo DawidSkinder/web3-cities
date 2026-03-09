@@ -9897,45 +9897,39 @@ export function BtcSpotBuysSandbox({
   const btcGroundIntroBootAlpha = useBtcGroundIntroBootAlpha();
   const topFx = undefined;
   const metricPanel = useMemo(() => deriveBtcCityMetrics({ towers, events, preset }), [events, preset, towers]);
-  const [cryptoFlyoverGateNow, setCryptoFlyoverGateNow] = useState(() => Date.now());
+  const [cryptoFlyoverGateTick, setCryptoFlyoverGateTick] = useState(0);
   const initialFlyoverGateTowers = useMemo(
     () =>
       [...towers]
-        .sort((left, right) => left.sequence - right.sequence || left.emittedAt - right.emittedAt)
+        .sort((left, right) => {
+          const leftEmittedAt = Number.isFinite(left.emittedAt) ? left.emittedAt : Number.POSITIVE_INFINITY;
+          const rightEmittedAt = Number.isFinite(right.emittedAt) ? right.emittedAt : Number.POSITIVE_INFINITY;
+          return leftEmittedAt - rightEmittedAt || left.sequence - right.sequence;
+        })
         .slice(0, 10),
     [towers]
   );
   const cryptoFlyoverIntroReady = useMemo(() => {
     if (initialFlyoverGateTowers.length < 10) return false;
+    const wallNowMs = Date.now();
+    const perfNowMs = typeof performance === 'undefined' ? wallNowMs : performance.now();
     return initialFlyoverGateTowers.every(
-      (tower) => Number.isFinite(tower.emittedAt) && cryptoFlyoverGateNow >= tower.emittedAt + BIRTH_RISE_MS + BIRTH_GLOW_RAMP_MS
+      (tower) =>
+        Number.isFinite(tower.emittedAt) &&
+        resolveClockNowForEmittedAt(tower.emittedAt, perfNowMs, wallNowMs) >= tower.emittedAt + BIRTH_RISE_MS + BIRTH_GLOW_RAMP_MS
     );
-  }, [cryptoFlyoverGateNow, initialFlyoverGateTowers]);
+  }, [cryptoFlyoverGateTick, initialFlyoverGateTowers]);
   const cinematicFlyoverEnabled = btcGroundIntroBootAlpha >= 0.995 && cryptoFlyoverIntroReady;
 
   useEffect(() => {
-    if (initialFlyoverGateTowers.length < 10) return;
-    let nextUnlockAt = 0;
-    for (const tower of initialFlyoverGateTowers) {
-      if (!Number.isFinite(tower.emittedAt)) {
-        nextUnlockAt = 0;
-        break;
-      }
-      nextUnlockAt = Math.max(nextUnlockAt, tower.emittedAt + BIRTH_RISE_MS + BIRTH_GLOW_RAMP_MS);
-    }
-    if (nextUnlockAt <= 0) return;
-    const now = Date.now();
-    if (now >= nextUnlockAt) {
-      setCryptoFlyoverGateNow(now);
-      return;
-    }
+    if (cryptoFlyoverIntroReady || initialFlyoverGateTowers.length < 10) return;
     const timer = window.setTimeout(() => {
-      setCryptoFlyoverGateNow(Date.now());
-    }, Math.max(16, nextUnlockAt - now + 16));
+      setCryptoFlyoverGateTick((current) => current + 1);
+    }, 120);
     return () => {
       window.clearTimeout(timer);
     };
-  }, [initialFlyoverGateTowers]);
+  }, [cryptoFlyoverIntroReady, initialFlyoverGateTowers]);
 
   useEffect(() => {
     setHoveredTowerSequence(null);
