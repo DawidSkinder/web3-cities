@@ -769,35 +769,42 @@ function buildHeroPassShots(
   const outgoing = normalizeDirection2(nextAnchor.x - hero.x, nextAnchor.z - hero.z, hero.x - center.x, hero.z - center.z);
   const travel = normalizeDirection2(incoming.x * 0.5 + outgoing.x, incoming.z * 0.5 + outgoing.z, outgoing.x, outgoing.z);
   const side = { x: travel.z * turnSign, z: -travel.x * turnSign };
-  const lookY = MathUtils.clamp(hero.height * (closeEmphasis ? 0.82 : 0.7), 5.2, hero.height + 16);
-  const standoff = MathUtils.clamp(heroRadius + hero.height * (closeEmphasis ? 0.34 : 0.26), 16, Math.max(22, sceneRadius * 0.28));
-  const lateral = MathUtils.clamp(standoff * (closeEmphasis ? 0.72 : 0.56), 7.5, 22);
+  const centerPull = 0.12;
+  const lookX = MathUtils.lerp(hero.x, center.x, centerPull);
+  const lookZ = MathUtils.lerp(hero.z, center.z, centerPull);
+  const lookY = MathUtils.clamp(hero.height * (closeEmphasis ? 0.76 : 0.66), 5.2, hero.height + 14);
+  const standoff = MathUtils.clamp(heroRadius + hero.height * (closeEmphasis ? 0.52 : 0.4), 22, Math.max(30, sceneRadius * 0.36));
+  const lateral = MathUtils.clamp(standoff * (closeEmphasis ? 0.9 : 0.72), 10, 30);
 
   const shotA = liftShotPosition(
-    hero.x,
-    hero.z,
+    lookX,
+    lookZ,
     lookY,
     hero.x - travel.x * standoff + side.x * lateral,
     hero.z - travel.z * standoff + side.z * lateral,
-    MathUtils.clamp(hero.height * (closeEmphasis ? 0.76 : 0.62) + 11, 10, safeMaxY + 26),
-    heroRadius + 10,
+    MathUtils.clamp(hero.height * (closeEmphasis ? 0.72 : 0.6) + 12, 10, safeMaxY + 26),
+    heroRadius + 16,
     obstacles,
     safeMaxY
   );
-  const targetA = point(hero.x, lookY, hero.z);
+  const targetA = point(lookX, lookY, lookZ);
 
   const shotB = liftShotPosition(
-    hero.x,
-    hero.z,
-    Math.min(hero.height + 14, lookY + 4),
-    hero.x + travel.x * (standoff * 0.24) - side.x * (lateral * 0.72),
-    hero.z + travel.z * (standoff * 0.24) - side.z * (lateral * 0.72),
-    MathUtils.clamp(hero.height * (closeEmphasis ? 0.88 : 0.74) + 10, 11, safeMaxY + 30),
-    heroRadius + 8.2,
+    lookX,
+    lookZ,
+    Math.min(hero.height + 12, lookY + 3.2),
+    hero.x + travel.x * (standoff * 0.34) - side.x * (lateral * 0.88),
+    hero.z + travel.z * (standoff * 0.34) - side.z * (lateral * 0.88),
+    MathUtils.clamp(hero.height * (closeEmphasis ? 0.82 : 0.7) + 11, 11, safeMaxY + 30),
+    heroRadius + 14,
     obstacles,
     safeMaxY
   );
-  const targetB = point(hero.x, Math.min(hero.height + 18, lookY + 6), hero.z);
+  const targetB = point(
+    MathUtils.lerp(hero.x, center.x, 0.16),
+    Math.min(hero.height + 16, lookY + 5),
+    MathUtils.lerp(hero.z, center.z, 0.16)
+  );
 
   return { shotA, targetA, shotB, targetB };
 }
@@ -905,27 +912,29 @@ function buildClimaxShots(
 ) {
   const baseAngle = angleOf(entryPoint.x - primary.x, entryPoint.z - primary.z);
   const heroRadius = Math.max(3.2, primary.radius ?? Math.max(3.2, 2.8 + primary.height * 0.06));
-  const orbitRadius = MathUtils.clamp(heroRadius + primary.height * 0.24, 14, Math.max(18, sceneRadius * 0.24));
-  const focusY = MathUtils.clamp(primary.height * 0.88, 8, primary.height + 18);
+  const orbitRadius = MathUtils.clamp(heroRadius + primary.height * 0.42, 24, Math.max(32, sceneRadius * 0.34));
+  const focusY = MathUtils.clamp(primary.height * 0.8, 8, primary.height + 14);
   const halfOrbit = Math.PI * 0.74 * turnSign;
+  const focusX = MathUtils.lerp(primary.x, center.x, 0.14);
+  const focusZ = MathUtils.lerp(primary.z, center.z, 0.14);
 
   const pointAt = (angle: number, radiusScale: number, heightScale: number, extraLift: number) => {
     const radius = orbitRadius * radiusScale;
     const x = primary.x + Math.sin(angle) * radius;
     const z = primary.z + Math.cos(angle) * radius;
     const yBase = MathUtils.clamp(primary.height * heightScale + extraLift, 12, safeMaxY + 34);
-    return liftShotPosition(primary.x, primary.z, focusY, x, z, yBase, heroRadius + 11, obstacles, safeMaxY);
+    return liftShotPosition(focusX, focusZ, focusY, x, z, yBase, heroRadius + 18, obstacles, safeMaxY);
   };
 
-  const shotA = pointAt(baseAngle, 1.08, 0.76, 12);
-  const shotB = pointAt(baseAngle + halfOrbit * 0.48, 0.96, 0.94, 18);
-  const shotC = pointAt(baseAngle + halfOrbit, 1.28, 1.06, 24);
-  const targetA = point(primary.x, focusY, primary.z);
-  const targetB = point(primary.x, Math.min(primary.height + 20, focusY + 5), primary.z);
+  const shotA = pointAt(baseAngle, 1.12, 0.72, 12);
+  const shotB = pointAt(baseAngle + halfOrbit * 0.48, 1.04, 0.88, 18);
+  const shotC = pointAt(baseAngle + halfOrbit, 1.34, 1.0, 24);
+  const targetA = point(focusX, focusY, focusZ);
+  const targetB = point(focusX, Math.min(primary.height + 16, focusY + 4), focusZ);
   const targetC = point(
-    MathUtils.lerp(primary.x, center.x, 0.12),
-    Math.max(5.2, Math.min(primary.height + 20, focusY + 6)),
-    MathUtils.lerp(primary.z, center.z, 0.12)
+    MathUtils.lerp(primary.x, center.x, 0.18),
+    Math.max(5.2, Math.min(primary.height + 16, focusY + 5)),
+    MathUtils.lerp(primary.z, center.z, 0.18)
   );
 
   return { shotA, targetA, shotB, targetB, shotC, targetC };
