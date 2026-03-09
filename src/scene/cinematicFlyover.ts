@@ -973,9 +973,12 @@ export function buildCinematicFlyoverPlan({
       ease: 'glide'
     }
   ];
+  const durationScale = 2;
+  const flyoverSeconds = (reducedSeconds: number, normalSeconds: number) =>
+    (reducedMotion ? reducedSeconds : normalSeconds) * durationScale;
 
-  pushKeyframe(keyframes, reducedMotion ? 1.05 : 1.2, widePosition, revealTarget, 'slow');
-  pushKeyframe(keyframes, reducedMotion ? 2.55 : 3.1, revealApproach, revealTarget, 'slow');
+  pushKeyframe(keyframes, flyoverSeconds(1.05, 1.2), widePosition, revealTarget, 'slow');
+  pushKeyframe(keyframes, flyoverSeconds(2.55, 3.1), revealApproach, revealTarget, 'slow');
 
   const ringCandidates = buildOuterRingCandidates(normalizedObstacles, center, sceneRadius, safeMaxY);
   const baseRevealAngle = angleOf(outward.x, outward.z);
@@ -983,8 +986,8 @@ export function buildCinematicFlyoverPlan({
   const ringAnchorB = pickRingAnchor(ringCandidates, center, sceneRadius, baseRevealAngle + turnSign * 0.92);
   const ringShotA = buildRingShot(ringAnchorA, center, sceneRadius, safeMaxY, normalizedObstacles, turnSign);
   const ringShotB = buildRingShot(ringAnchorB, center, sceneRadius, safeMaxY, normalizedObstacles, turnSign);
-  pushKeyframe(keyframes, reducedMotion ? 1.3 : 1.5, ringShotA.position, ringShotA.target, 'glide');
-  pushKeyframe(keyframes, reducedMotion ? 1.45 : 1.7, ringShotB.position, ringShotB.target, 'glide');
+  pushKeyframe(keyframes, flyoverSeconds(1.3, 1.5), ringShotA.position, ringShotA.target, 'glide');
+  pushKeyframe(keyframes, flyoverSeconds(1.45, 1.7), ringShotB.position, ringShotB.target, 'glide');
 
   const routeTargets = orderTargetsForRoute(
     secondaries.map((target, index) => ({
@@ -1003,28 +1006,28 @@ export function buildCinematicFlyoverPlan({
     const closeEmphasis = routeTargets.length <= 2 || index === 0 || hero.height >= primary.height * 0.72;
     const sign = turnSign * (index % 2 === 0 ? 1 : -1);
     const shots = buildHeroPassShots(hero, previousPoint, nextAnchor, center, sceneRadius, safeMaxY, normalizedObstacles, sign, closeEmphasis);
-    pushKeyframe(keyframes, reducedMotion ? 1.15 : 1.35, shots.shotA, shots.targetA, 'glide');
-    pushKeyframe(keyframes, reducedMotion ? 0.78 : 0.92, shots.shotB, shots.targetB, closeEmphasis ? 'surge' : 'glide');
+    pushKeyframe(keyframes, flyoverSeconds(1.15, 1.35), shots.shotA, shots.targetA, 'glide');
+    pushKeyframe(keyframes, flyoverSeconds(0.78, 0.92), shots.shotB, shots.targetB, closeEmphasis ? 'surge' : 'glide');
     previousPoint = shots.shotB;
   }
 
   if (routeTargets.length === 0) {
     const primaryPreview = buildHeroPassShots(primary, ringShotB.position, primary, center, sceneRadius, safeMaxY, normalizedObstacles, turnSign, true);
-    pushKeyframe(keyframes, reducedMotion ? 1.18 : 1.4, primaryPreview.shotA, primaryPreview.targetA, 'glide');
+    pushKeyframe(keyframes, flyoverSeconds(1.18, 1.4), primaryPreview.shotA, primaryPreview.targetA, 'glide');
     previousPoint = primaryPreview.shotA;
   }
 
   const canyon = buildCanyonShot(normalizedObstacles, center, sceneRadius, safeMaxY, previousPoint, primary);
-  pushKeyframe(keyframes, reducedMotion ? 1.02 : 1.2, canyon.startPosition, canyon.startTarget, 'surge');
-  pushKeyframe(keyframes, reducedMotion ? 1.02 : 1.15, canyon.endPosition, canyon.endTarget, 'surge');
+  pushKeyframe(keyframes, flyoverSeconds(1.02, 1.2), canyon.startPosition, canyon.startTarget, 'surge');
+  pushKeyframe(keyframes, flyoverSeconds(1.02, 1.15), canyon.endPosition, canyon.endTarget, 'surge');
 
   const climax = buildClimaxShots(primary, canyon.endPosition, center, sceneRadius, safeMaxY, normalizedObstacles, turnSign);
-  pushKeyframe(keyframes, reducedMotion ? 1.0 : 1.18, climax.shotA, climax.targetA, 'glide');
-  pushKeyframe(keyframes, reducedMotion ? 1.02 : 1.2, climax.shotB, climax.targetB, 'calm');
-  pushKeyframe(keyframes, reducedMotion ? 1.18 : 1.4, climax.shotC, climax.targetC, 'calm');
+  pushKeyframe(keyframes, flyoverSeconds(1.0, 1.18), climax.shotA, climax.targetA, 'glide');
+  pushKeyframe(keyframes, flyoverSeconds(1.02, 1.2), climax.shotB, climax.targetB, 'calm');
+  pushKeyframe(keyframes, flyoverSeconds(1.18, 1.4), climax.shotC, climax.targetC, 'calm');
 
   const returnShot = buildReturnShot(center, sceneRadius, safeMaxY, climax.shotC);
-  pushKeyframe(keyframes, reducedMotion ? 1.48 : 1.8, returnShot.position, returnShot.target, 'slow');
+  pushKeyframe(keyframes, flyoverSeconds(1.48, 1.8), returnShot.position, returnShot.target, 'slow');
 
   return {
     keyframes,
