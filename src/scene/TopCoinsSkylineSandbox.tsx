@@ -4943,12 +4943,33 @@ function MinimalOrbitRig({
       } else {
         flyoverElapsedRef.current += delta;
         const sample = sampleCinematicFlyoverPlan(plan, flyoverElapsedRef.current, desiredPosition, desiredTarget);
+        const targetBlend = 1 - Math.exp(-5.5 * delta);
         smoothPosition.copy(desiredPosition);
-        smoothTarget.copy(desiredTarget);
+        const currentTargetDx = smoothTarget.x - smoothPosition.x;
+        const currentTargetDz = smoothTarget.z - smoothPosition.z;
+        const desiredTargetDx = desiredTarget.x - smoothPosition.x;
+        const desiredTargetDz = desiredTarget.z - smoothPosition.z;
+        const currentTargetDistance = Math.max(12, Math.hypot(currentTargetDx, currentTargetDz));
+        const desiredTargetDistance = Math.max(12, Math.hypot(desiredTargetDx, desiredTargetDz));
+        const currentTargetAngle =
+          currentTargetDistance > 0.001 ? Math.atan2(currentTargetDx, currentTargetDz) : Math.atan2(desiredTargetDx, desiredTargetDz);
+        const desiredTargetAngle = Math.atan2(desiredTargetDx, desiredTargetDz);
+        let targetAngleDelta = desiredTargetAngle - currentTargetAngle;
+        while (targetAngleDelta > Math.PI) targetAngleDelta -= Math.PI * 2;
+        while (targetAngleDelta < -Math.PI) targetAngleDelta += Math.PI * 2;
+        const nextTargetAngle = currentTargetAngle + targetAngleDelta * targetBlend;
+        const nextTargetDistance = MathUtils.lerp(currentTargetDistance, desiredTargetDistance, targetBlend);
+        smoothTarget.x = smoothPosition.x + Math.sin(nextTargetAngle) * nextTargetDistance;
+        smoothTarget.z = smoothPosition.z + Math.cos(nextTargetAngle) * nextTargetDistance;
+        smoothTarget.y = MathUtils.lerp(smoothTarget.y, desiredTarget.y, targetBlend);
         camera.position.copy(smoothPosition);
         camera.lookAt(smoothTarget);
 
         if (sample.complete) {
+          smoothPosition.copy(desiredPosition);
+          smoothTarget.copy(desiredTarget);
+          camera.position.copy(smoothPosition);
+          camera.lookAt(smoothTarget);
           clearFlyoverState();
           syncControlFromCurrentView();
           modeRef.current = 'auto';
