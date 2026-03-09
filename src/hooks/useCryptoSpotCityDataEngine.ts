@@ -16,8 +16,8 @@ export function useCryptoSpotCityDataEngine(options: { enabled: boolean; preset:
 
     const engine = new CryptoSpotCityDataEngine({
       preset,
-      windowMs: 3000,
-      graceMs: 0,
+      windowMs: preset.engine.windowMs,
+      graceMs: preset.engine.graceMs,
       logWindows: true
     });
 

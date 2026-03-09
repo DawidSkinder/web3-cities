@@ -84,6 +84,7 @@ type TowerDatum = {
   windowEnd: number;
   emittedAt: number;
   mode?: CityMode;
+  assetTicker?: string;
   symbol?: string;
   baseAsset?: string;
   quoteAsset?: string;
@@ -770,7 +771,16 @@ function fmtBtc(v: number) {
   return v.toFixed(5);
 }
 
+const compactAssetAmount = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 2
+});
+
 function fmtAssetAmount(v: number, ticker: string) {
+  if (!Number.isFinite(v)) return `0 ${ticker}`;
+  if (Math.abs(v) >= 10_000) {
+    return `${compactAssetAmount.format(v)} ${ticker}`;
+  }
   return `${fmtBtc(v)} ${ticker}`;
 }
 
@@ -1916,7 +1926,10 @@ function mapEventToTower(event: BlockEvent, state: AccumState, preset: CryptoCit
   let z = Math.sin(angle) * radius;
 
   const intensity = MathUtils.clamp(clampFinite(event.metrics.intensity, 0), 0, 1);
-  const totalVolume = Math.max(0, clampFinite(event.metrics.totalVolume, 0, 0, 10_000_000));
+  // Preserve raw bucket volume for labels/panels. Thin, low-price assets like LUNC
+  // can legitimately print above 10M units inside one block, and clipping that makes
+  // unrelated blocks look identical in the UI.
+  const totalVolume = Math.max(0, clampFinite(event.metrics.totalVolume, 0, 0, 1_000_000_000_000));
   const averagePrice = Math.max(0, clampFinite(event.metrics.averagePrice, event.metrics.closePrice ?? 0, 0, 10_000_000));
   const tradeCount = Math.max(0, Math.round(clampFinite(event.metrics.tradeCount, 0, 0, 10_000_000)));
   const usdDerived = deriveUsdNotional(event, totalVolume, averagePrice);
@@ -2343,7 +2356,8 @@ function mapEventToTower(event: BlockEvent, state: AccumState, preset: CryptoCit
     windowStart: event.windowStart,
     windowEnd: event.windowEnd,
     emittedAt: Math.max(0, clampFinite(event.emittedAt, Date.now())),
-    mode: preset.mode
+    mode: preset.mode,
+    assetTicker: preset.assetTicker
   };
 }
 
@@ -2372,6 +2386,11 @@ function useAppendOnlyTowers(events: BlockEvent[], preset: CryptoCityPreset) {
     const target = accumRef.current;
     for (const event of ordered) {
       if (target.processedSequences.has(event.sequence)) continue;
+      if (!event.hasTrades) {
+        target.processedSequences.add(event.sequence);
+        target.lastSequence = Math.max(target.lastSequence, event.sequence);
+        continue;
+      }
       const tower = mapEventToTower(event, target, preset);
       const processedCount = target.processedSequences.size + 1;
       const parkEligible =
@@ -4272,6 +4291,7 @@ function useTopCoinsSkyline(snapshot: TopCoinsSnapshot | null) {
         windowEnd: activeSnapshot?.asOf ?? Date.now(),
         emittedAt: state.emittedAt,
         mode: 'top200',
+        assetTicker: state.baseAsset,
         symbol: state.symbol,
         baseAsset: state.baseAsset,
         quoteAsset: state.quoteAsset,
@@ -4979,7 +4999,10 @@ function HoverTowerLabel({ tower }: { tower: TowerDatum }) {
   const alphaRef = useRef(0);
 
   const usdText = useMemo(() => fmtUsdCompact(tower.usdNotional), [tower.usdNotional]);
-  const btcText = useMemo(() => `${fmtBtc(tower.btcVolume)} BTC`, [tower.btcVolume]);
+  const volumeText = useMemo(
+    () => fmtAssetAmount(tower.btcVolume, tower.assetTicker ?? tower.baseAsset ?? 'BTC'),
+    [tower.assetTicker, tower.baseAsset, tower.btcVolume]
+  );
 
   const texture = useMemo(() => {
     const canvas = document.createElement('canvas');
@@ -5018,7 +5041,7 @@ function HoverTowerLabel({ tower }: { tower: TowerDatum }) {
     ctx.shadowBlur = 8;
     ctx.fillStyle = '#f2d7b1';
     ctx.font = '600 48px ui-sans-serif, system-ui, sans-serif';
-    ctx.fillText(btcText, 52, 182);
+    ctx.fillText(volumeText, 52, 182);
 
     ctx.shadowBlur = 0;
     ctx.fillStyle = 'rgba(247,147,26,0.92)';
@@ -5031,7 +5054,7 @@ function HoverTowerLabel({ tower }: { tower: TowerDatum }) {
     ctx.fillText(`trades ${tower.tradeCount}`, canvas.width - 52, 250);
 
     return finalizeCanvasTexture(new CanvasTexture(canvas));
-  }, [btcText, tower.sequence, tower.tradeCount, usdText]);
+  }, [tower.sequence, tower.tradeCount, usdText, volumeText]);
 
   useEffect(() => {
     return () => {

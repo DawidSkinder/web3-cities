@@ -21,6 +21,11 @@ type CryptoTowerLike = {
   baseVolume: number;
 };
 
+const compactNumber = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 2
+});
+
 function clampPercent(value: number) {
   return Math.min(999, Math.max(0, value));
 }
@@ -42,6 +47,7 @@ function formatSignedPercent(value: number) {
 function formatCryptoBaseAmount(value: number, ticker: string) {
   if (!Number.isFinite(value) || Math.abs(value) < 0.00000001) return `0 ${ticker}`;
   const abs = Math.abs(value);
+  if (abs >= 10_000) return `${compactNumber.format(value)} ${ticker}`;
   const decimals = abs >= 100 ? 2 : abs >= 10 ? 2 : abs >= 1 ? 3 : 4;
   return `${value.toFixed(decimals)} ${ticker}`;
 }
@@ -108,7 +114,7 @@ export function deriveCryptoCityMetrics({
         tone: 'accent'
       },
       {
-        label: 'Largest Buy',
+        label: 'Largest Block',
         value: largestBuyTower
           ? `${formatUsdCompact(largestBuyTower.usdNotional)} · ${formatCryptoBaseAmount(
               largestBuyTower.baseVolume,

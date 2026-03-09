@@ -66,6 +66,10 @@ export type CryptoCityPreset = {
   assetName: string;
   binanceSymbol: string;
   logoPath: string;
+  engine: {
+    windowMs: number;
+    graceMs: number;
+  };
   theme: CryptoCityTheme;
   mock: CryptoCityMockProfile;
 };
@@ -83,6 +87,10 @@ export const CRYPTO_CITY_PRESETS: Record<CryptoCityMode, CryptoCityPreset> = {
     assetName: 'Bitcoin',
     binanceSymbol: 'BTCUSDT',
     logoPath: '/data/logos/BTCUSDT.png',
+    engine: {
+      windowMs: 3000,
+      graceMs: 0
+    },
     theme: {
       primary: '#F7931A',
       primaryHover: '#ffb14f',
@@ -149,6 +157,10 @@ export const CRYPTO_CITY_PRESETS: Record<CryptoCityMode, CryptoCityPreset> = {
     assetName: 'Ethereum',
     binanceSymbol: 'ETHUSDT',
     logoPath: '/data/logos/ETHUSDT.png',
+    engine: {
+      windowMs: 3000,
+      graceMs: 0
+    },
     theme: {
       primary: '#8b94ff',
       primaryHover: '#b1b8ff',
@@ -215,6 +227,10 @@ export const CRYPTO_CITY_PRESETS: Record<CryptoCityMode, CryptoCityPreset> = {
     assetName: 'Solana',
     binanceSymbol: 'SOLUSDT',
     logoPath: '/data/logos/SOLUSDT.png',
+    engine: {
+      windowMs: 3000,
+      graceMs: 0
+    },
     theme: {
       primary: '#14f195',
       primaryHover: '#7bffcf',
@@ -281,6 +297,10 @@ export const CRYPTO_CITY_PRESETS: Record<CryptoCityMode, CryptoCityPreset> = {
     assetName: 'BNB',
     binanceSymbol: 'BNBUSDT',
     logoPath: '/data/logos/BNBUSDT.png',
+    engine: {
+      windowMs: 3000,
+      graceMs: 0
+    },
     theme: {
       primary: '#f3d01b',
       primaryHover: '#ffe96d',
@@ -347,6 +367,10 @@ export const CRYPTO_CITY_PRESETS: Record<CryptoCityMode, CryptoCityPreset> = {
     assetName: 'XRP',
     binanceSymbol: 'XRPUSDT',
     logoPath: '/data/logos/XRPUSDT.png',
+    engine: {
+      windowMs: 3000,
+      graceMs: 0
+    },
     theme: {
       primary: '#f4f6fb',
       primaryHover: '#ffffff',
@@ -413,6 +437,10 @@ export const CRYPTO_CITY_PRESETS: Record<CryptoCityMode, CryptoCityPreset> = {
     assetName: 'Terra Classic',
     binanceSymbol: 'LUNCUSDT',
     logoPath: '/data/logos/LUNCUSDT.svg?v=2',
+    engine: {
+      windowMs: 12000,
+      graceMs: 1500
+    },
     theme: {
       primary: '#37a3ff',
       primaryHover: '#86cbff',
