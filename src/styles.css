@@ -177,6 +177,7 @@ canvas {
   padding: 14px;
   display: grid;
   gap: 10px;
+  overflow: visible;
 }
 
 .web3-ui__logo {
@@ -256,6 +257,18 @@ canvas {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.web3-ui__nav-stack {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  z-index: 2;
+}
+
+.web3-ui__tabs-wrap {
+  position: relative;
+  z-index: 3;
 }
 
 .web3-ui__tab,
@@ -342,6 +355,27 @@ canvas {
   display: grid;
   gap: 8px;
   padding: 4px 0 0;
+}
+
+.web3-ui__tab-menu--overlay {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  right: 0;
+  z-index: 8;
+  padding: 10px;
+  border-radius: 16px;
+  border: 1px solid rgba(241, 192, 142, 0.16);
+  background:
+    linear-gradient(180deg, rgba(20, 16, 14, 0.96), rgba(10, 10, 10, 0.94)),
+    linear-gradient(135deg, rgba(196, 133, 79, 0.06), rgba(255, 255, 255, 0.02));
+  box-shadow:
+    0 14px 32px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(255, 240, 220, 0.03) inset;
+  backdrop-filter: blur(var(--ui-blur));
+  -webkit-backdrop-filter: blur(var(--ui-blur));
+  max-height: min(360px, calc(100vh - 140px));
+  overflow-y: auto;
 }
 
 .web3-ui__tab-option {
@@ -454,6 +488,7 @@ canvas {
   padding: 16px;
   display: grid;
   gap: 14px;
+  overflow: visible;
 }
 
 .web3-ui__headline--mobile {

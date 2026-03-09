@@ -356,6 +356,69 @@ export function Web3CitiesUi({
                   UX can make complex systems feel legible, alive, and worth exploring.
                 </p>
 
+                <div className="web3-ui__nav-stack">
+                  <div className="web3-ui__tabs-wrap">
+                    <div className="web3-ui__tabs" aria-label="City modes">
+                      <button
+                        type="button"
+                        aria-pressed={mode === 'top200'}
+                        className={`web3-ui__tab${mode === 'top200' ? ' is-active' : ''}`}
+                        onClick={() => handleModeSelection('top200')}
+                      >
+                        Market City
+                      </button>
+                      <button
+                        type="button"
+                        aria-expanded={cryptoMenuOpen}
+                        className={`web3-ui__tab web3-ui__tab--select${isCryptoCityMode(mode) ? ' is-active' : ''}`}
+                        onClick={() => setCryptoMenuOpen((current) => !current)}
+                      >
+                        <span className="web3-ui__tab-select-copy">
+                          <span>Crypto City</span>
+                          <span className="web3-ui__tab-detail">{currentCryptoLabelUpper}</span>
+                        </span>
+                        <ChevronDownIcon />
+                      </button>
+                    </div>
+                    {cryptoMenuOpen ? (
+                      <div className="web3-ui__tab-menu web3-ui__tab-menu--overlay" role="listbox" aria-label="Crypto City options">
+                        {CRYPTO_CITY_MODES.map((cryptoMode) => (
+                          <button
+                            key={cryptoMode}
+                            type="button"
+                            className={`web3-ui__tab-option${cryptoSelection === cryptoMode ? ' is-active' : ''}`}
+                            onClick={() => handleModeSelection(cryptoMode)}
+                          >
+                            {CRYPTO_CITY_PRESETS[cryptoMode].selectorLabel}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="web3-ui__action-row">
+                    <a
+                      className="web3-ui__cta"
+                      href="https://www.dawidskinder.pl"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <span>Build your web3 product with me</span>
+                      <img className="web3-ui__cta-photo" src={dawidPhotoUrl} alt="" aria-hidden="true" />
+                    </a>
+
+                    <a className="web3-ui__text-action" href={shareHref} target="_blank" rel="noopener noreferrer">
+                      Share on X
+                    </a>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div ref={desktopActionsRef} className="web3-ui__panel web3-ui__panel--actions">
+            <div className="web3-ui__nav-stack">
+              <div className="web3-ui__tabs-wrap">
                 <div className="web3-ui__tabs" aria-label="City modes">
                   <button
                     type="button"
@@ -379,7 +442,7 @@ export function Web3CitiesUi({
                   </button>
                 </div>
                 {cryptoMenuOpen ? (
-                  <div className="web3-ui__tab-menu" role="listbox" aria-label="Crypto City options">
+                  <div className="web3-ui__tab-menu web3-ui__tab-menu--overlay" role="listbox" aria-label="Crypto City options">
                     {CRYPTO_CITY_MODES.map((cryptoMode) => (
                       <button
                         key={cryptoMode}
@@ -392,78 +455,23 @@ export function Web3CitiesUi({
                     ))}
                   </div>
                 ) : null}
-
-                <div className="web3-ui__action-row">
-                  <a
-                    className="web3-ui__cta"
-                    href="https://www.dawidskinder.pl"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <span>Build your web3 product with me</span>
-                    <img className="web3-ui__cta-photo" src={dawidPhotoUrl} alt="" aria-hidden="true" />
-                  </a>
-
-                  <a className="web3-ui__text-action" href={shareHref} target="_blank" rel="noopener noreferrer">
-                    Share on X
-                  </a>
-                </div>
               </div>
-            ) : null}
-          </div>
-        ) : (
-          <div ref={desktopActionsRef} className="web3-ui__panel web3-ui__panel--actions">
-            <div className="web3-ui__tabs" aria-label="City modes">
-              <button
-                type="button"
-                aria-pressed={mode === 'top200'}
-                className={`web3-ui__tab${mode === 'top200' ? ' is-active' : ''}`}
-                onClick={() => handleModeSelection('top200')}
-              >
-                Market City
-              </button>
-              <button
-                type="button"
-                aria-expanded={cryptoMenuOpen}
-                className={`web3-ui__tab web3-ui__tab--select${isCryptoCityMode(mode) ? ' is-active' : ''}`}
-                onClick={() => setCryptoMenuOpen((current) => !current)}
-              >
-                <span className="web3-ui__tab-select-copy">
-                  <span>Crypto City</span>
-                  <span className="web3-ui__tab-detail">{currentCryptoLabelUpper}</span>
-                </span>
-                <ChevronDownIcon />
-              </button>
-            </div>
-            {cryptoMenuOpen ? (
-              <div className="web3-ui__tab-menu" role="listbox" aria-label="Crypto City options">
-                {CRYPTO_CITY_MODES.map((cryptoMode) => (
-                  <button
-                    key={cryptoMode}
-                    type="button"
-                    className={`web3-ui__tab-option${cryptoSelection === cryptoMode ? ' is-active' : ''}`}
-                    onClick={() => handleModeSelection(cryptoMode)}
-                  >
-                    {CRYPTO_CITY_PRESETS[cryptoMode].selectorLabel}
-                  </button>
-                ))}
+
+              <div className="web3-ui__action-row">
+                <a
+                  className="web3-ui__cta"
+                  href="https://www.dawidskinder.pl"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <span>Build your web3 product with me</span>
+                  <img className="web3-ui__cta-photo" src={dawidPhotoUrl} alt="" aria-hidden="true" />
+                </a>
+
+                <a className="web3-ui__text-action" href={shareHref} target="_blank" rel="noopener noreferrer">
+                  Share on X
+                </a>
               </div>
-            ) : null}
-
-            <div className="web3-ui__action-row">
-              <a
-                className="web3-ui__cta"
-                href="https://www.dawidskinder.pl"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <span>Build your web3 product with me</span>
-                <img className="web3-ui__cta-photo" src={dawidPhotoUrl} alt="" aria-hidden="true" />
-              </a>
-
-              <a className="web3-ui__text-action" href={shareHref} target="_blank" rel="noopener noreferrer">
-                Share on X
-              </a>
             </div>
           </div>
         )}
