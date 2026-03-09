@@ -412,7 +412,7 @@ export const CRYPTO_CITY_PRESETS: Record<CryptoCityMode, CryptoCityPreset> = {
     assetTicker: 'LUNC',
     assetName: 'Terra Classic',
     binanceSymbol: 'LUNCUSDT',
-    logoPath: '/data/logos/LUNCUSDT.svg',
+    logoPath: '/data/logos/LUNCUSDT.svg?v=2',
     theme: {
       primary: '#37a3ff',
       primaryHover: '#86cbff',
