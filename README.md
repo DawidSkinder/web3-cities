@@ -1,55 +1,27 @@
-# dawidskinder.pl-2026
+# Web3 Cities by DawidSkinder.pl
 Personal website
 
-## City Modes
-- `top200` (default): **Top Coins Skyline (Binance Spot REST)**
-- `btc`: **Bitcoin Spot Buys (Binance WS)**
+## License
 
-Mode can be selected from the SANDBOX panel or via query param:
-- `?mode=top200`
-- `?mode=btc`
+This repository is **not open source**.
 
-Fallback env:
-- `VITE_CITY_MODE=top200|btc`
+Unless otherwise stated, all source code, visual systems, designs, branding, copy, assets, and project-specific creative expression in this repository are **Copyright © Dawid Skinder. All rights reserved.**
 
-## Top Coins Snapshot (GitHub Pages Only)
-Top Coins mode uses a static snapshot file served by GitHub Pages:
-- `public/data/top-coins.json`
+No permission is granted to copy, reproduce, modify, distribute, sublicense, sell, or create derivative works from any part of this repository or the Web3 Cities project without prior written permission.
 
-The frontend polls:
-- `${BASE_URL}data/top-coins.json`
+### What this means
+You may view this repository on GitHub for reference, but you may not:
+- reuse the source code in your own project
+- clone, redistribute, or publish modified versions
+- copy the branding, naming, visual identity, interface, animations, or creative system
+- use project assets, screenshots, videos, or copy for commercial or derivative purposes
 
-No Cloudflare Worker, no `/api/top-coins` backend route, and no third-party proxy is required.
+### Idea / concept notice
+The repository and website contain original implementation, design, visual language, and product expression for **Web3 Cities**. No license or permission is granted for reuse of that expression.
 
-## Snapshot Generation Workflow
-Workflow:
-- `.github/workflows/generate-top-coins-snapshot.yml`
+### Third-party materials
+Any third-party libraries, frameworks, fonts, APIs, and dependencies used in this project remain subject to their own respective licenses and terms.
 
-It runs on:
-- `schedule` every 5 minutes
-- `workflow_dispatch`
-
-What it does:
-1. Fetches Binance Spot REST data (`/api/v3/ticker/24hr` + `/api/v3/exchangeInfo`).
-2. Filters to `TRADING` symbols with quote asset `USDT`.
-3. Ranks by `quoteVolume` descending (symbol tiebreak ascending).
-4. Writes deterministic JSON to `public/data/top-coins.json`.
-5. Commits only when the file content changed.
-
-This gives cache/rate safety for viral traffic because all clients read one shared static snapshot from Pages.
-
-## Local Development
-1. Install dependencies:
-   - `npm install`
-2. Start dev server:
-   - `npm run dev`
-
-Optional:
-- Generate a fresh snapshot locally:
-  - `npm run generate:top-coins-snapshot`
-
-## Deploy
-- GitHub Pages deploy workflow: `.github/workflows/deploy.yml`
-- Data snapshot workflow: `.github/workflows/generate-top-coins-snapshot.yml`
-
-No Cloudflare secrets or worker deployment is needed.
+For licensing or commercial inquiries, contact:
+**Dawid Skinder**  
+https://www.dawidskinder.pl
