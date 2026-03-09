@@ -93,6 +93,7 @@ canvas {
   left: var(--ui-safe);
   width: min(400px, calc(50vw - var(--ui-safe) * 2.2));
   animation-delay: 0.04s;
+  z-index: 22;
 }
 
 .web3-ui__corner--top-right {
@@ -100,6 +101,7 @@ canvas {
   right: var(--ui-safe);
   width: min(460px, calc(100vw - var(--ui-safe) * 2));
   animation-delay: 0.12s;
+  z-index: 30;
 }
 
 .web3-ui__corner--bottom-left {
@@ -107,6 +109,7 @@ canvas {
   left: var(--ui-safe);
   width: min(440px, calc(50vw - var(--ui-safe) * 2.2));
   animation-delay: 0.2s;
+  z-index: 21;
 }
 
 .web3-ui__corner--bottom-right {
@@ -114,6 +117,7 @@ canvas {
   bottom: var(--ui-safe);
   width: min(360px, calc(50vw - var(--ui-safe) * 2.2));
   animation-delay: 0.28s;
+  z-index: 21;
 }
 
 .web3-ui__panel {
@@ -465,6 +469,7 @@ canvas {
 .web3-ui__mobile-menu-wrap {
   position: relative;
   pointer-events: auto;
+  z-index: 32;
 }
 
 .web3-ui__mobile-logo-wrap {
@@ -489,6 +494,7 @@ canvas {
   display: grid;
   gap: 14px;
   overflow: visible;
+  z-index: 34;
 }
 
 .web3-ui__headline--mobile {
@@ -801,6 +807,7 @@ canvas {
     display: flex;
     align-items: center;
     height: 42px;
+    z-index: 40;
   }
 
   .web3-ui__corner--bottom-left {
@@ -808,6 +815,7 @@ canvas {
     right: var(--ui-safe);
     width: auto;
     bottom: var(--ui-safe);
+    z-index: 18;
   }
 
   .web3-ui__corner--bottom-right {
@@ -835,6 +843,12 @@ canvas {
 
   .web3-ui__tabs {
     grid-template-columns: 1fr;
+  }
+
+  .web3-ui__tab-menu--overlay {
+    max-height: min(300px, calc(100vh - 280px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   .web3-ui__action-row {
