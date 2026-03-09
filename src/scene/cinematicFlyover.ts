@@ -1,10 +1,8 @@
-import { MathUtils, Vector3 } from 'three';
+import { CatmullRomCurve3, MathUtils, Vector3 } from 'three';
 
-const LOOK_AHEAD_SECONDS = 0.28;
 const CAMERA_CLEARANCE_PAD = 4.4;
 const CAMERA_CLEARANCE_Y = 8.4;
-const CAMERA_COLLISION_PAD = 1.6;
-const DESIRED_VIEW_PITCH_DEG = 32;
+const ENTRY_VIEW_PITCH_DEG = 32;
 const MAX_DOWNWARD_PITCH_DEG = 38;
 
 export type CinematicFlyoverTarget = {
@@ -34,23 +32,18 @@ type Direction2 = {
   z: number;
 };
 
-type FlyoverWaypoint = {
-  sequence: number;
+type EntryWaypoint = {
   focusX: number;
   focusZ: number;
   x: number;
   z: number;
   elevation: number;
   lookY: number;
-  height: number;
-  radius: number;
   viewDirectionX: number;
   viewDirectionZ: number;
 };
 
 type EntrySegment = {
-  kind: 'entry';
-  startTime: number;
   duration: number;
   startPosition: Point3;
   controlPositionA: Point3;
@@ -58,57 +51,35 @@ type EntrySegment = {
   endPosition: Point3;
   startFocus: Point3;
   endFocus: Point3;
-  focusBlendFrom: number;
-  focusBlendTo: number;
-  lookAheadFrom: number;
-  lookAheadTo: number;
 };
 
-type TransferSegment = {
-  kind: 'transfer';
-  startTime: number;
-  duration: number;
-  startPosition: Point3;
-  controlPositionA: Point3;
-  controlPositionB: Point3;
-  endPosition: Point3;
-  startFocus: Point3;
-  endFocus: Point3;
-  focusBlendFrom: number;
-  focusBlendTo: number;
-  lookAheadFrom: number;
-  lookAheadTo: number;
-};
-
-type CinematicFlyoverSegment = EntrySegment | TransferSegment;
-
-type PoseSample = {
-  complete: boolean;
-  focusBlend: number;
-  lookAheadDistance: number;
+type FlyoverCurve = {
+  curve: CatmullRomCurve3;
+  length: number;
 };
 
 export type CinematicFlyoverPlan = {
-  segments: CinematicFlyoverSegment[];
+  entry: EntrySegment | null;
+  entryDuration: number;
+  cruisePosition: FlyoverCurve | null;
+  cruiseFocus: FlyoverCurve | null;
+  cruiseDuration: number;
+  cruiseLength: number;
+  cruiseSpeed: number;
+  focusLeadDistance: number;
   totalDuration: number;
   obstacles: CinematicFlyoverObstacle[];
 };
 
-const currentPositionScratch = new Vector3();
-const currentFocusScratch = new Vector3();
-const futurePositionScratch = new Vector3();
-const futureFocusScratch = new Vector3();
-const forwardScratch = new Vector3();
-const forwardLookScratch = new Vector3();
 const pointScratch = new Vector3();
+const tangentScratch = new Vector3();
 
 function point(x: number, y: number, z: number): Point3 {
   return { x, y, z };
 }
 
-function smoothstep01(value: number) {
-  const t = MathUtils.clamp(value, 0, 1);
-  return t * t * (3 - 2 * t);
+function toVector3(input: Point3) {
+  return new Vector3(input.x, input.y, input.z);
 }
 
 function easeOutCubic01(value: number) {
@@ -116,16 +87,12 @@ function easeOutCubic01(value: number) {
   return 1 - Math.pow(1 - t, 3);
 }
 
-function setPoint(out: Vector3, input: Point3) {
-  out.set(input.x, input.y, input.z);
-}
-
 function cubicBezierCoordinate(a: number, b: number, c: number, d: number, t: number) {
   const omt = 1 - t;
   return omt * omt * omt * a + 3 * omt * omt * t * b + 3 * omt * t * t * c + t * t * t * d;
 }
 
-function sampleSegmentPosition(segment: CinematicFlyoverSegment, t: number, outPosition: Vector3) {
+function sampleEntryPosition(segment: EntrySegment, t: number, outPosition: Vector3) {
   outPosition.set(
     cubicBezierCoordinate(segment.startPosition.x, segment.controlPositionA.x, segment.controlPositionB.x, segment.endPosition.x, t),
     cubicBezierCoordinate(segment.startPosition.y, segment.controlPositionA.y, segment.controlPositionB.y, segment.endPosition.y, t),
@@ -133,41 +100,12 @@ function sampleSegmentPosition(segment: CinematicFlyoverSegment, t: number, outP
   );
 }
 
-function sampleSegmentFocus(segment: CinematicFlyoverSegment, t: number, outFocus: Vector3) {
+function sampleEntryFocus(segment: EntrySegment, t: number, outFocus: Vector3) {
   outFocus.set(
     MathUtils.lerp(segment.startFocus.x, segment.endFocus.x, t),
     MathUtils.lerp(segment.startFocus.y, segment.endFocus.y, t),
     MathUtils.lerp(segment.startFocus.z, segment.endFocus.z, t)
   );
-}
-
-function sampleSplineSegment(segment: CinematicFlyoverSegment, progress: number, outPosition: Vector3, outFocus: Vector3): PoseSample {
-  const t = segment.kind === 'entry' ? easeOutCubic01(progress) : smoothstep01(progress);
-  sampleSegmentPosition(segment, t, outPosition);
-  sampleSegmentFocus(segment, t, outFocus);
-
-  return {
-    complete: progress >= 1,
-    focusBlend: MathUtils.lerp(segment.focusBlendFrom, segment.focusBlendTo, t),
-    lookAheadDistance: MathUtils.lerp(segment.lookAheadFrom, segment.lookAheadTo, t)
-  };
-}
-
-function samplePlanState(plan: CinematicFlyoverPlan, elapsedSeconds: number, outPosition: Vector3, outFocus: Vector3): PoseSample {
-  const safeElapsed = MathUtils.clamp(elapsedSeconds, 0, plan.totalDuration);
-  let segment = plan.segments[plan.segments.length - 1];
-
-  for (let index = 0; index < plan.segments.length; index += 1) {
-    const candidate = plan.segments[index];
-    if (safeElapsed <= candidate.startTime + candidate.duration + 1e-6) {
-      segment = candidate;
-      break;
-    }
-  }
-
-  const localElapsed = safeElapsed - segment.startTime;
-  const progress = segment.duration <= 0 ? 1 : localElapsed / segment.duration;
-  return sampleSplineSegment(segment, progress, outPosition, outFocus);
 }
 
 function normalizeDirection2(x: number, z: number, fallbackX = 0, fallbackZ = 1): Direction2 {
@@ -209,72 +147,28 @@ function computeObstacleSafeY(x: number, z: number, baseY: number, obstacles: re
     const avoidRadius = obstacle.radius + CAMERA_CLEARANCE_PAD;
     const distance = Math.hypot(x - obstacle.x, z - obstacle.z);
     if (distance >= avoidRadius) continue;
-    const influence = smoothstep01(1 - distance / avoidRadius);
+    const influence = MathUtils.smoothstep(1 - distance / avoidRadius, 0, 1);
     const obstacleSafeY = obstacle.height + CAMERA_CLEARANCE_Y;
     safeY = Math.max(safeY, MathUtils.lerp(baseY, obstacleSafeY, influence));
   }
   return safeY;
 }
 
-function pushOutsideObstacles(
-  x: number,
-  z: number,
-  obstacles: readonly CinematicFlyoverObstacle[],
-  padding: number,
-  fallbackX: number,
-  fallbackZ: number
-) {
-  let currentX = x;
-  let currentZ = z;
-
-  for (let pass = 0; pass < 2; pass += 1) {
-    for (const obstacle of obstacles) {
-      const minDistance = obstacle.radius + padding;
-      const offsetX = currentX - obstacle.x;
-      const offsetZ = currentZ - obstacle.z;
-      const distance = Math.hypot(offsetX, offsetZ);
-      if (distance >= minDistance) continue;
-      const normal = distance > 0.001 ? { x: offsetX / distance, z: offsetZ / distance } : normalizeDirection2(fallbackX, fallbackZ);
-      currentX = obstacle.x + normal.x * minDistance;
-      currentZ = obstacle.z + normal.z * minDistance;
-    }
-  }
-
-  return { x: currentX, z: currentZ };
-}
-
-function pushPointOutsideObstacles(point3: Point3, obstacles: readonly CinematicFlyoverObstacle[], padding: number, fallbackX: number, fallbackZ: number): Point3 {
-  const adjusted = pushOutsideObstacles(point3.x, point3.z, obstacles, padding, fallbackX, fallbackZ);
-  return {
-    x: adjusted.x,
-    y: point3.y,
-    z: adjusted.z
-  };
-}
-
-function buildWaypoint(
+function buildEntryWaypoint(
   target: CinematicFlyoverTarget,
-  targetIndex: number,
-  targets: readonly CinematicFlyoverTarget[],
+  nextTarget: CinematicFlyoverTarget | null,
   startPosition: Vector3,
   safeMaxY: number,
   safeBoundsRadius: number,
   obstacles: readonly CinematicFlyoverObstacle[],
-  reducedMotion: boolean,
-  fallbackSideSign: number
-) {
-  const previous = targetIndex > 0 ? targets[targetIndex - 1] : null;
-  const next = targetIndex < targets.length - 1 ? targets[targetIndex + 1] : null;
-
-  const incoming = normalizeDirection2(
-    target.x - (previous ? previous.x : startPosition.x),
-    target.z - (previous ? previous.z : startPosition.z)
-  );
-  const outgoing = next
-    ? normalizeDirection2(next.x - target.x, next.z - target.z, incoming.x, incoming.z)
+  reducedMotion: boolean
+): EntryWaypoint {
+  const incoming = normalizeDirection2(target.x - startPosition.x, target.z - startPosition.z);
+  const outgoing = nextTarget
+    ? normalizeDirection2(nextTarget.x - target.x, nextTarget.z - target.z, incoming.x, incoming.z)
     : incoming;
   const travel = normalizeDirection2(incoming.x * 0.65 + outgoing.x, incoming.z * 0.65 + outgoing.z, outgoing.x, outgoing.z);
-  const sideSign = resolveTurnSign(incoming.x, incoming.z, outgoing.x, outgoing.z, fallbackSideSign);
+  const sideSign = resolveTurnSign(incoming.x, incoming.z, outgoing.x, outgoing.z, 1);
   const side = { x: travel.z, z: -travel.x };
   const towerRadius = Math.max(3.4, target.radius ?? Math.max(3.4, 2.8 + target.height * 0.06));
   const lookY = MathUtils.clamp(target.height * 0.6, 4.2, target.height + 18);
@@ -284,40 +178,38 @@ function buildWaypoint(
     16,
     Math.max(26, safeBoundsRadius * 0.42)
   );
-  let adjustedView = { x: target.x, z: target.z };
+
+  let adjustedX = target.x;
+  let adjustedZ = target.z;
   let elevation = baseElevation;
 
   for (let pass = 0; pass < 3; pass += 1) {
     const lateral = MathUtils.clamp(retreat * (reducedMotion ? 0.08 : 0.12), 1.8, 7.5) * sideSign;
-    const viewX = target.x - travel.x * retreat + side.x * lateral;
-    const viewZ = target.z - travel.z * retreat + side.z * lateral;
-    adjustedView = pushOutsideObstacles(viewX, viewZ, obstacles, 2.8, -travel.x + side.x * sideSign, -travel.z + side.z * sideSign);
-    elevation = computeObstacleSafeY(adjustedView.x, adjustedView.z, baseElevation, obstacles);
-    const horizontalDistance = Math.hypot(adjustedView.x - target.x, adjustedView.z - target.z);
+    adjustedX = target.x - travel.x * retreat + side.x * lateral;
+    adjustedZ = target.z - travel.z * retreat + side.z * lateral;
+    elevation = computeObstacleSafeY(adjustedX, adjustedZ, baseElevation, obstacles);
+    const horizontalDistance = Math.hypot(adjustedX - target.x, adjustedZ - target.z);
     const requiredDistance = Math.max(
       towerRadius + 9,
-      (elevation - lookY) / Math.tan(MathUtils.degToRad(DESIRED_VIEW_PITCH_DEG))
+      (elevation - lookY) / Math.tan(MathUtils.degToRad(ENTRY_VIEW_PITCH_DEG))
     );
     if (horizontalDistance >= requiredDistance - 0.4) break;
     retreat = Math.min(Math.max(retreat, requiredDistance + 1.2), Math.max(30, safeBoundsRadius * 0.58));
   }
 
   return {
-    sequence: target.sequence,
     focusX: target.x,
     focusZ: target.z,
-    x: adjustedView.x,
-    z: adjustedView.z,
+    x: adjustedX,
+    z: adjustedZ,
     elevation,
     lookY,
-    height: target.height,
-    radius: towerRadius,
     viewDirectionX: travel.x,
     viewDirectionZ: travel.z
   };
 }
 
-function buildEntryControlPoint(start: Point3, end: FlyoverWaypoint, travelX: number, travelZ: number, distance: number, progress: number, lift: number): Point3 {
+function buildEntryControlPoint(start: Point3, end: EntryWaypoint, travelX: number, travelZ: number, distance: number, progress: number, lift: number): Point3 {
   const sideX = travelZ;
   const sideZ = -travelX;
   const sideOffset = distance * 0.08 * (progress < 0.5 ? 1 : 0.6);
@@ -326,6 +218,85 @@ function buildEntryControlPoint(start: Point3, end: FlyoverWaypoint, travelX: nu
     MathUtils.lerp(start.y, end.elevation, progress) + lift,
     MathUtils.lerp(start.z, end.z, progress) + sideZ * sideOffset
   );
+}
+
+function buildCruisePoint(target: CinematicFlyoverTarget, safeMaxY: number, obstacles: readonly CinematicFlyoverObstacle[]) {
+  const baseY = MathUtils.clamp(target.height + Math.max(8.5, target.height * 0.11), 15, safeMaxY + 34);
+  return point(target.x, computeObstacleSafeY(target.x, target.z, baseY, obstacles), target.z);
+}
+
+function buildFocusPoint(target: CinematicFlyoverTarget) {
+  return point(target.x, MathUtils.clamp(target.height * 0.44, 3.4, target.height * 0.72), target.z);
+}
+
+function buildExitPoint(
+  target: CinematicFlyoverTarget,
+  previousTarget: CinematicFlyoverTarget | null,
+  lastCruisePoint: Point3,
+  safeMaxY: number,
+  safeBoundsRadius: number,
+  obstacles: readonly CinematicFlyoverObstacle[]
+) {
+  const direction = previousTarget
+    ? normalizeDirection2(target.x - previousTarget.x, target.z - previousTarget.z)
+    : normalizeDirection2(target.x, target.z, 0, 1);
+  const exitDistance = MathUtils.clamp(
+    Math.max(20, (target.radius ?? 6) * 2.2, target.height * 0.22),
+    24,
+    Math.max(30, safeBoundsRadius * 0.24)
+  );
+  const x = target.x + direction.x * exitDistance;
+  const z = target.z + direction.z * exitDistance;
+  const baseY = MathUtils.clamp(lastCruisePoint.y - 1.5, target.height + 6.5, safeMaxY + 28);
+  return point(x, computeObstacleSafeY(x, z, baseY, obstacles), z);
+}
+
+function buildExitFocusPoint(target: CinematicFlyoverTarget, previousTarget: CinematicFlyoverTarget | null, exitPoint: Point3) {
+  const direction = previousTarget
+    ? normalizeDirection2(target.x - previousTarget.x, target.z - previousTarget.z)
+    : normalizeDirection2(exitPoint.x - target.x, exitPoint.z - target.z, 0, 1);
+  const leadDistance = Math.max(10, (target.radius ?? 6) * 1.8);
+  return point(
+    target.x + direction.x * leadDistance,
+    MathUtils.clamp(target.height * 0.4, 3.2, target.height * 0.66),
+    target.z + direction.z * leadDistance
+  );
+}
+
+function dedupePoints(points: readonly Point3[]) {
+  if (points.length <= 1) return [...points];
+  const deduped: Point3[] = [points[0]];
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = deduped[deduped.length - 1];
+    const candidate = points[index];
+    if (Math.hypot(candidate.x - previous.x, candidate.y - previous.y, candidate.z - previous.z) > 0.01) {
+      deduped.push(candidate);
+    }
+  }
+  return deduped;
+}
+
+function createCurve(points: readonly Point3[]): FlyoverCurve | null {
+  const deduped = dedupePoints(points);
+  if (deduped.length < 2) return null;
+  const curve = new CatmullRomCurve3(
+    deduped.map((entry) => toVector3(entry)),
+    false,
+    'centripetal'
+  );
+  return {
+    curve,
+    length: curve.getLength()
+  };
+}
+
+function sampleCurveByProgress(flightCurve: FlyoverCurve, progress: number, out: Vector3) {
+  flightCurve.curve.getPointAt(MathUtils.clamp(progress, 0, 1), out);
+}
+
+function sampleCurveTangentByProgress(flightCurve: FlyoverCurve, progress: number, out: Vector3) {
+  flightCurve.curve.getTangentAt(MathUtils.clamp(progress, 0, 1), out);
+  return out.normalize();
 }
 
 function enforceDownwardPitchLimit(position: Vector3, target: Vector3, travelDirection: Vector3) {
@@ -343,44 +314,46 @@ function enforceDownwardPitchLimit(position: Vector3, target: Vector3, travelDir
   target.z = position.z + travel.z * minHorizontalDistance;
 }
 
+function normalizeObstacle(obstacle: CinematicFlyoverObstacle): CinematicFlyoverObstacle {
+  return {
+    sequence: obstacle.sequence,
+    x: obstacle.x,
+    z: obstacle.z,
+    height: Math.max(0, obstacle.height),
+    radius: Math.max(2.8, obstacle.radius)
+  };
+}
+
 export function pickCinematicFlyoverTargets<T extends CinematicFlyoverTarget>(
   towers: readonly T[],
   limit = 10
 ): CinematicFlyoverTarget[] {
-  const sorted = [...towers].sort((left, right) => right.height - left.height || right.sequence - left.sequence);
-  if (sorted.length <= limit) {
-    return sorted.map(({ sequence, x, z, height, radius }) => ({ sequence, x, z, height, radius }));
+  const tallest = [...towers]
+    .sort((left, right) => right.height - left.height || right.sequence - left.sequence)
+    .slice(0, limit);
+  if (tallest.length <= 1) {
+    return tallest.map(({ sequence, x, z, height, radius }) => ({ sequence, x, z, height, radius }));
   }
 
-  const selected: T[] = [sorted[0]];
-  const remaining = sorted.slice(1);
-  const maxHeight = Math.max(1, sorted[0]?.height ?? 1);
-  const extent = Math.max(12, sorted.reduce((best, tower) => Math.max(best, Math.hypot(tower.x, tower.z)), 0));
+  const ordered: T[] = [tallest[0]];
+  const remaining = tallest.slice(1);
 
-  while (selected.length < limit && remaining.length > 0) {
+  while (remaining.length > 0) {
+    const last = ordered[ordered.length - 1];
     let bestIndex = 0;
-    let bestScore = -Infinity;
-
+    let bestDistance = Infinity;
     for (let index = 0; index < remaining.length; index += 1) {
       const candidate = remaining[index];
-      let minDistanceToSelected = Infinity;
-      for (const chosen of selected) {
-        minDistanceToSelected = Math.min(minDistanceToSelected, Math.hypot(candidate.x - chosen.x, candidate.z - chosen.z));
-      }
-
-      const heightScore = Math.pow(MathUtils.clamp(candidate.height / maxHeight, 0, 1), 0.78);
-      const spreadScore = MathUtils.clamp(minDistanceToSelected / (extent * 0.68), 0, 1);
-      const score = heightScore * 0.7 + spreadScore * 0.3;
-      if (score > bestScore) {
-        bestScore = score;
+      const distance = Math.hypot(candidate.x - last.x, candidate.z - last.z);
+      if (distance < bestDistance) {
+        bestDistance = distance;
         bestIndex = index;
       }
     }
-
-    selected.push(remaining.splice(bestIndex, 1)[0]);
+    ordered.push(remaining.splice(bestIndex, 1)[0]);
   }
 
-  return selected.map(({ sequence, x, z, height, radius }) => ({ sequence, x, z, height, radius }));
+  return ordered.map(({ sequence, x, z, height, radius }) => ({ sequence, x, z, height, radius }));
 }
 
 export function buildCinematicFlyoverPlan({
@@ -406,149 +379,101 @@ export function buildCinematicFlyoverPlan({
   const safeMaxY = Math.max(8, maxY);
   const normalizedObstacles = obstacles
     .filter((obstacle) => Number.isFinite(obstacle.x) && Number.isFinite(obstacle.z) && Number.isFinite(obstacle.height))
-    .map((obstacle) => ({
-      sequence: obstacle.sequence,
-      x: obstacle.x,
-      z: obstacle.z,
-      height: Math.max(0, obstacle.height),
-      radius: Math.max(2.8, obstacle.radius)
-    }));
-  const waypoints: FlyoverWaypoint[] = [];
-  let fallbackSideSign = 1;
-  for (let index = 0; index < targets.length; index += 1) {
-    const waypoint = buildWaypoint(
-      targets[index],
-      index,
-      targets,
-      startPosition,
-      safeMaxY,
-      safeBoundsRadius,
-      normalizedObstacles,
-      reducedMotion,
-      fallbackSideSign
-    );
-    waypoints.push(waypoint);
-    fallbackSideSign = resolveTurnSign(
-      waypoint.viewDirectionX,
-      waypoint.viewDirectionZ,
-      index < targets.length - 1 ? targets[index + 1].x - targets[index].x : waypoint.viewDirectionX,
-      index < targets.length - 1 ? targets[index + 1].z - targets[index].z : waypoint.viewDirectionZ,
-      fallbackSideSign
-    );
-  }
+    .map(normalizeObstacle);
 
-  const segments: CinematicFlyoverSegment[] = [];
-  let elapsedCursor = 0;
+  const firstTarget = targets[0];
+  const secondTarget = targets.length > 1 ? targets[1] : null;
+  const firstWaypoint = buildEntryWaypoint(
+    firstTarget,
+    secondTarget,
+    startPosition,
+    safeMaxY,
+    safeBoundsRadius,
+    normalizedObstacles,
+    reducedMotion
+  );
 
-  const firstWaypoint = waypoints[0];
-  const firstPosition = point(firstWaypoint.x, firstWaypoint.elevation, firstWaypoint.z);
-  const straightDistance = startPosition.distanceTo(pointScratch.set(firstPosition.x, firstPosition.y, firstPosition.z));
+  const entryEndPosition = point(firstWaypoint.x, firstWaypoint.elevation, firstWaypoint.z);
+  const straightDistance = startPosition.distanceTo(pointScratch.set(entryEndPosition.x, entryEndPosition.y, entryEndPosition.z));
   const entryDuration = MathUtils.clamp(
     (reducedMotion ? 2.8 : 3.6) + straightDistance * (reducedMotion ? 0.018 : 0.024),
     reducedMotion ? 2.9 : 3.4,
     reducedMotion ? 4.8 : 6.8
   );
-  const entryTravel = normalizeDirection2(firstPosition.x - startPosition.x, firstPosition.z - startPosition.z, firstWaypoint.viewDirectionX, firstWaypoint.viewDirectionZ);
-  const entryLift = MathUtils.clamp(Math.abs(firstPosition.y - startPosition.y) * 0.14 + 4.4, 3.4, 11.5);
+  const entryTravel = normalizeDirection2(
+    entryEndPosition.x - startPosition.x,
+    entryEndPosition.z - startPosition.z,
+    firstWaypoint.viewDirectionX,
+    firstWaypoint.viewDirectionZ
+  );
+  const entryLift = MathUtils.clamp(Math.abs(entryEndPosition.y - startPosition.y) * 0.14 + 4.4, 3.4, 11.5);
 
-  segments.push({
-    kind: 'entry',
-    startTime: elapsedCursor,
+  const entry: EntrySegment = {
     duration: entryDuration,
     startPosition: point(startPosition.x, startPosition.y, startPosition.z),
-    controlPositionA: pushPointOutsideObstacles(
-      buildEntryControlPoint(point(startPosition.x, startPosition.y, startPosition.z), firstWaypoint, entryTravel.x, entryTravel.z, straightDistance, 0.18, entryLift * 0.2),
-      normalizedObstacles,
-      CAMERA_COLLISION_PAD,
+    controlPositionA: buildEntryControlPoint(
+      point(startPosition.x, startPosition.y, startPosition.z),
+      firstWaypoint,
       entryTravel.x,
-      entryTravel.z
+      entryTravel.z,
+      straightDistance,
+      0.18,
+      entryLift * 0.2
     ),
-    controlPositionB: pushPointOutsideObstacles(
-      buildEntryControlPoint(point(startPosition.x, startPosition.y, startPosition.z), firstWaypoint, entryTravel.x, entryTravel.z, straightDistance, 0.72, entryLift),
-      normalizedObstacles,
-      CAMERA_COLLISION_PAD,
+    controlPositionB: buildEntryControlPoint(
+      point(startPosition.x, startPosition.y, startPosition.z),
+      firstWaypoint,
       entryTravel.x,
-      entryTravel.z
+      entryTravel.z,
+      straightDistance,
+      0.72,
+      entryLift
     ),
-    endPosition: firstPosition,
+    endPosition: entryEndPosition,
     startFocus: point(startTarget.x, startTarget.y, startTarget.z),
-    endFocus: point(firstWaypoint.focusX, firstWaypoint.lookY, firstWaypoint.focusZ),
-    focusBlendFrom: 0,
-    focusBlendTo: 0.12,
-    lookAheadFrom: 0,
-    lookAheadTo: 8.5
-  });
-  elapsedCursor += entryDuration;
+    endFocus: point(firstWaypoint.focusX, firstWaypoint.lookY, firstWaypoint.focusZ)
+  };
 
-  let lastTurnSign = 1;
-  for (let index = 0; index < waypoints.length - 1; index += 1) {
-    const current = waypoints[index];
-    const next = waypoints[index + 1];
-    const bridgeDirection = normalizeDirection2(next.x - current.x, next.z - current.z, current.viewDirectionX, current.viewDirectionZ);
-    const distance = Math.hypot(next.x - current.x, next.z - current.z);
-    const turnSign = resolveTurnSign(current.viewDirectionX, current.viewDirectionZ, next.viewDirectionX, next.viewDirectionZ, lastTurnSign);
-    const sideX = bridgeDirection.z;
-    const sideZ = -bridgeDirection.x;
-    const lateral = MathUtils.clamp(
-      distance * (reducedMotion ? 0.08 : 0.12) + Math.max(current.radius, next.radius) * 0.35,
-      3.5,
-      Math.max(8.5, safeBoundsRadius * 0.14)
-    ) * turnSign;
-    const verticalLift = MathUtils.clamp(2.8 + distance * 0.03 + Math.abs(next.height - current.height) * 0.025, 3.2, 9.5);
-    const controlPointAPlanar = pushOutsideObstacles(
-      current.x + bridgeDirection.x * (distance * 0.26) + sideX * lateral,
-      current.z + bridgeDirection.z * (distance * 0.26) + sideZ * lateral,
-      normalizedObstacles,
-      CAMERA_COLLISION_PAD,
-      bridgeDirection.x + sideX * turnSign,
-      bridgeDirection.z + sideZ * turnSign
-    );
-    const controlPointBPlanar = pushOutsideObstacles(
-      next.x - bridgeDirection.x * (distance * 0.24) + sideX * lateral * 0.72,
-      next.z - bridgeDirection.z * (distance * 0.24) + sideZ * lateral * 0.72,
-      normalizedObstacles,
-      CAMERA_COLLISION_PAD,
-      -bridgeDirection.x + sideX * turnSign,
-      -bridgeDirection.z + sideZ * turnSign
-    );
-    const controlPointA = point(
-      controlPointAPlanar.x,
-      computeObstacleSafeY(controlPointAPlanar.x, controlPointAPlanar.z, current.elevation + verticalLift * 0.52, normalizedObstacles),
-      controlPointAPlanar.z
-    );
-    const controlPointB = point(
-      controlPointBPlanar.x,
-      computeObstacleSafeY(controlPointBPlanar.x, controlPointBPlanar.z, next.elevation + verticalLift, normalizedObstacles),
-      controlPointBPlanar.z
-    );
-    const duration = MathUtils.clamp(
-      (reducedMotion ? 2.6 : 3.2) + distance * (reducedMotion ? 0.028 : 0.04),
-      reducedMotion ? 2.9 : 3.5,
-      reducedMotion ? 5 : 6.8
-    );
+  const cruisePositionPoints: Point3[] = [entryEndPosition];
+  const cruiseFocusPoints: Point3[] = [point(firstWaypoint.focusX, firstWaypoint.lookY, firstWaypoint.focusZ)];
 
-    segments.push({
-      kind: 'transfer',
-      startTime: elapsedCursor,
-      duration,
-      startPosition: point(current.x, current.elevation, current.z),
-      controlPositionA: controlPointA,
-      controlPositionB: controlPointB,
-      endPosition: point(next.x, next.elevation, next.z),
-      startFocus: point(current.focusX, current.lookY, current.focusZ),
-      endFocus: point(next.focusX, next.lookY, next.focusZ),
-      focusBlendFrom: 0.04,
-      focusBlendTo: 0.08,
-      lookAheadFrom: 5.5,
-      lookAheadTo: 7.5
-    });
-    elapsedCursor += duration;
-    lastTurnSign = turnSign;
+  for (const target of targets) {
+    cruisePositionPoints.push(buildCruisePoint(target, safeMaxY, normalizedObstacles));
+    cruiseFocusPoints.push(buildFocusPoint(target));
   }
 
+  const lastTarget = targets[targets.length - 1];
+  const previousToLastTarget = targets.length > 1 ? targets[targets.length - 2] : null;
+  const lastCruisePoint = cruisePositionPoints[cruisePositionPoints.length - 1];
+  const exitPoint = buildExitPoint(lastTarget, previousToLastTarget, lastCruisePoint, safeMaxY, safeBoundsRadius, normalizedObstacles);
+  cruisePositionPoints.push(exitPoint);
+  cruiseFocusPoints.push(buildExitFocusPoint(lastTarget, previousToLastTarget, exitPoint));
+
+  const cruisePosition = createCurve(cruisePositionPoints);
+  const cruiseFocus = createCurve(cruiseFocusPoints);
+  const cruiseLength = cruisePosition?.length ?? 0;
+  const cruiseDuration =
+    cruiseLength <= 0.001
+      ? 0
+      : MathUtils.clamp(
+          targets.length * (reducedMotion ? 2.6 : 3.4) + cruiseLength * (reducedMotion ? 0.02 : 0.026),
+          targets.length * 2.4,
+          targets.length * 5.2
+        );
+  const cruiseSpeed = cruiseDuration > 0 ? cruiseLength / cruiseDuration : 0;
+  const averageLegLength = cruiseLength / Math.max(1, targets.length);
+  const focusLeadDistance = MathUtils.clamp(averageLegLength * (reducedMotion ? 0.14 : 0.18), 10, 26);
+
   return {
-    segments,
-    totalDuration: elapsedCursor,
+    entry,
+    entryDuration,
+    cruisePosition,
+    cruiseFocus,
+    cruiseDuration,
+    cruiseLength,
+    cruiseSpeed,
+    focusLeadDistance,
+    totalDuration: entryDuration + cruiseDuration,
     obstacles: normalizedObstacles
   };
 }
@@ -559,52 +484,53 @@ export function sampleCinematicFlyoverPlan(
   outPosition: Vector3,
   outTarget: Vector3
 ) {
-  const currentSample = samplePlanState(plan, elapsedSeconds, currentPositionScratch, currentFocusScratch);
-  const currentHorizontalSafe = pushOutsideObstacles(
-    currentPositionScratch.x,
-    currentPositionScratch.z,
-    plan.obstacles,
-    CAMERA_COLLISION_PAD,
-    currentFocusScratch.x - currentPositionScratch.x,
-    currentFocusScratch.z - currentPositionScratch.z
-  );
-  currentPositionScratch.x = currentHorizontalSafe.x;
-  currentPositionScratch.z = currentHorizontalSafe.z;
-  currentPositionScratch.y = computeObstacleSafeY(currentPositionScratch.x, currentPositionScratch.z, currentPositionScratch.y, plan.obstacles);
+  const safeElapsed = MathUtils.clamp(elapsedSeconds, 0, plan.totalDuration);
 
-  samplePlanState(plan, Math.min(plan.totalDuration, elapsedSeconds + LOOK_AHEAD_SECONDS), futurePositionScratch, futureFocusScratch);
-  const futureHorizontalSafe = pushOutsideObstacles(
-    futurePositionScratch.x,
-    futurePositionScratch.z,
-    plan.obstacles,
-    CAMERA_COLLISION_PAD,
-    futureFocusScratch.x - futurePositionScratch.x,
-    futureFocusScratch.z - futurePositionScratch.z
-  );
-  futurePositionScratch.x = futureHorizontalSafe.x;
-  futurePositionScratch.z = futureHorizontalSafe.z;
-  futurePositionScratch.y = computeObstacleSafeY(futurePositionScratch.x, futurePositionScratch.z, futurePositionScratch.y, plan.obstacles);
-
-  forwardScratch.copy(futurePositionScratch).sub(currentPositionScratch);
-  if (forwardScratch.lengthSq() < 0.0001) {
-    forwardScratch.copy(futureFocusScratch).sub(currentPositionScratch);
+  if (plan.entry && safeElapsed <= plan.entryDuration + 1e-6) {
+    const progress = plan.entryDuration <= 0 ? 1 : safeElapsed / plan.entryDuration;
+    const t = easeOutCubic01(progress);
+    sampleEntryPosition(plan.entry, t, outPosition);
+    sampleEntryFocus(plan.entry, t, outTarget);
+    return {
+      complete: safeElapsed >= plan.totalDuration
+    };
   }
-  if (forwardScratch.lengthSq() < 0.0001) {
-    forwardScratch.copy(currentFocusScratch).sub(currentPositionScratch);
-  }
-  if (forwardScratch.lengthSq() < 0.0001) {
-    forwardScratch.set(0, -0.08, -1);
-  }
-  forwardScratch.normalize();
 
-  forwardLookScratch.copy(currentPositionScratch).addScaledVector(forwardScratch, currentSample.lookAheadDistance);
-  forwardLookScratch.y = Math.max(currentFocusScratch.y + 0.4, currentPositionScratch.y - 10.5);
+  if (plan.cruisePosition && plan.cruiseFocus && plan.cruiseDuration > 0 && plan.cruiseLength > 0.001) {
+    const cruiseElapsed = Math.max(0, safeElapsed - plan.entryDuration);
+    const currentDistance = Math.min(plan.cruiseLength, cruiseElapsed * plan.cruiseSpeed);
+    const currentProgress = currentDistance / plan.cruiseLength;
+    const focusProgress = MathUtils.clamp((currentDistance + plan.focusLeadDistance) / plan.cruiseLength, 0, 1);
 
-  outPosition.copy(currentPositionScratch);
-  outTarget.copy(currentFocusScratch).lerp(forwardLookScratch, currentSample.focusBlend);
-  enforceDownwardPitchLimit(outPosition, outTarget, forwardScratch);
+    sampleCurveByProgress(plan.cruisePosition, currentProgress, outPosition);
+    sampleCurveByProgress(plan.cruiseFocus, focusProgress, outTarget);
+
+    outPosition.y = computeObstacleSafeY(outPosition.x, outPosition.z, outPosition.y, plan.obstacles);
+    sampleCurveTangentByProgress(
+      plan.cruisePosition,
+      MathUtils.clamp(currentProgress + Math.max(0.01, plan.focusLeadDistance / Math.max(plan.cruiseLength, 1) * 0.2), 0, 1),
+      tangentScratch
+    );
+
+    if (tangentScratch.lengthSq() < 0.0001) {
+      tangentScratch.copy(outTarget).sub(outPosition);
+      if (tangentScratch.lengthSq() > 0.0001) {
+        tangentScratch.normalize();
+      }
+    }
+
+    enforceDownwardPitchLimit(outPosition, outTarget, tangentScratch);
+    return {
+      complete: safeElapsed >= plan.totalDuration
+    };
+  }
+
+  if (plan.entry) {
+    sampleEntryPosition(plan.entry, 1, outPosition);
+    sampleEntryFocus(plan.entry, 1, outTarget);
+  }
 
   return {
-    complete: elapsedSeconds >= plan.totalDuration
+    complete: safeElapsed >= plan.totalDuration
   };
 }
