@@ -697,8 +697,27 @@ function toCinematicFlyoverObstacle(tower: TowerDatum): CinematicFlyoverObstacle
     sequence: tower.sequence,
     x: tower.x,
     z: tower.z,
-    height: tower.height,
-    radius: Math.max(2.8, radius + 1.6)
+    height: tower.height + 14,
+    radius: Math.max(2.8, radius + 5.2)
+  };
+}
+
+function toParkFlyoverObstacle(park: ParkDatum): CinematicFlyoverObstacle {
+  return {
+    x: park.x,
+    z: park.z,
+    height: 4.2,
+    radius: Math.max(park.radius, park.w * 0.45, park.d * 0.45) + 1.5
+  };
+}
+
+function toParkTreeFlyoverObstacle(tree: ParkTreeDatum, index: number): CinematicFlyoverObstacle | null {
+  if (index % 2 === 1) return null;
+  return {
+    x: tree.x,
+    z: tree.z,
+    height: tree.trunkH + tree.crownH + 1.4,
+    radius: tree.crownR + 0.9
   };
 }
 const tempColorA = new Color();
@@ -4564,6 +4583,7 @@ function MinimalOrbitRig({
   flyoverSignal = 0,
   onFlyoverActiveChange,
   storyBeatUntilMs = 0,
+  cancelFlyoverSignal = 0,
   resetSignal = 0,
   zoomInSignal = 0,
   zoomOutSignal = 0
@@ -4577,6 +4597,7 @@ function MinimalOrbitRig({
   flyoverSignal?: number;
   onFlyoverActiveChange?: (active: boolean) => void;
   storyBeatUntilMs?: number;
+  cancelFlyoverSignal?: number;
   resetSignal?: number;
   zoomInSignal?: number;
   zoomOutSignal?: number;
@@ -4608,6 +4629,7 @@ function MinimalOrbitRig({
   const flyoverPlanRef = useRef<CinematicFlyoverPlan | null>(null);
   const flyoverElapsedRef = useRef(0);
   const lastFlyoverSignalRef = useRef(flyoverSignal);
+  const lastCancelFlyoverSignalRef = useRef(cancelFlyoverSignal);
   const lastZoomInSignalRef = useRef(zoomInSignal);
   const lastZoomOutSignalRef = useRef(zoomOutSignal);
   const flyoverActiveChangeRef = useRef(onFlyoverActiveChange);
@@ -4713,10 +4735,6 @@ function MinimalOrbitRig({
 
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0) return;
-      if (modeRef.current === 'flyover') {
-        markUserInteraction();
-        event.preventDefault();
-      }
       dragRef.current.dragging = true;
       dragRef.current.pointerId = event.pointerId;
       dragRef.current.lastX = event.clientX;
@@ -4727,7 +4745,8 @@ function MinimalOrbitRig({
     const onPointerMove = (event: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag.dragging || drag.pointerId !== event.pointerId) return;
-      if (modeRef.current === 'focus' || modeRef.current === 'flyover') {
+      const movedEnough = Math.abs(event.clientX - drag.lastX) > 1 || Math.abs(event.clientY - drag.lastY) > 1;
+      if (movedEnough && (modeRef.current === 'focus' || modeRef.current === 'flyover')) {
         markUserInteraction();
       }
       const dx = event.clientX - drag.lastX;
@@ -4867,6 +4886,16 @@ function MinimalOrbitRig({
     modeRef.current = 'flyover';
     flyoverActiveChangeRef.current?.(true);
   }, [bounds.maxY, bounds.radius, camera, flyoverObstacles, flyoverSignal, flyoverTargets]);
+
+  useEffect(() => {
+    const cancelDelta = Math.max(0, cancelFlyoverSignal - lastCancelFlyoverSignalRef.current);
+    lastCancelFlyoverSignalRef.current = cancelFlyoverSignal;
+    if (cancelDelta <= 0 || modeRef.current !== 'flyover') return;
+
+    clearFlyoverState();
+    syncControlFromCurrentView();
+    modeRef.current = 'user';
+  }, [cancelFlyoverSignal]);
 
   useEffect(() => {
     const zoomInDelta = Math.max(0, zoomInSignal - lastZoomInSignalRef.current);
@@ -9715,6 +9744,8 @@ function SandboxScene({
   cinematicFlyoverTargets = [],
   cinematicFlyoverSignal = 0,
   onCinematicFlyoverActiveChange,
+  onCinematicFlyoverCancelRequest,
+  cancelCinematicFlyoverSignal = 0,
   resetCameraSignal = 0,
   zoomInCameraSignal = 0,
   zoomOutCameraSignal = 0
@@ -9754,6 +9785,8 @@ function SandboxScene({
   cinematicFlyoverTargets?: readonly CinematicFlyoverTarget[];
   cinematicFlyoverSignal?: number;
   onCinematicFlyoverActiveChange?: (active: boolean) => void;
+  onCinematicFlyoverCancelRequest?: () => void;
+  cancelCinematicFlyoverSignal?: number;
   resetCameraSignal?: number;
   zoomInCameraSignal?: number;
   zoomOutCameraSignal?: number;
@@ -9815,7 +9848,14 @@ function SandboxScene({
         : null,
     [selectedTower]
   );
-  const flyoverObstacles = useMemo(() => towers.map((tower) => toCinematicFlyoverObstacle(tower)), [towers]);
+  const flyoverObstacles = useMemo(
+    () => [
+      ...towers.map((tower) => toCinematicFlyoverObstacle(tower)),
+      ...parks.map((park) => toParkFlyoverObstacle(park)),
+      ...parkTrees.map((tree, index) => toParkTreeFlyoverObstacle(tree, index)).filter((entry): entry is CinematicFlyoverObstacle => entry != null)
+    ],
+    [parkTrees, parks, towers]
+  );
   const discFocusAnchor = useMemo(
     () =>
       selectedTower
@@ -9875,7 +9915,10 @@ function SandboxScene({
     hoverLastSeenAtRef.current = performance.now();
   };
   const requestSelectTower = (sequence: number) => {
-    if (cameraInteractionLocked) return;
+    if (cameraInteractionLocked) {
+      onCinematicFlyoverCancelRequest?.();
+      return;
+    }
     onSelectTowerChange?.(sequence);
   };
 
@@ -9971,6 +10014,7 @@ function SandboxScene({
         flyoverSignal={cinematicFlyoverSignal}
         onFlyoverActiveChange={onCinematicFlyoverActiveChange}
         storyBeatUntilMs={fx.storyBeatUntilMs}
+        cancelFlyoverSignal={cancelCinematicFlyoverSignal}
         resetSignal={resetCameraSignal}
         zoomInSignal={zoomInCameraSignal}
         zoomOutSignal={zoomOutCameraSignal}
@@ -10083,6 +10127,7 @@ export function TopCoinsSkylineSandbox({
   const [cinematicFlyoverTargets, setCinematicFlyoverTargets] = useState<CinematicFlyoverTarget[]>([]);
   const [cinematicFlyoverSignal, setCinematicFlyoverSignal] = useState(0);
   const [cinematicFlyoverActive, setCinematicFlyoverActive] = useState(false);
+  const [cancelCinematicFlyoverSignal, setCancelCinematicFlyoverSignal] = useState(0);
   const topFx = topData.topFx;
   const metricPanel = useMemo(() => deriveMarketCityMetrics(topSnapshot), [topSnapshot]);
   const cinematicFlyoverEnabled =
@@ -10174,9 +10219,11 @@ export function TopCoinsSkylineSandbox({
         cinematicFlyoverTargets={cinematicFlyoverTargets}
         cinematicFlyoverSignal={cinematicFlyoverSignal}
         onCinematicFlyoverActiveChange={setCinematicFlyoverActive}
+        cancelCinematicFlyoverSignal={cancelCinematicFlyoverSignal}
         resetCameraSignal={resetCameraSignal}
         zoomInCameraSignal={zoomInCameraSignal}
         zoomOutCameraSignal={zoomOutCameraSignal}
+        onCinematicFlyoverCancelRequest={() => setCancelCinematicFlyoverSignal((current) => current + 1)}
         onHoverTowerChange={setHoveredTowerSequence}
         onSelectTowerChange={setSelectedTowerSequence}
         onHoverHudUpdate={setHoverHud}

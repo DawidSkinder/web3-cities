@@ -61,6 +61,18 @@ type WeightedTarget = CinematicFlyoverTarget & {
   importanceScore: number;
   radialScore: number;
   angleFromCenter: number;
+  heightScore: number;
+  notionalScore: number;
+  intensityScore: number;
+  positiveChangeScore: number;
+  volumeScore: number;
+  recencyScore: number;
+  rankScore: number;
+  districtStrength: number;
+  isHero: boolean;
+  heroMult: number;
+  isTopGainer: boolean;
+  isTopVolume: boolean;
   districtId?: number;
 };
 
@@ -304,11 +316,14 @@ function normalizeObstacle(obstacle: CinematicFlyoverObstacle): CinematicFlyover
   };
 }
 
-function orderTargetsForRoute(targets: readonly WeightedTarget[], start: { x: number; z: number }) {
+function orderTargetsForRoute<T extends { x: number; z: number; importanceScore: number; radialScore: number }>(
+  targets: readonly T[],
+  start: { x: number; z: number }
+) {
   if (targets.length <= 1) return [...targets];
 
   const remaining = [...targets];
-  const ordered: WeightedTarget[] = [];
+  const ordered: T[] = [];
   let current = start;
 
   while (remaining.length > 0) {
@@ -368,6 +383,12 @@ function buildWeightedTargets(
   const maxRank = Math.max(...ranks);
   const minEmittedAt = Math.min(...emittedAtValues);
   const maxEmittedAt = Math.max(...emittedAtValues);
+  const districtCounts = new Map<number, number>();
+  for (const tower of normalized) {
+    if (tower.districtId == null) continue;
+    districtCounts.set(tower.districtId, (districtCounts.get(tower.districtId) ?? 0) + 1);
+  }
+  const maxDistrictCount = Math.max(1, ...districtCounts.values());
 
   return {
     center,
@@ -389,6 +410,8 @@ function buildWeightedTargets(
       const radialDistance = Math.hypot(tower.x - center.x, tower.z - center.z);
       const radialScore = clamp01(radialDistance / Math.max(18, sceneRadius));
       const angleFromCenter = angleOf(tower.x - center.x, tower.z - center.z);
+      const districtStrength =
+        tower.districtId == null ? 0 : clamp01((districtCounts.get(tower.districtId) ?? 0) / Math.max(1, maxDistrictCount));
 
       const cryptoScore =
         heightN * 1.16 +
@@ -417,6 +440,18 @@ function buildWeightedTargets(
         importanceScore: sceneKind === 'crypto' ? cryptoScore : marketScore,
         radialScore,
         angleFromCenter,
+        heightScore: heightN,
+        notionalScore: notionalN,
+        intensityScore: intensityN,
+        positiveChangeScore: positiveChangeN,
+        volumeScore: volumeN,
+        recencyScore: recencyN,
+        rankScore: rankN,
+        districtStrength,
+        isHero: Boolean(tower.isHero),
+        heroMult: tower.heroMult ?? 0,
+        isTopGainer: Boolean(tower.isTopGainer),
+        isTopVolume: Boolean(tower.isTopVolume),
         districtId: tower.districtId
       };
     })
@@ -477,6 +512,19 @@ function chooseBestCandidate(
   return best;
 }
 
+function chooseFromPreferredPool(
+  candidates: readonly WeightedTarget[],
+  selected: readonly WeightedTarget[],
+  center: SceneCenter,
+  sceneRadius: number,
+  evaluator: (candidate: WeightedTarget) => number,
+  minimumSpacing: number,
+  preferredAngle?: number
+) {
+  if (candidates.length === 0) return null;
+  return chooseBestCandidate(candidates, selected, center, sceneRadius, evaluator, minimumSpacing, preferredAngle);
+}
+
 export function pickCinematicFlyoverTargets<T extends CinematicFlyoverSourceTarget>(
   towers: readonly T[],
   options: {
@@ -491,30 +539,45 @@ export function pickCinematicFlyoverTargets<T extends CinematicFlyoverSourceTarg
 
   const minimumSpacing = sceneKind === 'crypto' ? Math.max(12, sceneRadius * 0.2) : Math.max(14, sceneRadius * 0.24);
   const selected: WeightedTarget[] = [];
+  const tallestHeight = Math.max(...weighted.map((candidate) => candidate.height));
 
   if (sceneKind === 'crypto') {
-    const primary = chooseBestCandidate(
-      weighted,
+    const tallestPool = weighted.filter((candidate) => candidate.height >= tallestHeight - 0.001);
+    const primary = chooseFromPreferredPool(
+      tallestPool.length > 0 ? tallestPool : weighted,
       selected,
       center,
       sceneRadius,
-      (candidate) => candidate.importanceScore + candidate.height * 0.024 + candidate.radialScore * 0.2,
+      (candidate) => candidate.heightScore * 1.8 + candidate.importanceScore * 0.42 + candidate.radialScore * 0.18,
       minimumSpacing
     );
     if (primary) selected.push(primary);
 
-    const strongBuy = chooseBestCandidate(
-      weighted,
+    const strongBuyPool = weighted.filter(
+      (candidate) =>
+        candidate.isHero ||
+        candidate.heroMult > 1.05 ||
+        candidate.notionalScore >= 0.72 ||
+        candidate.intensityScore >= 0.68
+    );
+    const strongBuy = chooseFromPreferredPool(
+      strongBuyPool.length > 0 ? strongBuyPool : weighted,
       selected,
       center,
       sceneRadius,
-      (candidate) => candidate.importanceScore * 1.18 + candidate.height * 0.018 + candidate.radialScore * 0.12,
+      (candidate) =>
+        candidate.notionalScore * 1.48 +
+        candidate.intensityScore * 1.08 +
+        candidate.recencyScore * 0.62 +
+        (candidate.isHero ? 0.52 : 0) +
+        candidate.heroMult * 0.18 +
+        candidate.importanceScore * 0.24,
       minimumSpacing,
       primary ? primary.angleFromCenter + Math.PI * 0.24 : undefined
     );
     if (strongBuy) selected.push(strongBuy);
 
-    const broadHero = chooseBestCandidate(
+    const broadHero = chooseFromPreferredPool(
       weighted,
       selected,
       center,
@@ -525,53 +588,63 @@ export function pickCinematicFlyoverTargets<T extends CinematicFlyoverSourceTarg
     );
     if (broadHero) selected.push(broadHero);
 
-    const emerging = chooseBestCandidate(
-      weighted,
+    const emergingPool = weighted.filter(
+      (candidate) =>
+        candidate.recencyScore >= 0.45 ||
+        candidate.districtStrength >= 0.6 ||
+        (candidate.heightScore >= 0.28 && candidate.heightScore <= 0.82)
+    );
+    const emerging = chooseFromPreferredPool(
+      emergingPool.length > 0 ? emergingPool : weighted,
       selected,
       center,
       sceneRadius,
       (candidate) =>
-        candidate.importanceScore * 0.82 +
-        candidate.height * 0.016 +
+        candidate.recencyScore * 1.04 +
+        candidate.districtStrength * 0.78 +
+        candidate.importanceScore * 0.44 +
         (1 - Math.abs(candidate.radialScore - 0.58)) * 0.52,
       minimumSpacing * 0.92,
       primary ? primary.angleFromCenter - Math.PI * 0.42 : undefined
     );
     if (emerging) selected.push(emerging);
   } else {
-    const primary = chooseBestCandidate(
-      weighted,
+    const topGainerPool = weighted.filter((candidate) => candidate.isTopGainer || candidate.positiveChangeScore >= 0.82);
+    const primary = chooseFromPreferredPool(
+      topGainerPool.length > 0 ? topGainerPool : weighted,
       selected,
       center,
       sceneRadius,
-      (candidate) => candidate.importanceScore * 1.16 + candidate.height * 0.02,
+      (candidate) => candidate.positiveChangeScore * 1.72 + candidate.importanceScore * 0.56 + candidate.heightScore * 0.22,
       minimumSpacing
     );
     if (primary) selected.push(primary);
 
-    const tallest = chooseBestCandidate(
-      weighted,
+    const tallestPool = weighted.filter((candidate) => candidate.height >= tallestHeight - 0.001);
+    const tallest = chooseFromPreferredPool(
+      tallestPool.length > 0 ? tallestPool : weighted,
       selected,
       center,
       sceneRadius,
-      (candidate) => candidate.height * 0.028 + candidate.importanceScore * 0.82,
+      (candidate) => candidate.heightScore * 1.84 + candidate.importanceScore * 0.34,
       minimumSpacing * 0.92,
       primary ? primary.angleFromCenter + Math.PI * 0.14 : undefined
     );
     if (tallest) selected.push(tallest);
 
-    const topVolume = chooseBestCandidate(
-      weighted,
+    const topVolumePool = weighted.filter((candidate) => candidate.isTopVolume || candidate.volumeScore >= 0.82);
+    const topVolume = chooseFromPreferredPool(
+      topVolumePool,
       selected,
       center,
       sceneRadius,
-      (candidate) => candidate.importanceScore * 0.96 + candidate.radialScore * 0.24,
+      (candidate) => candidate.volumeScore * 1.54 + candidate.importanceScore * 0.46 + candidate.radialScore * 0.18,
       minimumSpacing,
       primary ? primary.angleFromCenter - Math.PI * 0.4 : undefined
     );
-    if (topVolume) selected.push(topVolume);
+    if (topVolume && (topVolume.isTopVolume || topVolume.volumeScore >= 0.82)) selected.push(topVolume);
 
-    const oppositeSide = chooseBestCandidate(
+    const oppositeSide = chooseFromPreferredPool(
       weighted,
       selected,
       center,
@@ -588,7 +661,7 @@ export function pickCinematicFlyoverTargets<T extends CinematicFlyoverSourceTarg
       selected.length === 0
         ? undefined
         : selected[0].angleFromCenter + (selected.length % 2 === 0 ? Math.PI * 0.62 : -Math.PI * 0.48);
-    const filler = chooseBestCandidate(
+    const filler = chooseFromPreferredPool(
       weighted,
       selected,
       center,
@@ -943,11 +1016,18 @@ export function buildCinematicFlyoverPlan({
   const secondaries = targets.slice(1);
   const { outward, turnSign } = buildRevealDirection(center, primary, secondaries);
   const side = { x: outward.z * turnSign, z: -outward.x * turnSign };
+  const autoDistance = MathUtils.clamp(18 + sceneRadius * 1.65 + safeMaxY * 0.55, 24, 170);
+  const autoElevation = MathUtils.clamp(8 + safeMaxY * 0.9 + sceneRadius * 0.22, 10, 72);
+  const currentStartDistance = Math.hypot(startPosition.x - center.x, startPosition.z - center.z);
 
-  const wideDistance = MathUtils.clamp(sceneRadius * (sceneKind === 'market' ? 1.42 : 1.28), 26, sceneRadius * 1.62);
+  const wideDistance = MathUtils.clamp(
+    Math.max(sceneRadius * (sceneKind === 'market' ? 1.42 : 1.28), autoDistance * 1.1, currentStartDistance * 1.08),
+    26,
+    Math.max(sceneRadius * 1.82, autoDistance * 1.22)
+  );
   const widePosition = point(
     center.x + outward.x * wideDistance + side.x * sceneRadius * 0.16,
-    MathUtils.clamp(safeMaxY + sceneRadius * 0.16 + 22, 18, safeMaxY + 54),
+    MathUtils.clamp(Math.max(safeMaxY + sceneRadius * 0.16 + 22, autoElevation + 8), 18, safeMaxY + 54),
     center.z + outward.z * wideDistance + side.z * sceneRadius * 0.16
   );
   widePosition.y = computeObstacleSafeY(widePosition.x, widePosition.z, widePosition.y, normalizedObstacles);
