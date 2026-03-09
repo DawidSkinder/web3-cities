@@ -669,6 +669,12 @@ canvas {
   color: var(--ui-text-primary);
 }
 
+.web3-ui__help-trigger.is-active {
+  border-color: rgba(241, 192, 142, 0.38);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f4cf99;
+}
+
 .web3-ui__tab:hover,
 .web3-ui__tab-option:hover,
 .web3-ui__help-trigger:hover,

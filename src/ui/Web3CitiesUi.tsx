@@ -69,6 +69,17 @@ function KeyboardIcon() {
   );
 }
 
+function FlyoverIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="web3-ui__glyph">
+      <path d="M6 16.5c2.1-5.1 8.4-8.5 13-6.1" />
+      <path d="M8.2 19.1c4.1 0.9 7.8-0.7 10.4-4.2" />
+      <path d="M18.8 5.8 20 9.6 16.2 8.4" />
+      <circle cx="6.4" cy="9.2" r="1.1" />
+    </svg>
+  );
+}
+
 function HamburgerIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" className="web3-ui__glyph">
@@ -156,6 +167,8 @@ export function Web3CitiesUi({
   cryptoSelection,
   onModeChange,
   metricPanel,
+  onCinematicFlyover,
+  cinematicFlyoverActive = false,
   onResetCamera,
   onZoomOut,
   onZoomIn
@@ -164,6 +177,8 @@ export function Web3CitiesUi({
   cryptoSelection: CryptoCityMode;
   onModeChange?: (nextMode: CityMode) => void;
   metricPanel: UiMetricPanel;
+  onCinematicFlyover?: () => void;
+  cinematicFlyoverActive?: boolean;
   onResetCamera?: () => void;
   onZoomOut?: () => void;
   onZoomIn?: () => void;
@@ -516,6 +531,17 @@ export function Web3CitiesUi({
               </>
             ) : (
               <>
+                <button
+                  type="button"
+                  title="Cinematic flyover"
+                  className={`web3-ui__help-trigger web3-ui__help-trigger--icon${cinematicFlyoverActive ? ' is-active' : ''}`}
+                  aria-label={cinematicFlyoverActive ? 'Restart cinematic flyover' : 'Start cinematic flyover'}
+                  aria-pressed={cinematicFlyoverActive}
+                  onClick={onCinematicFlyover}
+                >
+                  <FlyoverIcon />
+                </button>
+
                 <div
                   className="web3-ui__help"
                   onMouseEnter={() => handleHelpMouseEnter('mouse')}

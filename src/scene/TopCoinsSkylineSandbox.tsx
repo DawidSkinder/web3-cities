@@ -38,6 +38,12 @@ import type { CryptoCityMode } from '../lib/cityMode';
 import type { CityMode } from '../lib/cityMode';
 import { deriveMarketCityMetrics } from '../ui/cityMetrics';
 import { Web3CitiesUi } from '../ui/Web3CitiesUi';
+import {
+  buildCinematicFlyoverPlan,
+  pickCinematicFlyoverTargets,
+  sampleCinematicFlyoverPlan
+} from './cinematicFlyover';
+import type { CinematicFlyoverPlan, CinematicFlyoverTarget } from './cinematicFlyover';
 import { RUNTIME_QUALITY_CONFIG } from './runtimeQuality';
 
 type TowerArchetypeId = 0 | 1 | 2 | 3 | 4 | 5;
@@ -331,7 +337,7 @@ type AccumState = {
   lastParkSkipReason: string;
 };
 
-type CameraMode = 'auto' | 'user' | 'focus';
+type CameraMode = 'auto' | 'user' | 'focus' | 'flyover';
 
 type CameraFocusTarget = {
   sequence: number;
@@ -4542,6 +4548,9 @@ function MinimalOrbitRig({
   focusTarget,
   onClearFocusTarget,
   onCameraDebug,
+  flyoverTargets,
+  flyoverSignal = 0,
+  onFlyoverActiveChange,
   storyBeatUntilMs = 0,
   resetSignal = 0,
   zoomInSignal = 0,
@@ -4551,6 +4560,9 @@ function MinimalOrbitRig({
   focusTarget?: CameraFocusTarget | null;
   onClearFocusTarget?: () => void;
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
+  flyoverTargets?: readonly CinematicFlyoverTarget[];
+  flyoverSignal?: number;
+  onFlyoverActiveChange?: (active: boolean) => void;
   storyBeatUntilMs?: number;
   resetSignal?: number;
   zoomInSignal?: number;
@@ -4580,12 +4592,52 @@ function MinimalOrbitRig({
   const keysRef = useRef<Record<string, boolean>>({});
   const dragRef = useRef({ dragging: false, pointerId: -1, lastX: 0, lastY: 0 });
   const debugEmitAtRef = useRef(0);
+  const flyoverPlanRef = useRef<CinematicFlyoverPlan | null>(null);
+  const flyoverElapsedRef = useRef(0);
+  const lastFlyoverSignalRef = useRef(flyoverSignal);
   const lastZoomInSignalRef = useRef(zoomInSignal);
   const lastZoomOutSignalRef = useRef(zoomOutSignal);
+  const flyoverActiveChangeRef = useRef(onFlyoverActiveChange);
+  const autoReturnBoostUntilRef = useRef(0);
 
   useEffect(() => {
     clearFocusTargetRef.current = onClearFocusTarget;
   }, [onClearFocusTarget]);
+
+  useEffect(() => {
+    flyoverActiveChangeRef.current = onFlyoverActiveChange;
+  }, [onFlyoverActiveChange]);
+
+  const syncControlFromCurrentView = () => {
+    const control = controlRef.current;
+    const actual = actualRef.current;
+    const px = smoothPosition.lengthSq() > 0 ? smoothPosition.x : camera.position.x;
+    const pz = smoothPosition.lengthSq() > 0 ? smoothPosition.z : camera.position.z;
+    const py = smoothPosition.lengthSq() > 0 ? smoothPosition.y : camera.position.y;
+    const lookY = smoothTarget.lengthSq() > 0 ? smoothTarget.y : 4;
+    const angle = Math.atan2(px, pz);
+    const distance = Math.max(0.001, Math.hypot(px, pz));
+
+    control.angle = angle;
+    control.distance = distance;
+    control.elevation = py;
+    control.lookY = lookY;
+
+    actual.angle = angle;
+    actual.distance = distance;
+    actual.elevation = py;
+    actual.lookY = lookY;
+  };
+
+  const clearFlyoverState = () => {
+    const wasActive = modeRef.current === 'flyover' || flyoverPlanRef.current != null;
+    flyoverPlanRef.current = null;
+    flyoverElapsedRef.current = 0;
+    autoReturnBoostUntilRef.current = 0;
+    if (wasActive) {
+      flyoverActiveChangeRef.current?.(false);
+    }
+  };
 
   useLayoutEffect(() => {
     if (initializedRef.current) return;
@@ -4634,17 +4686,11 @@ function MinimalOrbitRig({
   useEffect(() => {
     const canvas = gl.domElement;
 
-    const syncControlFromCurrentView = () => {
-      const control = controlRef.current;
-      const px = smoothPosition.lengthSq() > 0 ? smoothPosition.x : camera.position.x;
-      const pz = smoothPosition.lengthSq() > 0 ? smoothPosition.z : camera.position.z;
-      control.angle = Math.atan2(px, pz);
-      control.distance = Math.max(0.001, Math.hypot(px, pz));
-      control.elevation = smoothPosition.lengthSq() > 0 ? smoothPosition.y : camera.position.y;
-      control.lookY = smoothTarget.lengthSq() > 0 ? smoothTarget.y : 4;
-    };
-
     const markUserInteraction = () => {
+      if (modeRef.current === 'flyover') {
+        clearFlyoverState();
+        syncControlFromCurrentView();
+      }
       if (modeRef.current === 'focus') {
         onClearFocusTarget?.();
         syncControlFromCurrentView();
@@ -4739,6 +4785,7 @@ function MinimalOrbitRig({
 
   useEffect(() => {
     if (!focusTarget) return;
+    if (modeRef.current === 'flyover') return;
     const focus = focusOrbitRef.current;
     focus.sequence = focusTarget.sequence;
     focus.centerX = focusTarget.x;
@@ -4768,9 +4815,37 @@ function MinimalOrbitRig({
 
   useEffect(() => {
     if (resetSignal <= 0) return;
+    clearFlyoverState();
+    syncControlFromCurrentView();
     modeRef.current = 'auto';
     clearFocusTargetRef.current?.();
   }, [resetSignal]);
+
+  useEffect(() => {
+    const flyoverDelta = Math.max(0, flyoverSignal - lastFlyoverSignalRef.current);
+    lastFlyoverSignalRef.current = flyoverSignal;
+    if (flyoverDelta <= 0 || !flyoverTargets || flyoverTargets.length === 0) return;
+
+    clearFocusTargetRef.current?.();
+    const startPosition = smoothPosition.lengthSq() > 0 ? smoothPosition : camera.position;
+    const startTarget = smoothTarget.lengthSq() > 0 ? smoothTarget : desiredTarget.set(0, 4, 0);
+    const plan = buildCinematicFlyoverPlan({
+      targets: flyoverTargets,
+      startPosition,
+      startTarget,
+      boundsRadius: bounds.radius,
+      maxY: bounds.maxY,
+      reducedMotion: RUNTIME_QUALITY_CONFIG.reducedMotion
+    });
+
+    if (!plan) return;
+
+    flyoverPlanRef.current = plan;
+    flyoverElapsedRef.current = 0;
+    autoReturnBoostUntilRef.current = 0;
+    modeRef.current = 'flyover';
+    flyoverActiveChangeRef.current?.(true);
+  }, [bounds.maxY, bounds.radius, camera, flyoverSignal, flyoverTargets]);
 
   useEffect(() => {
     const zoomInDelta = Math.max(0, zoomInSignal - lastZoomInSignalRef.current);
@@ -4787,6 +4862,7 @@ function MinimalOrbitRig({
     control.elevation = smoothPosition.lengthSq() > 0 ? smoothPosition.y : camera.position.y;
     control.lookY = smoothTarget.lengthSq() > 0 ? smoothTarget.y : 4;
 
+    clearFlyoverState();
     if (focusTarget) {
       clearFocusTargetRef.current?.();
     }
@@ -4818,6 +4894,10 @@ function MinimalOrbitRig({
     const keys = keysRef.current;
     const anyMovementKey = keys.KeyW || keys.KeyA || keys.KeyS || keys.KeyD || keys.KeyQ || keys.KeyE;
     if (anyMovementKey) {
+      if (modeRef.current === 'flyover') {
+        clearFlyoverState();
+        syncControlFromCurrentView();
+      }
       modeRef.current = 'user';
       if (focusTarget) onClearFocusTarget?.();
     }
@@ -4836,6 +4916,43 @@ function MinimalOrbitRig({
       actual.lookY = auto.lookY;
       smoothPosition.set(0, 0, 0);
       smoothTarget.set(0, 0, 0);
+    }
+
+    if (modeRef.current === 'flyover') {
+      const plan = flyoverPlanRef.current;
+      if (!plan) {
+        clearFlyoverState();
+        syncControlFromCurrentView();
+        modeRef.current = 'auto';
+      } else {
+        flyoverElapsedRef.current += delta;
+        const sample = sampleCinematicFlyoverPlan(plan, flyoverElapsedRef.current, desiredPosition, desiredTarget);
+        smoothPosition.copy(desiredPosition);
+        smoothTarget.copy(desiredTarget);
+        camera.position.copy(smoothPosition);
+        camera.lookAt(smoothTarget);
+
+        if (sample.complete) {
+          clearFlyoverState();
+          syncControlFromCurrentView();
+          modeRef.current = 'auto';
+          autoReturnBoostUntilRef.current = performance.now() + 2200;
+        }
+
+        if (onCameraDebug) {
+          const nowMs = performance.now();
+          if (nowMs - debugEmitAtRef.current > 160) {
+            debugEmitAtRef.current = nowMs;
+            const camDist = camera.position.length();
+            onCameraDebug({
+              camDist,
+              visCurve: distanceVisibilityCurve(camDist)
+            });
+          }
+        }
+
+        return;
+      }
     }
 
     if (modeRef.current === 'auto') {
@@ -4891,10 +5008,11 @@ function MinimalOrbitRig({
       control.lookY = MathUtils.clamp(control.lookY, 0.8, Math.max(26, maxY + 8));
     }
 
-    const orbitDamp = modeRef.current === 'auto' ? 1.6 : modeRef.current === 'focus' ? 2.4 : 2.2;
-    const radiusDamp = modeRef.current === 'auto' ? 1.5 : modeRef.current === 'focus' ? 2.3 : 2.1;
-    const verticalDamp = modeRef.current === 'auto' ? 1.45 : modeRef.current === 'focus' ? 2.2 : 2.0;
-    const lookDamp = modeRef.current === 'auto' ? 1.4 : modeRef.current === 'focus' ? 2.25 : 1.9;
+    const autoReturnBoostActive = modeRef.current === 'auto' && performance.now() < autoReturnBoostUntilRef.current;
+    const orbitDamp = modeRef.current === 'auto' ? (autoReturnBoostActive ? 4.2 : 1.6) : modeRef.current === 'focus' ? 2.4 : 2.2;
+    const radiusDamp = modeRef.current === 'auto' ? (autoReturnBoostActive ? 4 : 1.5) : modeRef.current === 'focus' ? 2.3 : 2.1;
+    const verticalDamp = modeRef.current === 'auto' ? (autoReturnBoostActive ? 3.9 : 1.45) : modeRef.current === 'focus' ? 2.2 : 2.0;
+    const lookDamp = modeRef.current === 'auto' ? (autoReturnBoostActive ? 3.8 : 1.4) : modeRef.current === 'focus' ? 2.25 : 1.9;
     actual.angle = dampAngleRad(actual.angle, control.angle, orbitDamp, delta);
     actual.distance = MathUtils.damp(actual.distance, control.distance, radiusDamp, delta);
     actual.elevation = MathUtils.damp(actual.elevation, control.elevation, verticalDamp, delta);
@@ -4916,13 +5034,15 @@ function MinimalOrbitRig({
       smoothTarget.copy(desiredTarget);
     }
 
-    smoothPosition.x = MathUtils.damp(smoothPosition.x, desiredPosition.x, modeRef.current === 'auto' ? 1.8 : 2.4, delta);
-    smoothPosition.y = MathUtils.damp(smoothPosition.y, desiredPosition.y, modeRef.current === 'auto' ? 1.8 : 2.4, delta);
-    smoothPosition.z = MathUtils.damp(smoothPosition.z, desiredPosition.z, modeRef.current === 'auto' ? 1.8 : 2.4, delta);
+    const autoPositionDamp = autoReturnBoostActive ? 4.8 : 1.8;
+    const autoTargetDamp = autoReturnBoostActive ? 4.4 : 1.75;
+    smoothPosition.x = MathUtils.damp(smoothPosition.x, desiredPosition.x, modeRef.current === 'auto' ? autoPositionDamp : 2.4, delta);
+    smoothPosition.y = MathUtils.damp(smoothPosition.y, desiredPosition.y, modeRef.current === 'auto' ? autoPositionDamp : 2.4, delta);
+    smoothPosition.z = MathUtils.damp(smoothPosition.z, desiredPosition.z, modeRef.current === 'auto' ? autoPositionDamp : 2.4, delta);
 
-    smoothTarget.x = MathUtils.damp(smoothTarget.x, desiredTarget.x, modeRef.current === 'auto' ? 1.75 : 2.2, delta);
-    smoothTarget.y = MathUtils.damp(smoothTarget.y, desiredTarget.y, modeRef.current === 'auto' ? 1.75 : 2.2, delta);
-    smoothTarget.z = MathUtils.damp(smoothTarget.z, desiredTarget.z, modeRef.current === 'auto' ? 1.75 : 2.2, delta);
+    smoothTarget.x = MathUtils.damp(smoothTarget.x, desiredTarget.x, modeRef.current === 'auto' ? autoTargetDamp : 2.2, delta);
+    smoothTarget.y = MathUtils.damp(smoothTarget.y, desiredTarget.y, modeRef.current === 'auto' ? autoTargetDamp : 2.2, delta);
+    smoothTarget.z = MathUtils.damp(smoothTarget.z, desiredTarget.z, modeRef.current === 'auto' ? autoTargetDamp : 2.2, delta);
 
     camera.position.copy(smoothPosition);
     camera.lookAt(smoothTarget);
@@ -9549,6 +9669,10 @@ function SandboxScene({
   onSelectTowerChange,
   onHoverHudUpdate,
   onCameraDebug,
+  cameraInteractionLocked = false,
+  cinematicFlyoverTargets = [],
+  cinematicFlyoverSignal = 0,
+  onCinematicFlyoverActiveChange,
   resetCameraSignal = 0,
   zoomInCameraSignal = 0,
   zoomOutCameraSignal = 0
@@ -9584,6 +9708,10 @@ function SandboxScene({
   onSelectTowerChange?: (sequence: number | null) => void;
   onHoverHudUpdate?: (snapshot: HoverHudSnapshot) => void;
   onCameraDebug?: (snapshot: CameraDebugSnapshot) => void;
+  cameraInteractionLocked?: boolean;
+  cinematicFlyoverTargets?: readonly CinematicFlyoverTarget[];
+  cinematicFlyoverSignal?: number;
+  onCinematicFlyoverActiveChange?: (active: boolean) => void;
   resetCameraSignal?: number;
   zoomInCameraSignal?: number;
   zoomOutCameraSignal?: number;
@@ -9699,10 +9827,12 @@ function SandboxScene({
       hoverIntentRef.current = null;
       return;
     }
+    if (cameraInteractionLocked) return;
     hoverIntentRef.current = sequence;
     hoverLastSeenAtRef.current = performance.now();
   };
   const requestSelectTower = (sequence: number) => {
+    if (cameraInteractionLocked) return;
     onSelectTowerChange?.(sequence);
   };
 
@@ -9793,6 +9923,9 @@ function SandboxScene({
         focusTarget={focusTarget}
         onClearFocusTarget={() => onSelectTowerChange?.(null)}
         onCameraDebug={onCameraDebug}
+        flyoverTargets={cinematicFlyoverTargets}
+        flyoverSignal={cinematicFlyoverSignal}
+        onFlyoverActiveChange={onCinematicFlyoverActiveChange}
         storyBeatUntilMs={fx.storyBeatUntilMs}
         resetSignal={resetCameraSignal}
         zoomInSignal={zoomInCameraSignal}
@@ -9903,6 +10036,9 @@ export function TopCoinsSkylineSandbox({
   const [resetCameraSignal, setResetCameraSignal] = useState(0);
   const [zoomInCameraSignal, setZoomInCameraSignal] = useState(0);
   const [zoomOutCameraSignal, setZoomOutCameraSignal] = useState(0);
+  const [cinematicFlyoverTargets, setCinematicFlyoverTargets] = useState<CinematicFlyoverTarget[]>([]);
+  const [cinematicFlyoverSignal, setCinematicFlyoverSignal] = useState(0);
+  const [cinematicFlyoverActive, setCinematicFlyoverActive] = useState(false);
   const topFx = topData.topFx;
   const metricPanel = useMemo(() => deriveMarketCityMetrics(topSnapshot), [topSnapshot]);
 
@@ -9947,7 +10083,19 @@ export function TopCoinsSkylineSandbox({
     setHoveredTowerSequence(null);
     setSelectedTowerSequence(null);
     setHoverHud(HOVER_HUD_HIDDEN);
+    setCinematicFlyoverActive(false);
     setResetCameraSignal((current) => current + 1);
+  };
+
+  const handleCinematicFlyover = () => {
+    const nextTargets = pickCinematicFlyoverTargets(towers);
+    if (nextTargets.length === 0) return;
+    setHoveredTowerSequence(null);
+    setSelectedTowerSequence(null);
+    setHoverHud(HOVER_HUD_HIDDEN);
+    setCinematicFlyoverActive(true);
+    setCinematicFlyoverTargets(nextTargets);
+    setCinematicFlyoverSignal((current) => current + 1);
   };
 
   return (
@@ -9972,6 +10120,10 @@ export function TopCoinsSkylineSandbox({
         hoveredTowerSequence={hoveredTowerSequence}
         selectedTowerSequence={selectedTowerSequence}
         tallestTowerSequence={tallestTowerSequence}
+        cameraInteractionLocked={cinematicFlyoverActive}
+        cinematicFlyoverTargets={cinematicFlyoverTargets}
+        cinematicFlyoverSignal={cinematicFlyoverSignal}
+        onCinematicFlyoverActiveChange={setCinematicFlyoverActive}
         resetCameraSignal={resetCameraSignal}
         zoomInCameraSignal={zoomInCameraSignal}
         zoomOutCameraSignal={zoomOutCameraSignal}
@@ -9986,6 +10138,8 @@ export function TopCoinsSkylineSandbox({
         cryptoSelection={cryptoSelection}
         onModeChange={onModeChange}
         metricPanel={metricPanel}
+        onCinematicFlyover={handleCinematicFlyover}
+        cinematicFlyoverActive={cinematicFlyoverActive}
         onResetCamera={handleResetCamera}
         onZoomIn={() => setZoomInCameraSignal((current) => current + 1)}
         onZoomOut={() => setZoomOutCameraSignal((current) => current + 1)}
