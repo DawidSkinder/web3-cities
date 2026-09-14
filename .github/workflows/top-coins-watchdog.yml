@@ -31,11 +31,13 @@ jobs:
           WORKFLOW_FILE: generate-top-coins-snapshot.yml
           WORKER_BRANCH: main
           MAX_IDLE_SECONDS: "480"
+          MAX_QUEUED_AGE_SECONDS: "900"
         with:
           script: |
             const workflowId = process.env.WORKFLOW_FILE;
             const branch = process.env.WORKER_BRANCH;
             const maxIdleSeconds = Number(process.env.MAX_IDLE_SECONDS || "480");
+            const maxQueuedAgeSeconds = Number(process.env.MAX_QUEUED_AGE_SECONDS || "900");
             const { owner, repo } = context.repo;
 
             const { data } = await github.rest.actions.listWorkflowRuns({
@@ -49,7 +51,14 @@ jobs:
             const runs = Array.isArray(data.workflow_runs) ? data.workflow_runs : [];
             const triggerRunId =
               context.eventName === "workflow_run" ? Number(context.payload.workflow_run?.id || 0) : 0;
-            const activeRuns = runs.filter((run) => run.status === "queued" || run.status === "in_progress");
+            const now = Date.now();
+            const activeRuns = runs.filter((run) => {
+              if (run.status === "in_progress") return true;
+              if (run.status !== "queued") return false;
+
+              const queuedAt = Date.parse(run.created_at || run.updated_at || "");
+              return !Number.isFinite(queuedAt) || now - queuedAt < maxQueuedAgeSeconds * 1000;
+            });
             const otherActiveRuns = activeRuns.filter((run) => Number(run.id) !== triggerRunId);
             const latestCompleted = runs.find((run) => run.status === "completed") || null;
 

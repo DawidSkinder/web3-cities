@@ -98,6 +98,7 @@ jobs:
         if: ${{ always() && !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAX_QUEUED_AGE_SECONDS: "900"
         run: |
           set -euo pipefail
 
@@ -106,7 +107,7 @@ jobs:
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${GH_TOKEN}" \
               "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/generate-top-coins-snapshot.yml/runs?status=queued&branch=${GITHUB_REF_NAME}&per_page=50" \
-            | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{const j=JSON.parse(s);console.log((j.workflow_runs||[]).length);}catch{console.log('0');}})"
+            | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{const j=JSON.parse(s);const now=Date.now();const maxAgeMs=Number(process.env.MAX_QUEUED_AGE_SECONDS||'900')*1000;const runs=(j.workflow_runs||[]).filter(r=>{const queuedAt=Date.parse(r.created_at||r.updated_at||'');return !Number.isFinite(queuedAt)||now-queuedAt<maxAgeMs;});console.log(runs.length);}catch{console.log('0');}})"
           )"
 
           if [ "${queued_count}" -gt 0 ]; then
