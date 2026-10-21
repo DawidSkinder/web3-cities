@@ -13,6 +13,7 @@ export class RecentTradeDeduper {
   private readonly maxAgeMs: number;
   private readonly entries = new Map<string, number>();
   private readonly queue: Entry[] = [];
+  private queueHead = 0;
 
   constructor(config: DeduperConfig = {}) {
     this.capacity = config.capacity ?? 50_000;
@@ -22,6 +23,7 @@ export class RecentTradeDeduper {
   reset() {
     this.entries.clear();
     this.queue.length = 0;
+    this.queueHead = 0;
   }
 
   has(key: string, nowMs = Date.now()) {
@@ -43,8 +45,8 @@ export class RecentTradeDeduper {
   }
 
   private prune(nowMs: number) {
-    while (this.queue.length > 0) {
-      const head = this.queue[0];
+    while (this.queueHead < this.queue.length) {
+      const head = this.queue[this.queueHead];
       if (!head) {
         break;
       }
@@ -55,11 +57,15 @@ export class RecentTradeDeduper {
         break;
       }
 
-      this.queue.shift();
+      this.queueHead += 1;
       const currentSeenAt = this.entries.get(head.key);
       if (currentSeenAt === head.seenAt) {
         this.entries.delete(head.key);
       }
+    }
+    if (this.queueHead > 4096 && this.queueHead * 2 >= this.queue.length) {
+      this.queue.splice(0, this.queueHead);
+      this.queueHead = 0;
     }
   }
 }
