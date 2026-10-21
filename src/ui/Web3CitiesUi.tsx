@@ -1,18 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { CRYPTO_CITY_MODES, isCryptoCityMode } from '../lib/cityMode';
 import type { CryptoCityMode } from '../lib/cityMode';
 import type { CityMode } from '../lib/cityMode';
 import { CRYPTO_CITY_PRESETS } from '../data/cryptoCity/presets';
 import type { UiMetricPanel } from './cityMetrics';
 import web3CitiesLogoUrl from '../../dawidskinder_web3cities_logo_v1.svg';
-import dawidPhotoUrl from '../../ds_photo.png';
 
 type HelpKey = 'mouse' | 'keyboard' | null;
 const MOBILE_BREAKPOINT_PX = 640;
 const MOBILE_ZOOM_OUT_LABEL = 'Zoom out camera';
 const MOBILE_ZOOM_IN_LABEL = 'Zoom in camera';
 const MOBILE_NOTICE_STORAGE_KEY = 'web3-cities:mobile-notice-dismissed:v1';
-const WEB3_CITIES_SITE_URL = 'https://web3cities.dawidskinder.pl';
 
 const MODE_COPY: Record<
   CityMode,
@@ -86,6 +84,15 @@ function HamburgerIcon() {
       <line x1="5" y1="7" x2="19" y2="7" />
       <line x1="5" y1="12" x2="19" y2="12" />
       <line x1="5" y1="17" x2="19" y2="17" />
+    </svg>
+  );
+}
+
+function InformationIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="web3-ui__glyph">
+      <circle cx="12" cy="6.5" r="1" fill="currentColor" stroke="none" />
+      <path d="M10.5 10.5H12V18M10 18H14" />
     </svg>
   );
 }
@@ -192,6 +199,7 @@ export function Web3CitiesUi({
   );
   const [isDesktopSafari, setIsDesktopSafari] = useState(() => detectDesktopSafari());
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [brandInfoOpen, setBrandInfoOpen] = useState(false);
   const [mobileNoticeVisible, setMobileNoticeVisible] = useState(false);
   const [cryptoMenuOpen, setCryptoMenuOpen] = useState(false);
   const controlsRef = useRef<HTMLDivElement | null>(null);
@@ -288,16 +296,6 @@ export function Web3CitiesUi({
     };
   }, [cryptoMenuOpen, isMobile]);
 
-  const currentUrl = typeof window !== 'undefined' ? window.location.href : WEB3_CITIES_SITE_URL;
-  const shareHref = useMemo(() => {
-    const text =
-      'Web3 Cities turns live crypto data into cinematic, explorable worlds that make complex Web3 systems feel clear and worth exploring.';
-    const url = new URL('https://x.com/intent/tweet');
-    url.searchParams.set('text', text);
-    url.searchParams.set('url', currentUrl);
-    return url.toString();
-  }, [currentUrl]);
-
   const openPopover = pinnedPopover ?? hoverPopover;
 
   const handlePopoverToggle = (key: Exclude<HelpKey, null>) => {
@@ -338,20 +336,47 @@ export function Web3CitiesUi({
       aria-live="polite"
     >
       <section className="web3-ui__corner web3-ui__corner--top-left">
-        {isMobile ? (
-          <div className="web3-ui__mobile-logo-wrap">
-            <img className="web3-ui__logo web3-ui__logo--mobile" src={web3CitiesLogoUrl} alt="Web3 Cities" />
-          </div>
-        ) : (
-          <div className="web3-ui__panel web3-ui__panel--brand">
+        <div className="web3-ui__panel web3-ui__panel--brand">
+          <div className="web3-ui__brand-header">
             <img className="web3-ui__logo" src={web3CitiesLogoUrl} alt="Web3 Cities" />
-            <h1 className="web3-ui__headline">Designing clarity for complex Web3 systems.</h1>
-            <p className="web3-ui__body">
-              Web3 Cities transforms live crypto data into interactive worlds - showing how brand, product thinking, and UX
-              can make complex systems feel legible, alive, and worth exploring.
-            </p>
+            <button
+              type="button"
+              className={`web3-ui__help-trigger web3-ui__brand-info-button${brandInfoOpen ? ' is-active' : ''}`}
+              aria-label={brandInfoOpen ? 'Hide information about Web3 Cities' : 'Show information about Web3 Cities'}
+              aria-expanded={brandInfoOpen}
+              aria-controls="web3-cities-information"
+              onClick={() => setBrandInfoOpen((current) => !current)}
+            >
+              <InformationIcon />
+            </button>
           </div>
-        )}
+          <div
+            id="web3-cities-information"
+            className={`web3-ui__brand-info${brandInfoOpen ? ' is-open' : ''}`}
+            aria-hidden={!brandInfoOpen}
+          >
+            <div className="web3-ui__brand-info-clip">
+              <div className="web3-ui__brand-info-content">
+                <h1 className="web3-ui__headline">Designing clarity for complex Web3 systems.</h1>
+                <p className="web3-ui__body">
+                  Web3 Cities transforms live crypto data into interactive worlds - showing how brand, product thinking, and
+                  UX can make complex systems feel legible, alive, and worth exploring.
+                </p>
+                <p className="web3-ui__body web3-ui__credit">
+                  Web3 Cities was built by{' '}
+                  <a
+                    href="https://www.dawidskinder.pl"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    tabIndex={brandInfoOpen ? undefined : -1}
+                  >
+                    www.dawidskinder.pl
+                  </a>.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section className="web3-ui__corner web3-ui__corner--top-right">
@@ -370,12 +395,6 @@ export function Web3CitiesUi({
 
             {mobileMenuOpen ? (
               <div id="mobile-navigation-panel" className="web3-ui__panel web3-ui__panel--mobile-menu">
-                <h1 className="web3-ui__headline web3-ui__headline--mobile">Designing clarity for complex Web3 systems.</h1>
-                <p className="web3-ui__body web3-ui__body--mobile-menu">
-                  Web3 Cities transforms live crypto data into interactive worlds - showing how brand, product thinking, and
-                  UX can make complex systems feel legible, alive, and worth exploring.
-                </p>
-
                 <div className="web3-ui__nav-stack">
                   <div className="web3-ui__tabs-wrap">
                     <div className="web3-ui__tabs" aria-label="City modes">
@@ -414,22 +433,6 @@ export function Web3CitiesUi({
                         ))}
                       </div>
                     ) : null}
-                  </div>
-
-                  <div className="web3-ui__action-row">
-                    <a
-                      className="web3-ui__cta"
-                      href="https://www.dawidskinder.pl"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      <span>Build your web3 product with me</span>
-                      <img className="web3-ui__cta-photo" src={dawidPhotoUrl} alt="" aria-hidden="true" />
-                    </a>
-
-                    <a className="web3-ui__text-action" href={shareHref} target="_blank" rel="noopener noreferrer">
-                      Share on X
-                    </a>
                   </div>
                 </div>
               </div>
@@ -475,22 +478,6 @@ export function Web3CitiesUi({
                     ))}
                   </div>
                 ) : null}
-              </div>
-
-              <div className="web3-ui__action-row">
-                <a
-                  className="web3-ui__cta"
-                  href="https://www.dawidskinder.pl"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  <span>Build your web3 product with me</span>
-                  <img className="web3-ui__cta-photo" src={dawidPhotoUrl} alt="" aria-hidden="true" />
-                </a>
-
-                <a className="web3-ui__text-action" href={shareHref} target="_blank" rel="noopener noreferrer">
-                  Share on X
-                </a>
               </div>
             </div>
           </div>
