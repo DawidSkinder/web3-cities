@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { publishTopCoinsSnapshot } from '../data/topCoins/topCoinsStore';
-import { TopCoinsDataEngine } from '../data/topCoins/TopCoinsDataEngine';
+import type { TopCoinsDataEngine } from '../data/topCoins/TopCoinsDataEngine';
 
 export function useTopCoinsSkylineEngine(options: { enabled: boolean }) {
   const { enabled } = options;
@@ -10,20 +10,28 @@ export function useTopCoinsSkylineEngine(options: { enabled: boolean }) {
       return;
     }
 
-    const engine = new TopCoinsDataEngine({
-      pollMs: Number(import.meta.env.VITE_TOP_COINS_POLL_MS ?? 60_000),
-      limit: Number(import.meta.env.VITE_TOP_COINS_LIMIT ?? 150)
-    });
+    let disposed = false;
+    let engine: TopCoinsDataEngine | undefined;
+    let unsubscribe: (() => void) | undefined;
+    void import('../data/topCoins/TopCoinsDataEngine').then((module) => {
+      if (disposed) return;
+      const { TopCoinsDataEngine } = module;
+      engine = new TopCoinsDataEngine({
+        pollMs: Number(import.meta.env.VITE_TOP_COINS_POLL_MS ?? 60_000),
+        limit: Number(import.meta.env.VITE_TOP_COINS_LIMIT ?? 150)
+      });
 
-    const unsubscribe = engine.subscribe((snapshot) => {
-      publishTopCoinsSnapshot(snapshot);
-    });
+      unsubscribe = engine.subscribe((snapshot) => {
+        publishTopCoinsSnapshot(snapshot);
+      });
 
-    engine.start();
+      engine.start();
+    });
 
     return () => {
-      unsubscribe();
-      engine.stop();
+      disposed = true;
+      unsubscribe?.();
+      engine?.stop();
     };
   }, [enabled]);
 }

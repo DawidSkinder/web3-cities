@@ -1,10 +1,10 @@
-import { BtcSpotCityScene } from './scene/BtcSpotCityScene';
+import { BtcSpotCityScene, preloadCity } from './scene/BtcSpotCityScene';
 import { getCryptoCityPreset } from './data/cryptoCity/presets';
 import { useCryptoSpotCityDataEngine } from './hooks/useCryptoSpotCityDataEngine';
 import { useTopCoinsSkylineEngine } from './hooks/useTopCoinsSkylineEngine';
 import type { CryptoCityMode } from './lib/cityMode';
 import { isCryptoCityMode, resolveCityMode, writeCityModeToUrl } from './lib/cityMode';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export default function App() {
   const [mode, setMode] = useState(() => resolveCityMode());
@@ -15,8 +15,11 @@ export default function App() {
   const activeCryptoMode = isCryptoCityMode(mode) ? mode : cryptoSelection;
   const cryptoPreset = getCryptoCityPreset(activeCryptoMode);
 
+  const modeRequestRef = useRef(0);
+
   useEffect(() => {
     const onPopState = () => {
+      modeRequestRef.current++;
       const nextMode = resolveCityMode();
       setMode(nextMode);
       if (isCryptoCityMode(nextMode)) {
@@ -25,9 +28,20 @@ export default function App() {
     };
     window.addEventListener('popstate', onPopState);
     return () => {
+      modeRequestRef.current++;
       window.removeEventListener('popstate', onPopState);
     };
   }, []);
+
+  const changeMode = useCallback(async (nextMode: typeof mode) => {
+    const request = ++modeRequestRef.current;
+    if (nextMode === mode) return;
+    await preloadCity(nextMode);
+    if (request !== modeRequestRef.current) return;
+    setMode(nextMode);
+    if (isCryptoCityMode(nextMode)) setCryptoSelection(nextMode);
+    writeCityModeToUrl(nextMode);
+  }, [mode]);
 
   useCryptoSpotCityDataEngine({ enabled: isCryptoCityMode(mode), preset: cryptoPreset });
   useTopCoinsSkylineEngine({ enabled: mode === 'top200' });
@@ -36,14 +50,7 @@ export default function App() {
     <BtcSpotCityScene
       mode={mode}
       cryptoSelection={cryptoSelection}
-      onModeChange={(nextMode) => {
-        if (nextMode === mode) return;
-        setMode(nextMode);
-        if (isCryptoCityMode(nextMode)) {
-          setCryptoSelection(nextMode);
-        }
-        writeCityModeToUrl(nextMode);
-      }}
+      onModeChange={changeMode}
     />
   );
 }

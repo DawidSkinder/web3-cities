@@ -1,5 +1,9 @@
+import { useHoverHudLayout } from './useHoverHudLayout';
+import { SpatialIndex } from './SpatialIndex';
+import { createFrameStore } from './frameStore';
+import { RenderBatches, useRenderBatchGroup, TOWER_BOX_GEOMETRY, TOWER_OUTLINE_GEOMETRY } from './RenderBatches';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Group, InstancedMesh as ThreeInstancedMesh, Mesh, Texture } from 'three';
 import {
   AdditiveBlending,
@@ -275,6 +279,7 @@ type HoverHudSnapshot = {
 };
 
 type AccumState = {
+  towerIndex: SpatialIndex<TowerDatum>;
   processedSequences: Set<number>;
   towers: TowerDatum[];
   traces: TraceDatum[];
@@ -1128,6 +1133,7 @@ function createEmptyAccum(preset: CryptoCityPreset): AccumState {
     durationMs: 1400
   })) as RecordCeremonyDatum[];
   return {
+    towerIndex: new SpatialIndex<TowerDatum>(),
     processedSequences: new Set<number>(),
     towers: [],
     traces: [],
@@ -1786,7 +1792,6 @@ function maybeAppendPark(state: AccumState, seed: number, preset: CryptoCityPres
 function appendTracesForNewTower(state: AccumState, tower: TowerDatum, preset: CryptoCityPreset) {
   if (state.towers.length <= 1) return;
 
-  const existing = state.towers.slice(0, -1);
   const maxLinkDistance = BTC_STRICT_ADJACENT_ROADS
     ? RUNTIME_QUALITY_CONFIG.tier === 'low'
       ? 14
@@ -1798,7 +1803,8 @@ function appendTracesForNewTower(state: AccumState, tower: TowerDatum, preset: C
       : RUNTIME_QUALITY_CONFIG.tier === 'medium'
         ? 24
         : 28;
-  const candidates = existing
+  const candidates = state.towerIndex.query(tower.x, tower.z, maxLinkDistance)
+    .filter((other) => other !== tower)
     .map((other) => {
       const dist = Math.hypot(tower.x - other.x, tower.z - other.z);
       return { other, dist };
@@ -2436,6 +2442,7 @@ function useAppendOnlyTowers(events: BlockEvent[], preset: CryptoCityPreset) {
       target.lastTowerBirthAt = pacedBirthAt;
       tower.emittedAt = pacedBirthAt;
       target.towers.push(tower);
+      target.towerIndex.add(tower, tower.x, tower.z);
       appendTracesForNewTower(target, tower, preset);
       if (ENABLE_SHOCKWAVES) {
         const dir = MathUtils.clamp(clampFinite(event.metrics.imbalance, 0), -1, 1);
@@ -5500,6 +5507,7 @@ function TopCoinLogoDisc({
 }) {
   const { camera, gl, size } = useThree();
   const groupRef = useRef<Group>(null);
+  useRenderBatchGroup(groupRef);
   const discRef = useRef<Mesh>(null);
   const ringRef = useRef<Mesh>(null);
   const bodyRef = useRef<Mesh>(null);
@@ -5774,13 +5782,15 @@ function HoverProjectionTracker({
 function HoverHudOverlay({
   tower,
   preset,
-  hud
+  hudStore
 }: {
   tower: TowerDatum | null;
   preset: CryptoCityPreset;
-  hud: HoverHudSnapshot;
+  hudStore: ReturnType<typeof createFrameStore<HoverHudSnapshot>>;
 }) {
-  if (!tower || !hud.visible || hud.towerSequence !== tower.sequence) return null;
+  const hud = hudStore.getSnapshot();
+  const layout = useHoverHudLayout(hudStore, tower?.sequence ?? null, HOVER_LABEL_WIDTH_PX, HOVER_LABEL_HEIGHT_PX);
+  if (!tower) return null;
   const isTopCoins = tower.mode === 'top200';
   const topTicker = getTopCoinTicker(tower.symbol, tower.baseAsset);
 
@@ -5794,6 +5804,7 @@ function HoverHudOverlay({
 
   return (
     <div
+      ref={layout.root}
       style={{
         position: 'absolute',
         inset: 0,
@@ -5803,6 +5814,7 @@ function HoverHudOverlay({
       aria-hidden="true"
     >
       <div
+        ref={layout.label}
         style={{
           position: 'absolute',
           left: hud.labelX,
@@ -5895,6 +5907,7 @@ function HoverHudOverlay({
       </div>
 
       <div
+        ref={layout.line}
         style={{
           position: 'absolute',
           left: lineStartX,
@@ -5911,6 +5924,7 @@ function HoverHudOverlay({
         }}
       />
       <div
+        ref={layout.anchor}
         style={{
           position: 'absolute',
           left: hud.anchorX - 3,
@@ -5958,6 +5972,7 @@ function AnimatedHoloTower({
   };
 }) {
   const groupRef = useRef<Group>(null);
+  useRenderBatchGroup(groupRef);
   const coreRefs = useRef<Array<Mesh | null>>([]);
   const shellRefs = useRef<Array<Mesh | null>>([]);
   const edgeRefs = useRef<Array<Mesh | null>>([]);
@@ -5981,11 +5996,8 @@ function AnimatedHoloTower({
   const presetWarmColor = useMemo(() => new Color(preset.theme.warm), [preset.theme.warm]);
   const presetPaleColor = useMemo(() => new Color(preset.theme.pale), [preset.theme.pale]);
   const strokeColor = useMemo(() => new Color(preset.theme.warm), [preset.theme.warm]);
-  const segments = useMemo(() => buildTowerSegments(tower), [tower]);
-  const outlineGeometries = useMemo(
-    () => segments.map((seg) => new EdgesGeometry(new BoxGeometry(seg.sx, seg.height, seg.sz))),
-    [segments]
-  );
+  const segments = useMemo(() => buildTowerSegments(tower), [tower.archetypeId, tower.height, tower.footprintX, tower.footprintZ, tower.taper, tower.podiumRatio, tower.crownRatio]);
+  const outlineGeometries = useMemo(() => segments.map(() => TOWER_OUTLINE_GEOMETRY), [segments.length]);
   const outlineMaterial = useMemo(() => {
     const m = new LineBasicMaterial({
       color: strokeColor,
@@ -6037,14 +6049,7 @@ function AnimatedHoloTower({
     rainRefs.current.length = 3;
   }, [segments.length, bandFractions.length, microPanelFractions.length, antennaCount]);
 
-  useEffect(() => {
-    return () => {
-      for (let i = 0; i < outlineGeometries.length; i++) {
-        outlineGeometries[i]?.dispose();
-      }
-      outlineMaterial.dispose();
-    };
-  }, [outlineGeometries, outlineMaterial]);
+  useEffect(() => () => outlineMaterial.dispose(), [outlineMaterial]);
 
   const isHovered = hoveredTowerSequence === tower.sequence;
   const isSelected = selectedTowerSequence === tower.sequence;
@@ -6313,11 +6318,11 @@ function AnimatedHoloTower({
             Math.max(tower.baseD, tower.footprintZ) * 1.22
           ]}
         />
-        <meshBasicMaterial transparent opacity={0} colorWrite={false} depthTest={false} depthWrite={false} />
+        <meshBasicMaterial visible={false} transparent opacity={0} colorWrite={false} depthTest={false} depthWrite={false} />
       </mesh>
 
       {segments.map((seg, i) => (
-        <group key={`${tower.sequence}-seg-${seg.id}-${i}`} position={[seg.ox ?? 0, seg.y, seg.oz ?? 0]}>
+        <group key={`${tower.sequence}-seg-${seg.id}-${i}`} position={[seg.ox ?? 0, seg.y, seg.oz ?? 0]} scale={[seg.sx, seg.height, seg.sz]}>
           <mesh
             castShadow={RUNTIME_QUALITY_CONFIG.shadows}
             receiveShadow={RUNTIME_QUALITY_CONFIG.shadows}
@@ -6325,7 +6330,7 @@ function AnimatedHoloTower({
               coreRefs.current[i] = el;
             }}
           >
-            <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
+            <primitive attach="geometry" object={TOWER_BOX_GEOMETRY} />
             <meshStandardMaterial
               color={coreColor}
               transparent={false}
@@ -6351,7 +6356,7 @@ function AnimatedHoloTower({
             scale={[GLOW_SHELL_SCALE, 1.002, GLOW_SHELL_SCALE]}
             renderOrder={6.12}
           >
-            <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
+            <primitive attach="geometry" object={TOWER_BOX_GEOMETRY} />
             <meshBasicMaterial
               color={glowColor}
               transparent
@@ -6372,7 +6377,7 @@ function AnimatedHoloTower({
             scale={[GLOW_EDGE_SCALE, 1.006, GLOW_EDGE_SCALE]}
             renderOrder={6.14}
           >
-            <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
+            <primitive attach="geometry" object={TOWER_BOX_GEOMETRY} />
             <meshBasicMaterial
               color={strokeColor}
               wireframe
@@ -6779,7 +6784,7 @@ function ScreenSpaceGroundLine({
     m.polygonOffsetUnits = -2;
     if (additive) m.blending = AdditiveBlending;
     return m;
-  }, [color, opacity, lineWidth, additive]);
+  }, [color, lineWidth, additive]);
 
   const line = useMemo(() => {
     const l = new Line2(geometry, material);
@@ -6802,19 +6807,16 @@ function ScreenSpaceGroundLine({
 
   useEffect(() => {
     opacityRef.current = opacity;
-  }, [opacity]);
+    material.opacity = opacity;
+  }, [material, opacity]);
 
   useFrame((_, delta) => {
     const target = opacityRef.current * (focusMode ? focusDim : 1);
     material.opacity = MathUtils.damp(material.opacity, target, 9.5, delta);
   });
 
-  useEffect(() => {
-    return () => {
-      geometry.dispose();
-      material.dispose();
-    };
-  }, [geometry, material]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  useEffect(() => () => material.dispose(), [material]);
 
   return <primitive object={line} />;
 }
@@ -7119,6 +7121,8 @@ function ParksLayer({
   const crownGlowRef = useRef<ThreeInstancedMesh>(null);
   const fireflyRef = useRef<ThreeInstancedMesh>(null);
   const focusMixRef = useRef(0);
+  const treeMatricesDirtyRef = useRef(true);
+  useLayoutEffect(() => { treeMatricesDirtyRef.current = true; }, [trees, trees.length, parks, parks.length]);
   const matrixRef = useRef(new Matrix4());
   const posRef = useRef(new Vector3());
   const sclRef = useRef(new Vector3());
@@ -7283,7 +7287,8 @@ function ParksLayer({
     const trunkWire = trunkWireRef.current;
     const crownWire = crownWireRef.current;
     const crownGlow = crownGlowRef.current;
-    if (trunk && crown && trunkWire && crownWire && crownGlow) {
+    if (treeMatricesDirtyRef.current && trunk && crown && trunkWire && crownWire && crownGlow) {
+      let hasGrowingTree = false;
       const matrix = matrixRef.current;
       const pos = posRef.current;
       const scl = sclRef.current;
@@ -7304,6 +7309,7 @@ function ParksLayer({
         const localDelay = (birth?.localIndex ?? 0) * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 18 : 28);
         const elapsed = treeNowMs - (birthAt + localDelay);
         const riseT = MathUtils.clamp(elapsed / BIRTH_RISE_MS, 0, 1);
+        if (riseT < 1) hasGrowingTree = true;
         const riseScaleY = Math.max(0.0001, easeOutBack(riseT, BIRTH_OVERSHOOT));
         const crownScaleXZ = MathUtils.lerp(0.25, 1, MathUtils.clamp(riseT * 1.15, 0, 1));
         quat.setFromAxisAngle(up, tree.yaw);
@@ -7333,6 +7339,7 @@ function ParksLayer({
         matrix.compose(pos, quat, scl);
         crownGlow.setMatrixAt(i, matrix);
       }
+      treeMatricesDirtyRef.current = hasGrowingTree;
       trunk.instanceMatrix.needsUpdate = true;
       crown.instanceMatrix.needsUpdate = true;
       trunkWire.instanceMatrix.needsUpdate = true;
@@ -7718,6 +7725,8 @@ function TraceStrips({
   clutter?: number;
 }) {
   const { camera } = useThree();
+  const groupRef = useRef<Group>(null);
+  useRenderBatchGroup(groupRef);
   const glowRefs = useRef<Array<Mesh | null>>([]);
   const coreRefs = useRef<Array<Mesh | null>>([]);
   const scanRefs = useRef<Array<Mesh | null>>([]);
@@ -7794,7 +7803,7 @@ function TraceStrips({
   });
 
   return (
-    <group>
+    <group ref={groupRef}>
       {/* Render band 4/4.6: depth-tested traces above ground graphics, below traffic/towers */}
       {traces.map((trace, i) => (
         <group
@@ -8633,6 +8642,7 @@ function MountainsBackdrop({
   const revealTimeRef = useRef(0);
   const revealMixRef = useRef(0);
   const mountElapsedRef = useRef(0);
+  const appliedShapeRef = useRef({ ring: NaN, scale: NaN });
   const matrixRef = useRef(new Matrix4());
   const quatRef = useRef(new Quaternion());
   const posRef = useRef(new Vector3());
@@ -8833,6 +8843,8 @@ function MountainsBackdrop({
     applyRevealToGroup(farGroupRef.current, farReveal, scale * 0.24, 1.035);
     applyRevealToGroup(midGroupRef.current, midReveal, scale * 0.3, 1.05);
     applyRevealToGroup(peakGroupRef.current, peakReveal, scale * 0.36, 1.06);
+    if (ring === appliedShapeRef.current.ring && scale === appliedShapeRef.current.scale) return;
+    appliedShapeRef.current = { ring, scale };
     const farY = GROUND_DECK_Y - scale * 0.56;
     const midY = GROUND_DECK_Y - scale * 0.6;
     const peakY = GROUND_DECK_Y - scale * 0.62;
@@ -9090,6 +9102,7 @@ function BirdFlock({
   const quatRef = useRef(new Quaternion());
   const upRef = useRef(new Vector3(0, 1, 0));
 
+  const columnIndexRef = useRef(new SpatialIndex<number>(16));
   const geometry = useMemo(() => {
     const g = new ConeGeometry(0.16, 0.42, 3, 1);
     g.rotateX(Math.PI * 0.5);
@@ -9172,6 +9185,11 @@ function BirdFlock({
       cols.radius[i] = radius;
       cols.height[i] = Math.max(0, tower.height);
     }
+    columnIndexRef.current.clear();
+    for (let c = 0; c < columnsRef.current.count; c++) {
+      columnIndexRef.current.add(c, columnsRef.current.x[c], columnsRef.current.z[c]);
+    }
+
   };
 
   const reseedBird = (idx: number, nowMs: number, keepAngle = false) => {
@@ -9291,7 +9309,7 @@ function BirdFlock({
       let repelZ = 0;
       let altitudeLift = 0;
 
-      for (let c = 0; c < cols.count; c++) {
+      for (const c of columnIndexRef.current.query(x, z, BTC_BIRD_AVOID_RADIUS_MAX)) {
         const dx = x - cols.x[c];
         const dz = z - cols.z[c];
         const avoidR = cols.radius[c];
@@ -9547,7 +9565,7 @@ function MarketMoodLightRig({ mood = 0.5 }: { mood?: number }) {
   );
 }
 
-function SandboxScene({
+const SandboxScene = memo(function SandboxScene({
   mode,
   preset,
   towers,
@@ -9706,7 +9724,7 @@ function SandboxScene({
     }
   }, [hoveredTowerSequence]);
 
-  const requestHoverTower = (sequence: number | null) => {
+  const requestHoverTower = useCallback((sequence: number | null) => {
     if (sequence == null) {
       hoverIntentRef.current = null;
       return;
@@ -9714,14 +9732,14 @@ function SandboxScene({
     if (cameraInteractionLocked) return;
     hoverIntentRef.current = sequence;
     hoverLastSeenAtRef.current = performance.now();
-  };
-  const requestSelectTower = (sequence: number) => {
+  }, [cameraInteractionLocked]);
+  const requestSelectTower = useCallback((sequence: number) => {
     if (cameraInteractionLocked) {
       onCinematicFlyoverCancelRequest?.();
       return;
     }
     onSelectTowerChange?.(sequence);
-  };
+  }, [cameraInteractionLocked, onCinematicFlyoverCancelRequest, onSelectTowerChange]);
 
   useEffect(() => {
     let raf = 0;
@@ -9793,6 +9811,7 @@ function SandboxScene({
         gl.setClearColor('#06080c', 1);
       }}
     >
+      <RenderBatches>
       <color attach="background" args={['#06080c']} />
       {ENABLE_CINEMATIC_BACKDROP ? <CinematicBackdrop /> : null}
       {topFx ? (
@@ -9895,9 +9914,10 @@ function SandboxScene({
       ) : null}
       <RecordCeremonyLayer ceremonies={recordCeremonies} focusMode={focusMode} sceneMaxY={bounds.maxY} />
       {ENABLE_FAKE_VIGNETTE ? <FakeVignettePlane /> : null}
+      </RenderBatches>
     </Canvas>
   );
-}
+});
 
 export function BtcSpotBuysSandbox({
   mode,
@@ -9928,10 +9948,11 @@ export function BtcSpotBuysSandbox({
     marketMoodTarget,
     tallestTowerSequence
   } = active;
-  const [, setCameraDebug] = useState<CameraDebugSnapshot>({ camDist: 0, visCurve: 0 });
   const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
   const [selectedTowerSequence, setSelectedTowerSequence] = useState<number | null>(null);
-  const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
+  const hoverHudStore = useMemo(() => createFrameStore<HoverHudSnapshot>(HOVER_HUD_HIDDEN), []);
+  const setHoverHud = hoverHudStore.set;
+  const hoverHud = hoverHudStore.getSnapshot();
   const [resetCameraSignal, setResetCameraSignal] = useState(0);
   const [zoomInCameraSignal, setZoomInCameraSignal] = useState(0);
   const [zoomOutCameraSignal, setZoomOutCameraSignal] = useState(0);
@@ -10031,9 +10052,8 @@ export function BtcSpotBuysSandbox({
         onHoverTowerChange={setHoveredTowerSequence}
         onSelectTowerChange={setSelectedTowerSequence}
         onHoverHudUpdate={setHoverHud}
-        onCameraDebug={setCameraDebug}
       />
-      <HoverHudOverlay tower={hoveredTower} preset={preset} hud={hoverHud} />
+      <HoverHudOverlay tower={hoveredTower} preset={preset} hudStore={hoverHudStore} />
       <Web3CitiesUi
         mode={mode}
         cryptoSelection={cryptoSelection}

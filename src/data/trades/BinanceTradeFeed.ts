@@ -456,12 +456,13 @@ export class BinanceTradeFeed implements TradeFeed {
   }
 
   private scheduleInactivityCheck() {
-    if (this.stopped) {
+    if (this.stopped || this.inactivityTimer !== null) {
       return;
     }
 
-    this.clearInactivityTimer();
+    const delayMs = Math.max(0, 15000 - (Date.now() - this.lastMessageAt));
     this.inactivityTimer = window.setTimeout(() => {
+      this.inactivityTimer = null;
       if (this.stopped) {
         return;
       }
@@ -482,7 +483,7 @@ export class BinanceTradeFeed implements TradeFeed {
       } else {
         this.scheduleInactivityCheck();
       }
-    }, 15000);
+    }, delayMs);
   }
 
   private emitStatus(event: Omit<FeedStatusEvent, 'source' | 'timestamp'>) {

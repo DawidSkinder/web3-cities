@@ -1,5 +1,12 @@
+import { useHoverHudLayout } from './useHoverHudLayout';
+import { TopCoinsLayoutWorker } from './TopCoinsLayoutWorker';
+import { hashString32, hashUnitString, type TopCoinsLayoutNode, type TopCoinsLayoutResult } from './topCoinsLayout';
+import { SpatialIndex } from './SpatialIndex';
+import { readFrameValue, type FrameValue } from './frameValue';
+import { createFrameStore } from './frameStore';
+import { RenderBatches, useRenderBatchGroup, TOWER_BOX_GEOMETRY, TOWER_OUTLINE_GEOMETRY } from './RenderBatches';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Group, InstancedMesh as ThreeInstancedMesh, Mesh, Texture } from 'three';
 import {
   AdditiveBlending,
@@ -840,7 +847,7 @@ function useTopCoinsRuntimeProfile() {
 
 function useTopCoinsProgressiveLayers(options: {
   enabled: boolean;
-  introLifeAlpha: number;
+  introLifeAlpha: FrameValue;
   activeTowerCount: number;
 }) {
   const { enabled, introLifeAlpha, activeTowerCount } = options;
@@ -882,7 +889,7 @@ function useTopCoinsProgressiveLayers(options: {
       const dt = Math.max(0, now - last);
       last = now;
 
-      if (introLifeAlphaRef.current <= 0.01) {
+      if (readFrameValue(introLifeAlphaRef.current) <= 0.01) {
         stableWindowRef.current = 0;
         raf = window.requestAnimationFrame(tick);
         return;
@@ -2660,30 +2667,11 @@ const TOP_COINS_DISTRICT_TINTS = [
   '#c9b29f',
   '#bda89f'
 ];
-const TOP_LAYOUT_PADDING = 8;
-const TOP_LAYOUT_INITIAL_ITERS = 64;
-const TOP_LAYOUT_REFRESH_ITERS = 20;
-const TOP_LAYOUT_INNER_RADIUS = 8;
 const TOP_LAYOUT_RING_STEP = 5.05;
-const TOP_LAYOUT_EDGE_PAD = 6.6;
 
-type TopCoinsLayoutNode = {
-  symbol: string;
-  districtId: number;
-  radius: number;
-  x: number;
-  z: number;
-  homeX: number;
-  homeZ: number;
-};
 
-type TopCoinsLayoutResult = {
-  targets: Map<string, { districtId: number; x: number; z: number }>;
-  layoutIters: number;
-  minSeparation: number;
-  overlapFix: 'ok' | 'iterating';
-  cityRadius: number;
-};
+
+
 
 type TopCoinsParkTower = ParkTowerCollisionTarget & {
   sequence: number;
@@ -2697,34 +2685,11 @@ type TopCoinsParkResult = {
   arterialTraces: TraceDatum[];
 };
 
-function hashString32(value: string) {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < value.length; i++) {
-    h ^= value.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-function hashUnitString(value: string, salt: number) {
-  const h = hashString32(`${value}:${salt}`);
-  return (h % 1_000_000) / 1_000_000;
-}
-
 function shortestAngleDelta(from: number, to: number) {
   const twoPi = Math.PI * 2;
   let diff = ((to - from + Math.PI) % twoPi + twoPi) % twoPi - Math.PI;
   if (diff < -Math.PI) diff += twoPi;
   return diff;
-}
-
-function clampNodeToCity(node: TopCoinsLayoutNode, cityRadius: number) {
-  const minRadius = Math.max(3.6, TOP_LAYOUT_INNER_RADIUS * 0.18);
-  const maxRadius = Math.max(minRadius + 2, cityRadius - TOP_LAYOUT_EDGE_PAD);
-  const radius = MathUtils.clamp(Math.hypot(node.x, node.z), minRadius, maxRadius);
-  const angle = Math.atan2(node.z, node.x);
-  node.x = Math.cos(angle) * radius;
-  node.z = Math.sin(angle) * radius;
 }
 
 function estimateTopCoinFootprintRadius(
@@ -2751,15 +2716,17 @@ function estimateTopCoinFootprintRadius(
   return 0.5 * Math.hypot(baseW, baseD);
 }
 
-function buildTopCoinsLayoutTargets({
+async function buildTopCoinsLayoutTargets({
   items,
   states,
-  sizeScoreBySymbol
+  sizeScoreBySymbol,
+  solve
 }: {
   items: Array<{ symbol: string; rank: number; pct: number; isTopVolume: boolean; isTopGainer: boolean; isTopLoser: boolean }>;
   states: Map<string, TopCoinSymbolState>;
   sizeScoreBySymbol: Map<string, number>;
-}): TopCoinsLayoutResult {
+  solve: (nodes: TopCoinsLayoutNode[], hasExisting: boolean) => Promise<TopCoinsLayoutResult>;
+}): Promise<TopCoinsLayoutResult> {
   const rankTier = (rank: number) => {
     if (rank <= 10) return 0;
     if (rank <= 50) return 1;
@@ -2816,102 +2783,7 @@ function buildTopCoinsLayoutTargets({
     });
   }
 
-  const maxNominalRadius = nodes.reduce((acc, node) => Math.max(acc, Math.hypot(node.homeX, node.homeZ) + node.radius), 0);
-  let cityRadius = Math.max(86, maxNominalRadius + 80 + Math.sqrt(Math.max(1, nodes.length)) * 0.8);
-
-  const dispX = new Array(nodes.length).fill(0);
-  const dispZ = new Array(nodes.length).fill(0);
-  const hasExisting = states.size > 0;
-  const baseIterations = hasExisting ? TOP_LAYOUT_REFRESH_ITERS : TOP_LAYOUT_INITIAL_ITERS;
-  let minSeparation = Number.POSITIVE_INFINITY;
-  let overlapFix: 'ok' | 'iterating' = 'iterating';
-  let layoutIters = 0;
-
-  for (let attempt = 0; attempt < 6; attempt++) {
-    for (const node of nodes) {
-      clampNodeToCity(node, cityRadius);
-    }
-
-    const iterations = baseIterations + attempt * 8;
-    for (let iter = 0; iter < iterations; iter++) {
-      dispX.fill(0);
-      dispZ.fill(0);
-      let overlapCount = 0;
-      let minSepIter = Number.POSITIVE_INFINITY;
-
-      for (let i = 0; i < nodes.length; i++) {
-        const a = nodes[i];
-        for (let j = i + 1; j < nodes.length; j++) {
-          const b = nodes[j];
-          const dx = b.x - a.x;
-          const dz = b.z - a.z;
-          const dist = Math.hypot(dx, dz);
-          const minDist = a.radius + b.radius + TOP_LAYOUT_PADDING;
-          minSepIter = Math.min(minSepIter, dist - minDist);
-          if (dist >= minDist) continue;
-
-          overlapCount += 1;
-          const push = (minDist - dist) * 0.5;
-          let nx = 0;
-          let nz = 0;
-          if (dist > 0.0001) {
-            nx = dx / dist;
-            nz = dz / dist;
-          } else {
-            const aSeed = hashUnitString(`${a.symbol}|${b.symbol}`, 9071) * Math.PI * 2;
-            nx = Math.cos(aSeed);
-            nz = Math.sin(aSeed);
-          }
-
-          dispX[i] -= nx * push;
-          dispZ[i] -= nz * push;
-          dispX[j] += nx * push;
-          dispZ[j] += nz * push;
-        }
-      }
-
-      minSeparation = minSepIter;
-      for (let i = 0; i < nodes.length; i++) {
-        const node = nodes[i];
-        const homePull = hasExisting ? 0.08 : 0.05;
-        node.x += dispX[i] * 0.82 + (node.homeX - node.x) * homePull;
-        node.z += dispZ[i] * 0.82 + (node.homeZ - node.z) * homePull;
-        clampNodeToCity(node, cityRadius);
-      }
-
-      layoutIters += 1;
-      if (overlapCount === 0 && iter >= 2) {
-        overlapFix = 'ok';
-        break;
-      }
-    }
-
-    if (minSeparation >= -0.01) {
-      overlapFix = 'ok';
-      break;
-    }
-
-    cityRadius *= 1.14;
-  }
-
-  if (!Number.isFinite(minSeparation)) minSeparation = 0;
-
-  const targets = new Map<string, { districtId: number; x: number; z: number }>();
-  for (const node of nodes) {
-    targets.set(node.symbol, {
-      districtId: node.districtId,
-      x: node.x,
-      z: node.z
-    });
-  }
-
-  return {
-    targets,
-    layoutIters,
-    minSeparation,
-    overlapFix,
-    cityRadius
-  };
+  return solve(nodes, states.size > 0);
 }
 
 function buildTopCoinsDecorativeParks({
@@ -3370,6 +3242,10 @@ function useTopCoinsSkyline(
   layer2Ready: boolean,
   runtimeProfile: TopCoinsRuntimeProfile
 ) {
+  const renderedRecordsRef = useRef(new Map<string, TowerDatum>());
+  const structureKeyRef = useRef('');
+  const layoutWorker = useMemo(() => new TopCoinsLayoutWorker(), []);
+  useEffect(() => () => layoutWorker.stop(), [layoutWorker]);
   const statesRef = useRef<Map<string, TopCoinSymbolState>>(new Map());
   const tracesRef = useRef<TraceDatum[]>([]);
   const arterialTracesRef = useRef<TraceDatum[]>([]);
@@ -3479,6 +3355,16 @@ function useTopCoinsSkyline(
   );
   const recordCeremonyCursorRef = useRef(0);
   const recordCeremonySerialRef = useRef(0);
+  const frameFx = useMemo(() => ({
+    get introBootAlpha() { return introRef.current.bootAlpha; },
+    get introLifeAlpha() { return introRef.current.lifeAlpha; },
+    get introProgress() { return introRef.current.progress; },
+    get introActive() { return introRef.current.active; },
+    get storyBeatUntilMs() { return introRef.current.storyBeatUntilMs; },
+    get clutter() { return MathUtils.clamp(clutterRef.current + updateWaveLoadRef.current * 0.42, 0, 1); },
+    get transitionLoad() { return updateWaveLoadRef.current; }
+  }), []);
+  const readMarketMood = useCallback(() => moodRef.current, []);
   const [version, setVersion] = useState(0);
   const [replayEnabled, setReplayEnabled] = useState(false);
   const [replayIndex, setReplayIndex] = useState(-1);
@@ -3552,130 +3438,149 @@ function useTopCoinsSkyline(
   }, [historyVersion, replayEnabled, replayIndex]);
 
   useEffect(() => {
-    const states = statesRef.current;
-    const live = liveSnapshotRef.current ?? snapshot;
-    const selected = activeSnapshot ?? live;
+    let cancelled = false;
+    const apply = async () => {
+      const states = statesRef.current;
+      const live = liveSnapshotRef.current ?? snapshot;
+      const selected = activeSnapshot ?? live;
 
-    if (!selected) {
-      if (states.size > 0) {
-        states.clear();
-        tracesRef.current = [];
-        arterialTracesRef.current = [];
-        trafficRef.current = [];
-        arterialTrafficRef.current = [];
-        parksRef.current = [];
-        parkTreesRef.current = [];
-        districtsRef.current = [];
-        boundsRef.current = { radius: 36, maxY: 42 };
-        setVersion((v) => v + 1);
+      if (!selected) {
+        if (states.size > 0) {
+          states.clear();
+          tracesRef.current = [];
+          arterialTracesRef.current = [];
+          trafficRef.current = [];
+          arterialTrafficRef.current = [];
+          parksRef.current = [];
+          parkTreesRef.current = [];
+          districtsRef.current = [];
+          boundsRef.current = { radius: 36, maxY: 42 };
+          setVersion((v) => v + 1);
+        }
+        introRef.current.hasRun = false;
+        introRef.current.active = false;
+        deferredDecorativeBuildPendingRef.current = false;
+        introRef.current.startPending = false;
+        introRef.current.progress = 0;
+        introRef.current.bootAlpha = 0;
+        introRef.current.lifeAlpha = 0;
+        introRef.current.elapsedMs = 0;
+        introRef.current.storyBeatUntilMs = 0;
+        return;
       }
-      introRef.current.hasRun = false;
-      introRef.current.active = false;
-      deferredDecorativeBuildPendingRef.current = false;
-      introRef.current.startPending = false;
-      introRef.current.progress = 0;
-      introRef.current.bootAlpha = 0;
-      introRef.current.lifeAlpha = 0;
-      introRef.current.elapsedMs = 0;
-      introRef.current.storyBeatUntilMs = 0;
-      return;
-    }
 
-    const metadataOnly = !replayEnabled && states.size > 0 && !selected.hashChanged;
-    const applyKey = replayEnabled ? `replay:${replayIndex}:${selected.hash}` : `live:${selected.hash}:${selected.hashChanged ? 1 : 0}`;
-    if (!metadataOnly && lastAppliedKeyRef.current === applyKey) {
-      return;
-    }
-    if (!metadataOnly) {
-      lastAppliedKeyRef.current = applyKey;
-    }
+      const metadataOnly = !replayEnabled && states.size > 0 && !selected.hashChanged;
+      if (metadataOnly) {
+        const meta = liveSnapshotRef.current ?? selected;
+        const now = Date.now();
+        const pollSec = Math.max(1, Math.floor((meta.debug.pollMs || 60_000) / 1000));
+        const age = meta.asOf > 0 ? Math.max(0, (now - meta.asOf) / 1000) : 0;
+        const next = Math.max(0, (meta.debug.nextUpdateAt - now) / 1000);
+        Object.assign(debugRef.current, {
+          snapshotSeq: meta.sequence, changedCount: meta.debug.changedCount,
+          asOfMs: meta.asOf, asOfIso: meta.asOfIso, asOfAgeSec: age, asOfAgeLabel: fmtAgeFriendly(age),
+          staleData: age > pollSec * 2, fetchedAt: meta.debug.fetchedAt,
+          lastFetchAt: meta.debug.lastFetchAt, lastSuccessAt: meta.debug.lastSuccessAt,
+          pollSec, nextUpdateAtMs: meta.debug.nextUpdateAt, nextUpdateInSec: next,
+          nextUpdateInLabel: fmtMmSs(next), lastHash: meta.debug.lastHash,
+          hashChanged: false, refreshAgeSec: meta.debug.refreshAgeSec,
+          lastError: meta.debug.lastError, lastFetchOk: meta.debug.lastFetchOk
+        });
+        return;
+      }
+      const applyKey = replayEnabled ? `replay:${replayIndex}:${selected.hash}` : `live:${selected.hash}:${selected.hashChanged ? 1 : 0}`;
+      if (lastAppliedKeyRef.current === applyKey) {
+        return;
+      }
 
-    const nextSymbols = new Set<string>();
-    const topGainerSymbol = selected.stats.topGainer.symbol;
-    const topLoserSymbol = selected.stats.topLoser.symbol;
-    const topVolumeSymbol = selected.stats.topVolume.symbol;
-    const maxQuoteVolume = Math.max(selected.stats.sessionMaxQuoteVolume, 1);
-    const wallNowMs = Date.now();
-    const animNowMs = performance.now();
-    const sizeScoreBySymbol = new Map<string, number>();
-    const metricsBySymbol = new Map<string, { height: number; sizeScore: number; heightScore: number; volumeNorm: number }>();
-    const prioritizedDiscSymbols = (() => {
-      const gainers = selected.items
-        .filter((item) => item.priceChangePercent > 0)
-        .sort(
-          (a, b) =>
-            b.priceChangePercent - a.priceChangePercent ||
-            a.rankByQuoteVolume - b.rankByQuoteVolume ||
-            a.symbol.localeCompare(b.symbol)
-        );
-      const source =
-        gainers.length > 0
-          ? gainers
-          : [...selected.items].sort(
-              (a, b) =>
-                Math.abs(b.priceChangePercent) - Math.abs(a.priceChangePercent) ||
-                a.rankByQuoteVolume - b.rankByQuoteVolume ||
-                a.symbol.localeCompare(b.symbol)
-            );
-      return new Set(source.slice(0, runtimeProfile.discPriorityLimit).map((item) => item.symbol));
-    })();
-    let changedTowers = 0;
-    let heightDeltaSum = 0;
-    let baseDeltaSum = 0;
+      const nextSymbols = new Set<string>();
+      const topGainerSymbol = selected.stats.topGainer.symbol;
+      const topLoserSymbol = selected.stats.topLoser.symbol;
+      const topVolumeSymbol = selected.stats.topVolume.symbol;
+      const maxQuoteVolume = Math.max(selected.stats.sessionMaxQuoteVolume, 1);
+      const wallNowMs = Date.now();
+      const animNowMs = performance.now();
+      const sizeScoreBySymbol = new Map<string, number>();
+      const metricsBySymbol = new Map<string, { height: number; sizeScore: number; heightScore: number; volumeNorm: number }>();
+      const prioritizedDiscSymbols = (() => {
+        const gainers = selected.items
+          .filter((item) => item.priceChangePercent > 0)
+          .sort(
+            (a, b) =>
+              b.priceChangePercent - a.priceChangePercent ||
+              a.rankByQuoteVolume - b.rankByQuoteVolume ||
+              a.symbol.localeCompare(b.symbol)
+          );
+        const source =
+          gainers.length > 0
+            ? gainers
+            : [...selected.items].sort(
+                (a, b) =>
+                  Math.abs(b.priceChangePercent) - Math.abs(a.priceChangePercent) ||
+                  a.rankByQuoteVolume - b.rankByQuoteVolume ||
+                  a.symbol.localeCompare(b.symbol)
+              );
+        return new Set(source.slice(0, runtimeProfile.discPriorityLimit).map((item) => item.symbol));
+      })();
+      let changedTowers = 0;
+      let heightDeltaSum = 0;
+      let baseDeltaSum = 0;
 
-    for (let i = 0; i < selected.items.length; i++) {
-      const item = selected.items[i];
-      if (!item) continue;
-      const rank = item.rankByQuoteVolume || i + 1;
-      const metrics = mapTopCoinTowerMetrics({
-        pct: item.priceChangePercent,
-        quoteVolume: item.quoteVolume,
-        maxQuoteVolume,
-        rank,
-        isTopGainer: item.symbol === topGainerSymbol,
-        isTopLoser: item.symbol === topLoserSymbol,
-        isTopVolume: item.symbol === topVolumeSymbol
+      for (let i = 0; i < selected.items.length; i++) {
+        const item = selected.items[i];
+        if (!item) continue;
+        const rank = item.rankByQuoteVolume || i + 1;
+        const metrics = mapTopCoinTowerMetrics({
+          pct: item.priceChangePercent,
+          quoteVolume: item.quoteVolume,
+          maxQuoteVolume,
+          rank,
+          isTopGainer: item.symbol === topGainerSymbol,
+          isTopLoser: item.symbol === topLoserSymbol,
+          isTopVolume: item.symbol === topVolumeSymbol
+        });
+        metricsBySymbol.set(item.symbol, metrics);
+        sizeScoreBySymbol.set(item.symbol, metrics.sizeScore);
+      }
+
+      const layout = await buildTopCoinsLayoutTargets({
+        items: selected.items.map((item, index) => ({
+          symbol: item.symbol,
+          rank: item.rankByQuoteVolume || index + 1,
+          pct: item.priceChangePercent,
+          isTopVolume: item.symbol === topVolumeSymbol,
+          isTopGainer: item.symbol === topGainerSymbol,
+          isTopLoser: item.symbol === topLoserSymbol
+        })),
+        states,
+        sizeScoreBySymbol,
+        solve: layoutWorker.solve
       });
-      metricsBySymbol.set(item.symbol, metrics);
-      sizeScoreBySymbol.set(item.symbol, metrics.sizeScore);
-    }
+      if (cancelled) return;
+      lastAppliedKeyRef.current = applyKey;
 
-    const layout = buildTopCoinsLayoutTargets({
-      items: selected.items.map((item, index) => ({
-        symbol: item.symbol,
-        rank: item.rankByQuoteVolume || index + 1,
-        pct: item.priceChangePercent,
-        isTopVolume: item.symbol === topVolumeSymbol,
-        isTopGainer: item.symbol === topGainerSymbol,
-        isTopLoser: item.symbol === topLoserSymbol
-      })),
-      states,
-      sizeScoreBySymbol
-    });
+      const isInitialLiveSceneApply = !replayEnabled && !introRef.current.hasRun && states.size === 0 && selected.items.length > 0;
+      const shouldStartIntro = isInitialLiveSceneApply && layer2Ready;
+      if (shouldStartIntro) {
+        introRef.current.hasRun = true;
+        introRef.current.active = true;
+        introRef.current.startPending = true;
+        introRef.current.startedAtMs = 0;
+        introRef.current.elapsedMs = 0;
+        introRef.current.progress = 0;
+        introRef.current.bootAlpha = 0;
+        introRef.current.lifeAlpha = 0;
+        introRef.current.storyBeatUntilMs = 0;
+      }
 
-    const isInitialLiveSceneApply = !replayEnabled && !introRef.current.hasRun && states.size === 0 && selected.items.length > 0 && !metadataOnly;
-    const shouldStartIntro = isInitialLiveSceneApply && layer2Ready;
-    if (shouldStartIntro) {
-      introRef.current.hasRun = true;
-      introRef.current.active = true;
-      introRef.current.startPending = true;
-      introRef.current.startedAtMs = 0;
-      introRef.current.elapsedMs = 0;
-      introRef.current.progress = 0;
-      introRef.current.bootAlpha = 0;
-      introRef.current.lifeAlpha = 0;
-      introRef.current.storyBeatUntilMs = 0;
-    }
+      const isIntroApply = isInitialLiveSceneApply;
+      const introDelayByRank = (rank: number) => {
+        if (!isIntroApply) return 0;
+        if (rank <= 20) return TOP_INTRO_WAVE_A_START_MS + (rank - 1) * TOP_INTRO_WAVE_A_STEP_MS;
+        if (rank <= 80) return TOP_INTRO_WAVE_B_START_MS + (rank - 21) * TOP_INTRO_WAVE_B_STEP_MS;
+        return TOP_INTRO_WAVE_C_START_MS + (rank - 81) * TOP_INTRO_WAVE_C_STEP_MS;
+      };
 
-    const isIntroApply = isInitialLiveSceneApply;
-    const introDelayByRank = (rank: number) => {
-      if (!isIntroApply) return 0;
-      if (rank <= 20) return TOP_INTRO_WAVE_A_START_MS + (rank - 1) * TOP_INTRO_WAVE_A_STEP_MS;
-      if (rank <= 80) return TOP_INTRO_WAVE_B_START_MS + (rank - 21) * TOP_INTRO_WAVE_B_STEP_MS;
-      return TOP_INTRO_WAVE_C_START_MS + (rank - 81) * TOP_INTRO_WAVE_C_STEP_MS;
-    };
-
-    if (!metadataOnly) {
       const changedBudget = Math.max(1, selected.debug.changedCount || selected.items.length);
       const perTowerDelayMs = replayEnabled
         ? 0
@@ -4147,68 +4052,68 @@ function useTopCoinsSkyline(
           1
         );
       }
-    }
 
-    const meta = liveSnapshotRef.current ?? selected;
-    const asOfMs = meta.asOf;
-    const pollSec = Math.max(1, Math.floor((meta.debug.pollMs || 60_000) / 1000));
-    const nowDebug = Date.now();
-    const asOfAgeSec = asOfMs > 0 ? Math.max(0, (nowDebug - asOfMs) / 1000) : 0;
-    const nextUpdateInSec = Math.max(0, (meta.debug.nextUpdateAt - nowDebug) / 1000);
-    debugRef.current = {
-      snapshotSeq: meta.sequence,
-      applyCount: metadataOnly ? debugRef.current.applyCount : debugRef.current.applyCount + 1,
-      changedTowers: metadataOnly ? debugRef.current.changedTowers : changedTowers,
-      changedCount: meta.debug.changedCount,
-      heightDeltaSum: metadataOnly ? debugRef.current.heightDeltaSum : heightDeltaSum,
-      baseDeltaSum: metadataOnly ? debugRef.current.baseDeltaSum : baseDeltaSum,
-      lastAppliedAt: metadataOnly ? debugRef.current.lastAppliedAt : wallNowMs,
-      asOfMs,
-      asOfIso: meta.asOfIso || (asOfMs > 0 ? new Date(asOfMs).toISOString() : ''),
-      asOfAgeSec,
-      asOfAgeLabel: fmtAgeFriendly(asOfAgeSec),
-      staleData: asOfAgeSec > pollSec * 2,
-      symbols: meta.debug.symbols,
-      fetchedAt: meta.debug.fetchedAt,
-      lastFetchAt: meta.debug.lastFetchAt,
-      lastSuccessAt: meta.debug.lastSuccessAt,
-      pollSec,
-      nextUpdateAtMs: meta.debug.nextUpdateAt,
-      nextUpdateInSec,
-      nextUpdateInLabel: fmtMmSs(nextUpdateInSec),
-      lastHash: meta.debug.lastHash,
-      hashChanged: meta.debug.hashChanged,
-      refreshAgeSec: meta.debug.refreshAgeSec,
-      lastError: meta.debug.lastError,
-      lastFetchOk: meta.debug.lastFetchOk,
-      logosMissing: meta.debug.logosMissing,
-      logosAttempted: meta.debug.logosAttempted,
-      logosDownloaded: meta.debug.logosDownloaded,
-      layoutIters: metadataOnly ? debugRef.current.layoutIters : layout.layoutIters,
-      minSeparation: metadataOnly ? debugRef.current.minSeparation : layout.minSeparation,
-      overlapFix: metadataOnly ? debugRef.current.overlapFix : layout.overlapFix,
-      introActive: introRef.current.active,
-      introBootAlpha: introRef.current.bootAlpha,
-      introLifeAlpha: introRef.current.lifeAlpha,
-      introProgress: introRef.current.progress,
-      clutter: clutterRef.current,
-      discVisible: Array.from(statesRef.current.values()).filter((state) => state.isDiscPriority).length,
-      discMode: replayEnabled ? 'replay' : 'live',
-      replayEnabled,
-      replayOffset,
-      replayMax,
-      replayAsOfIso: replayEnabled && activeSnapshot ? activeSnapshot.asOfIso : '',
-      topGainer: meta.stats.topGainer,
-      topLoser: meta.stats.topLoser,
-      topVolume: meta.stats.topVolume
+      const meta = liveSnapshotRef.current ?? selected;
+      const asOfMs = meta.asOf;
+      const pollSec = Math.max(1, Math.floor((meta.debug.pollMs || 60_000) / 1000));
+      const nowDebug = Date.now();
+      const asOfAgeSec = asOfMs > 0 ? Math.max(0, (nowDebug - asOfMs) / 1000) : 0;
+      const nextUpdateInSec = Math.max(0, (meta.debug.nextUpdateAt - nowDebug) / 1000);
+      debugRef.current = {
+        snapshotSeq: meta.sequence,
+        applyCount: debugRef.current.applyCount + 1,
+        changedTowers: changedTowers,
+        changedCount: meta.debug.changedCount,
+        heightDeltaSum: heightDeltaSum,
+        baseDeltaSum: baseDeltaSum,
+        lastAppliedAt: wallNowMs,
+        asOfMs,
+        asOfIso: meta.asOfIso || (asOfMs > 0 ? new Date(asOfMs).toISOString() : ''),
+        asOfAgeSec,
+        asOfAgeLabel: fmtAgeFriendly(asOfAgeSec),
+        staleData: asOfAgeSec > pollSec * 2,
+        symbols: meta.debug.symbols,
+        fetchedAt: meta.debug.fetchedAt,
+        lastFetchAt: meta.debug.lastFetchAt,
+        lastSuccessAt: meta.debug.lastSuccessAt,
+        pollSec,
+        nextUpdateAtMs: meta.debug.nextUpdateAt,
+        nextUpdateInSec,
+        nextUpdateInLabel: fmtMmSs(nextUpdateInSec),
+        lastHash: meta.debug.lastHash,
+        hashChanged: meta.debug.hashChanged,
+        refreshAgeSec: meta.debug.refreshAgeSec,
+        lastError: meta.debug.lastError,
+        lastFetchOk: meta.debug.lastFetchOk,
+        logosMissing: meta.debug.logosMissing,
+        logosAttempted: meta.debug.logosAttempted,
+        logosDownloaded: meta.debug.logosDownloaded,
+        layoutIters: layout.layoutIters,
+        minSeparation: layout.minSeparation,
+        overlapFix: layout.overlapFix,
+        introActive: introRef.current.active,
+        introBootAlpha: introRef.current.bootAlpha,
+        introLifeAlpha: introRef.current.lifeAlpha,
+        introProgress: introRef.current.progress,
+        clutter: clutterRef.current,
+        discVisible: Array.from(statesRef.current.values()).filter((state) => state.isDiscPriority).length,
+        discMode: replayEnabled ? 'replay' : 'live',
+        replayEnabled,
+        replayOffset,
+        replayMax,
+        replayAsOfIso: replayEnabled && activeSnapshot ? activeSnapshot.asOfIso : '',
+        topGainer: meta.stats.topGainer,
+        topLoser: meta.stats.topLoser,
+        topVolume: meta.stats.topVolume
+      };
+
+      setVersion((v) => v + 1);
     };
+    void apply().catch((error) => { if (!cancelled) throw error; });
+    return () => { cancelled = true; };
 
-    if (!metadataOnly) {
-      setVersion((v) => v + 1);
-    } else {
-      setVersion((v) => v + 1);
-    }
   }, [
+    layoutWorker,
     activeSnapshot,
     historyVersion,
     layer2Ready,
@@ -4260,6 +4165,7 @@ function useTopCoinsSkyline(
       const dt = Math.max(0.001, rawDtMs / 1000);
       prevTime = now;
       let dirty = false;
+      let effectDirty = false;
       const nowAnimMs = now;
       const nowWallMs = Date.now();
 
@@ -4269,7 +4175,7 @@ function useTopCoinsSkyline(
       const nextWaveLoad = easeTowards(updateWaveLoadRef.current, waveLoadTarget, 4.5, dt);
       if (Math.abs(nextWaveLoad - updateWaveLoadRef.current) > 0.001) {
         updateWaveLoadRef.current = nextWaveLoad;
-        dirty = true;
+        effectDirty = true;
       }
 
       if (introRef.current.active && introRef.current.startPending) {
@@ -4286,7 +4192,7 @@ function useTopCoinsSkyline(
             state.discRevealDelayMs = undefined;
           }
         }
-        dirty = true;
+
       }
 
       if (introRef.current.active) {
@@ -4306,7 +4212,7 @@ function useTopCoinsSkyline(
           introRef.current.bootAlpha = bootAlpha;
           introRef.current.lifeAlpha = lifeAlpha;
           introRef.current.progress = progress;
-          dirty = true;
+          effectDirty = true;
         }
         if (elapsed >= TOP_INTRO_TOTAL_MS) {
           introRef.current.active = false;
@@ -4316,7 +4222,7 @@ function useTopCoinsSkyline(
           introRef.current.progress = 1;
           introRef.current.elapsedMs = TOP_INTRO_TOTAL_MS;
           introRef.current.storyBeatUntilMs = nowWallMs + TOP_INTRO_CAMERA_BEAT_MS;
-          dirty = true;
+
         }
       }
 
@@ -4353,7 +4259,7 @@ function useTopCoinsSkyline(
         }
         if (state.sparkUntilMs > 0 && nowPerf > state.sparkUntilMs) {
           state.sparkUntilMs = 0;
-          dirty = true;
+          effectDirty = true;
         }
         if (
           state.sparkUntilMs <= 0 &&
@@ -4362,9 +4268,11 @@ function useTopCoinsSkyline(
           Math.sin(nowPerf * 0.00013 + state.sequence * 0.17) > 0.9988
         ) {
           state.sparkUntilMs = nowPerf + 360;
-          dirty = true;
+          effectDirty = true;
         }
 
+        const rendered = renderedRecordsRef.current.get(symbol);
+        if (rendered) rendered.sparkUntilMs = state.sparkUntilMs;
         if (
           Math.abs(state.x - prevX) > 0.001 ||
           Math.abs(state.z - prevZ) > 0.001 ||
@@ -4380,6 +4288,29 @@ function useTopCoinsSkyline(
         }
       }
 
+      if (effectDirty) {
+        for (const [symbol, rendered] of renderedRecordsRef.current) {
+          const state = statesRef.current.get(symbol);
+          if (!state) continue;
+          const breathe = state.isTopGainer || state.isTopLoser
+            ? 1 + Math.sin((now + state.sequence * 31) * 0.0018) * 0.045 : 1;
+          rendered.glowStrength = state.glowStrength * breathe * (1 - clutterRef.current * 0.14)
+            * MathUtils.clamp(state.opacity, 0, 1);
+        }
+      }
+      let mountedTowerCount = 0;
+      for (const state of statesRef.current.values()) {
+        if (state.opacity > 0.02 && state.emittedAt <= now + TOP_LAYER2_MOUNT_LEAD_MS) mountedTowerCount++;
+      }
+      const intro = introRef.current;
+      const structureKey = [mountedTowerCount, statesRef.current.size, intro.active,
+        intro.progress >= 0.995, intro.lifeAlpha > 0.001,
+        smoothstep01(remapClamped(intro.lifeAlpha, 0.02, 0.98)) > 0.01,
+        updateWaveLoadRef.current > 0.08].join(':');
+      if (structureKey !== structureKeyRef.current) {
+        structureKeyRef.current = structureKey;
+        dirty = true;
+      }
       if (dirty) setVersion((v) => v + 1);
       raf = window.requestAnimationFrame(tick);
     };
@@ -4478,6 +4409,7 @@ function useTopCoinsSkyline(
         sparkUntilMs: state.sparkUntilMs
       });
     }
+    renderedRecordsRef.current = new Map(out.map((tower) => [tower.symbol!, tower]));
     return out;
   }, [activeSnapshot, version]);
 
@@ -4511,7 +4443,7 @@ function useTopCoinsSkyline(
     shockwaves: shockwavesRef.current,
     recordCeremonies: recordCeremoniesRef.current,
     bounds: boundsRef.current,
-    marketMoodTarget: moodRef.current,
+    marketMoodTarget: readMarketMood,
     latestHeightDebug: null as HeightDebugSnapshot | null,
     tallestTowerSequence,
     tallestTowerHeight,
@@ -4542,15 +4474,7 @@ function useTopCoinsSkyline(
         pushShockwave(0, 0, '#9ec1e9', TOP_REPLAY_SCRUB_MS, 10, 0.14);
       }
     },
-    topFx: {
-      introBootAlpha: introRef.current.bootAlpha,
-      introLifeAlpha: introRef.current.lifeAlpha,
-      introProgress: introRef.current.progress,
-      introActive: introRef.current.active,
-      storyBeatUntilMs: introRef.current.storyBeatUntilMs,
-      clutter: MathUtils.clamp(clutterRef.current + updateWaveLoadRef.current * 0.42, 0, 1),
-      transitionLoad: updateWaveLoadRef.current
-    }
+    topFx: frameFx
   };
 }
 
@@ -5516,8 +5440,25 @@ const topCoinTickerTextureCache = new Map<string, CanvasTexture>();
 const topCoinLogoLoader = new TextureLoader();
 let topCoinTextureCacheEpoch = 0;
 
+const activeTopCoinTextures = new Map<Texture, number>();
+const retiredTopCoinTextures = new Set<Texture>();
+
+function retainTopCoinTexture(texture: Texture) {
+  activeTopCoinTextures.set(texture, (activeTopCoinTextures.get(texture) ?? 0) + 1);
+  return () => {
+    const count = (activeTopCoinTextures.get(texture) ?? 1) - 1;
+    if (count > 0) activeTopCoinTextures.set(texture, count);
+    else {
+      activeTopCoinTextures.delete(texture);
+      if (retiredTopCoinTextures.delete(texture)) texture.dispose();
+    }
+  };
+}
+
 function disposeTopCoinTexture(texture: Texture | null | undefined) {
-  texture?.dispose();
+  if (!texture) return;
+  if (activeTopCoinTextures.has(texture)) retiredTopCoinTextures.add(texture);
+  else texture.dispose();
 }
 
 function touchTopCoinTextureCacheEntry<T>(cache: Map<string, T>, key: string, value: T) {
@@ -5550,7 +5491,7 @@ function clearTopCoinTextureCaches() {
     disposeTopCoinTexture(texture);
   }
   for (const texture of topCoinTickerTextureCache.values()) {
-    texture.dispose();
+    disposeTopCoinTexture(texture);
   }
   topCoinLogoTextureCache.clear();
   topCoinLogoTextureInflight.clear();
@@ -5585,7 +5526,7 @@ function getTopCoinTickerTexture(ticker: string, options: TopCoinsDiscTextureOpt
       generateMipmaps: options.fallbackMipmaps
     });
     touchTopCoinTextureCacheEntry(topCoinTickerTextureCache, cacheKey, fallback);
-    trimTopCoinTextureCache(topCoinTickerTextureCache, options.fallbackCacheLimit, (texture) => texture.dispose());
+    trimTopCoinTextureCache(topCoinTickerTextureCache, options.fallbackCacheLimit, (texture) => disposeTopCoinTexture(texture));
     return fallback;
   }
 
@@ -5635,7 +5576,7 @@ function getTopCoinTickerTexture(ticker: string, options: TopCoinsDiscTextureOpt
     generateMipmaps: options.fallbackMipmaps
   });
   touchTopCoinTextureCacheEntry(topCoinTickerTextureCache, cacheKey, texture);
-  trimTopCoinTextureCache(topCoinTickerTextureCache, options.fallbackCacheLimit, (value) => value.dispose());
+  trimTopCoinTextureCache(topCoinTickerTextureCache, options.fallbackCacheLimit, (value) => disposeTopCoinTexture(value));
   return texture;
 }
 
@@ -5721,6 +5662,8 @@ function useTopCoinDiscTexture(
     usingFallback: Boolean(fallback)
   });
 
+  useLayoutEffect(() => state.texture ? retainTopCoinTexture(state.texture) : undefined, [state.texture]);
+
   useEffect(() => {
     let mounted = true;
     if (!options.allowTextureAllocation) {
@@ -5793,12 +5736,13 @@ function TopCoinLogoDisc({
   discTextureOptions: TopCoinsDiscTextureOptions;
   focusAnchorX?: number;
   focusAnchorZ?: number;
-  introLifeAlpha?: number;
-  clutter?: number;
-  transitionLoad?: number;
+  introLifeAlpha?: FrameValue;
+  clutter?: FrameValue;
+  transitionLoad?: FrameValue;
 }) {
   const { camera, gl, size } = useThree();
   const groupRef = useRef<Group>(null);
+  useRenderBatchGroup(groupRef);
   const discRef = useRef<Mesh>(null);
   const ringRef = useRef<Mesh>(null);
   const bodyRef = useRef<Mesh>(null);
@@ -5838,8 +5782,8 @@ function TopCoinLogoDisc({
     const priorityAlpha = isForceVisible ? 1 : isPriority ? 1 : contextualAlpha;
     const introDelay =
       tower.discRevealAt && tower.discRevealAt > 0 ? MathUtils.clamp((performance.now() - tower.discRevealAt) / 900, 0, 1) : 1;
-    const introFade = MathUtils.clamp(introLifeAlpha, 0, 1) * introDelay;
-    const transitionVisibility = 1 - smoothstep01(remapClamped(transitionLoad, 0.05, 0.22));
+    const introFade = MathUtils.clamp(readFrameValue(introLifeAlpha), 0, 1) * introDelay;
+    const transitionVisibility = 1 - smoothstep01(remapClamped(readFrameValue(transitionLoad), 0.05, 0.22));
     const baseLodAlpha = MathUtils.clamp(priorityAlpha * introFade * transitionVisibility, 0, 1);
     const trackScreenOcclusion = Boolean(texture) || isForceVisible;
 
@@ -5898,7 +5842,7 @@ function TopCoinLogoDisc({
     }
 
     const occlusionFade = isForceVisible ? 1 : 1 - MathUtils.clamp(screenOcclusion * 0.8, 0, 0.8);
-    const clutterFade = MathUtils.lerp(1, 0.84, MathUtils.clamp(clutter, 0, 1));
+    const clutterFade = MathUtils.lerp(1, 0.84, MathUtils.clamp(readFrameValue(clutter), 0, 1));
     const lodAlpha = MathUtils.clamp(baseLodAlpha * occlusionFade * clutterFade, 0, 1);
     if (!isForceVisible && screenOcclusion > 0.3) {
       const stagger = MathUtils.lerp(
@@ -5924,6 +5868,8 @@ function TopCoinLogoDisc({
     }
     const discMat = discRef.current?.material as { opacity?: number } | undefined;
     if (discMat) discMat.opacity = MathUtils.damp(discMat.opacity ?? 0.96, 0.96 * dimFactor * hoverBoost * lodAlpha, 9, delta);
+    // Keep the decoded logo ready for an immediate reveal, without drawing its fully faded face.
+    if (discRef.current && discMat) discRef.current.visible = (discMat.opacity ?? 0) > 1e-8;
     const ringMat = ringRef.current?.material as { opacity?: number } | undefined;
     if (ringMat) ringMat.opacity = MathUtils.damp(ringMat.opacity ?? 0.34, 0.34 * dimFactor * hoverBoost * lodAlpha, 8, delta);
   });
@@ -6079,12 +6025,14 @@ function HoverProjectionTracker({
 
 function HoverHudOverlay({
   tower,
-  hud
+  hudStore
 }: {
   tower: TowerDatum | null;
-  hud: HoverHudSnapshot;
+  hudStore: ReturnType<typeof createFrameStore<HoverHudSnapshot>>;
 }) {
-  if (!tower || !hud.visible || hud.towerSequence !== tower.sequence) return null;
+  const hud = hudStore.getSnapshot();
+  const layout = useHoverHudLayout(hudStore, tower?.sequence ?? null, HOVER_LABEL_WIDTH_PX, HOVER_LABEL_HEIGHT_PX);
+  if (!tower) return null;
   const isTopCoins = tower.mode === 'top200';
   const topTicker = getTopCoinTicker(tower.symbol, tower.baseAsset);
 
@@ -6098,6 +6046,7 @@ function HoverHudOverlay({
 
   return (
     <div
+      ref={layout.root}
       style={{
         position: 'absolute',
         inset: 0,
@@ -6107,6 +6056,7 @@ function HoverHudOverlay({
       aria-hidden="true"
     >
       <div
+        ref={layout.label}
         style={{
           position: 'absolute',
           left: hud.labelX,
@@ -6199,6 +6149,7 @@ function HoverHudOverlay({
       </div>
 
       <div
+        ref={layout.line}
         style={{
           position: 'absolute',
           left: lineStartX,
@@ -6212,6 +6163,7 @@ function HoverHudOverlay({
         }}
       />
       <div
+        ref={layout.anchor}
         style={{
           position: 'absolute',
           left: hud.anchorX - 3,
@@ -6261,6 +6213,7 @@ function AnimatedHoloTower({
   };
 }) {
   const groupRef = useRef<Group>(null);
+  useRenderBatchGroup(groupRef);
   const coreRefs = useRef<Array<Mesh | null>>([]);
   const shellRefs = useRef<Array<Mesh | null>>([]);
   const edgeRefs = useRef<Array<Mesh | null>>([]);
@@ -6281,11 +6234,8 @@ function AnimatedHoloTower({
   const coreColor = useMemo(() => new Color(tower.coreColor), [tower.coreColor]);
   const districtAccentColor = useMemo(() => new Color(tower.districtAccentColor), [tower.districtAccentColor]);
   const strokeColor = BTC_SELL_WARM;
-  const segments = useMemo(() => buildTowerSegments(tower), [tower]);
-  const outlineGeometries = useMemo(
-    () => segments.map((seg) => new EdgesGeometry(new BoxGeometry(seg.sx, seg.height, seg.sz))),
-    [segments]
-  );
+  const segments = useMemo(() => buildTowerSegments(tower), [tower.archetypeId, tower.height, tower.footprintX, tower.footprintZ, tower.taper, tower.podiumRatio, tower.crownRatio]);
+  const outlineGeometries = useMemo(() => segments.map(() => TOWER_OUTLINE_GEOMETRY), [segments.length]);
   const outlineMaterial = useMemo(() => {
     const m = new LineBasicMaterial({
       color: strokeColor,
@@ -6337,14 +6287,7 @@ function AnimatedHoloTower({
     rainRefs.current.length = 3;
   }, [segments.length, bandFractions.length, microPanelFractions.length, antennaCount]);
 
-  useEffect(() => {
-    return () => {
-      for (let i = 0; i < outlineGeometries.length; i++) {
-        outlineGeometries[i]?.dispose();
-      }
-      outlineMaterial.dispose();
-    };
-  }, [outlineGeometries, outlineMaterial]);
+  useEffect(() => () => outlineMaterial.dispose(), [outlineMaterial]);
 
   const isHovered = hoveredTowerSequence === tower.sequence;
   const isSelected = selectedTowerSequence === tower.sequence;
@@ -6639,11 +6582,11 @@ function AnimatedHoloTower({
             Math.max(tower.baseD, tower.footprintZ) * 1.22
           ]}
         />
-        <meshBasicMaterial transparent opacity={0} colorWrite={false} depthTest={false} depthWrite={false} />
+        <meshBasicMaterial visible={false} transparent opacity={0} colorWrite={false} depthTest={false} depthWrite={false} />
       </mesh>
 
       {segments.map((seg, i) => (
-        <group key={`${tower.sequence}-seg-${seg.id}-${i}`} position={[seg.ox ?? 0, seg.y, seg.oz ?? 0]}>
+        <group key={`${tower.sequence}-seg-${seg.id}-${i}`} position={[seg.ox ?? 0, seg.y, seg.oz ?? 0]} scale={[seg.sx, seg.height, seg.sz]}>
           <mesh
             castShadow={RUNTIME_QUALITY_CONFIG.shadows}
             receiveShadow={RUNTIME_QUALITY_CONFIG.shadows}
@@ -6651,7 +6594,7 @@ function AnimatedHoloTower({
               coreRefs.current[i] = el;
             }}
           >
-            <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
+            <primitive attach="geometry" object={TOWER_BOX_GEOMETRY} />
             <meshStandardMaterial
               color={coreColor}
               transparent={false}
@@ -6677,7 +6620,7 @@ function AnimatedHoloTower({
             scale={[GLOW_SHELL_SCALE, 1.002, GLOW_SHELL_SCALE]}
             renderOrder={6.12}
           >
-            <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
+            <primitive attach="geometry" object={TOWER_BOX_GEOMETRY} />
             <meshBasicMaterial
               color={glowColor}
               transparent
@@ -6698,7 +6641,7 @@ function AnimatedHoloTower({
             scale={[GLOW_EDGE_SCALE, 1.006, GLOW_EDGE_SCALE]}
             renderOrder={6.14}
           >
-            <boxGeometry args={[seg.sx, seg.height, seg.sz]} />
+            <primitive attach="geometry" object={TOWER_BOX_GEOMETRY} />
             <meshBasicMaterial
               color={strokeColor}
               wireframe
@@ -6870,9 +6813,9 @@ function AnimatedHoloTower({
           discTextureOptions={discTextureOptions}
           focusAnchorX={discFocusAnchorX}
           focusAnchorZ={discFocusAnchorZ}
-          introLifeAlpha={topFx?.introLifeAlpha ?? 1}
-          clutter={topFx?.clutter ?? 0}
-          transitionLoad={topFx?.transitionLoad ?? 0}
+          introLifeAlpha={() => topFx?.introLifeAlpha ?? 1}
+          clutter={() => topFx?.clutter ?? 0}
+          transitionLoad={() => topFx?.transitionLoad ?? 0}
         />
       ) : null}
       {isTallest && tower.mode !== 'top200' ? <TallestBtcDecals tower={tower} focusMode={focusMode} isHovered={isHovered} /> : null}
@@ -7104,7 +7047,7 @@ function ScreenSpaceGroundLine({
     m.polygonOffsetUnits = -2;
     if (additive) m.blending = AdditiveBlending;
     return m;
-  }, [color, opacity, lineWidth, additive]);
+  }, [color, lineWidth, additive]);
 
   const line = useMemo(() => {
     const l = new Line2(geometry, material);
@@ -7127,19 +7070,16 @@ function ScreenSpaceGroundLine({
 
   useEffect(() => {
     opacityRef.current = opacity;
-  }, [opacity]);
+    material.opacity = opacity;
+  }, [material, opacity]);
 
   useFrame((_, delta) => {
     const target = opacityRef.current * (focusMode ? focusDim : 1);
     material.opacity = MathUtils.damp(material.opacity, target, 9.5, delta);
   });
 
-  useEffect(() => {
-    return () => {
-      geometry.dispose();
-      material.dispose();
-    };
-  }, [geometry, material]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  useEffect(() => () => material.dispose(), [material]);
 
   return <primitive object={line} />;
 }
@@ -7152,8 +7092,8 @@ function CircuitBoardGround({
 }: {
   bounds: SandboxBounds;
   focusMode?: boolean;
-  marketPulse?: number;
-  introBootAlpha?: number;
+  marketPulse?: FrameValue;
+  introBootAlpha?: FrameValue;
 }) {
   const boardSize = MathUtils.clamp(Math.max(420, bounds.radius * 8 + 180), 420, 1400);
   const targetGlowRadius = clampFinite(Math.max(30, bounds.radius * RADIAL_GLOW_RADIUS_MULT), 64, 30, boardSize * 0.48);
@@ -7170,13 +7110,13 @@ function CircuitBoardGround({
     BTC_GROUND_BOOT_MS <= 0
       ? 1
       : MathUtils.clamp((performance.now() - introBootStartAtRef.current) / BTC_GROUND_BOOT_MS, 0, 1);
-  const initialIntroBoot = Math.max(MathUtils.clamp(introBootAlpha, 0, 1), initialIntroBootFromClock);
+  const initialIntroBoot = Math.max(MathUtils.clamp(readFrameValue(introBootAlpha), 0, 1), initialIntroBootFromClock);
   const initialIntroScale = MathUtils.lerp(BTC_GROUND_BOOT_START_SCALE, 1, easeOutCubic(initialIntroBoot));
   const graphicsGroupRef = useRef<Group>(null);
   const smoothGlowRadiusRef = useRef(targetGlowRadius);
   const introScaleRef = useRef(initialIntroScale);
   const focusMixRef = useRef(0);
-  const moodRef = useRef(marketPulse);
+  const moodRef = useRef(readFrameValue(marketPulse));
   const glowGeometry = useMemo(() => new PlaneGeometry(1, 1, 1, 1), []);
   const gridSegments = useMemo(() => buildGridSegments(lineExtent, gridStep), [lineExtent, gridStep]);
   const gridLinePairs = useMemo(() => segmentsToLinePointPairs(gridSegments), [gridSegments]);
@@ -7219,7 +7159,7 @@ function CircuitBoardGround({
       BTC_GROUND_BOOT_MS <= 0
         ? 1
         : MathUtils.clamp((performance.now() - introBootStartAtRef.current) / BTC_GROUND_BOOT_MS, 0, 1);
-    const introBoot = Math.max(MathUtils.clamp(introBootAlpha, 0, 1), introBootFromClock);
+    const introBoot = Math.max(MathUtils.clamp(readFrameValue(introBootAlpha), 0, 1), introBootFromClock);
     const introVisual = MathUtils.lerp(0.62, 1, introBoot);
     const introScaleTarget = MathUtils.lerp(BTC_GROUND_BOOT_START_SCALE, 1, easeOutCubic(introBoot));
     introScaleRef.current = MathUtils.damp(introScaleRef.current, introScaleTarget, 9, delta);
@@ -7228,7 +7168,7 @@ function CircuitBoardGround({
     }
 
     focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 6.5, delta);
-    moodRef.current = MathUtils.damp(moodRef.current, marketPulse, MARKET_PULSE_DAMP, delta);
+    moodRef.current = MathUtils.damp(moodRef.current, readFrameValue(marketPulse), MARKET_PULSE_DAMP, delta);
     const mood = ENABLE_MARKET_PULSE ? moodRef.current : 0;
     const safeTarget = clampFinite(targetGlowRadius, smoothGlowRadiusRef.current || 64, 30, boardSize * 0.48);
     if (!Number.isFinite(smoothGlowRadiusRef.current)) {
@@ -7257,7 +7197,7 @@ function CircuitBoardGround({
   });
 
   const focusStaticScale = focusMode ? FOCUS_GROUND_DIM : 1;
-  const intro = MathUtils.lerp(0.62, 1, MathUtils.clamp(introBootAlpha, 0, 1));
+  const intro = MathUtils.lerp(0.62, 1, MathUtils.clamp(readFrameValue(introBootAlpha), 0, 1));
 
   return (
     <group>
@@ -7448,6 +7388,8 @@ function ParksLayer({
   const crownGlowRef = useRef<ThreeInstancedMesh>(null);
   const fireflyRef = useRef<ThreeInstancedMesh>(null);
   const focusMixRef = useRef(0);
+  const treeMatricesDirtyRef = useRef(true);
+  useLayoutEffect(() => { treeMatricesDirtyRef.current = true; }, [trees, trees.length, parks, parks.length]);
   const matrixRef = useRef(new Matrix4());
   const posRef = useRef(new Vector3());
   const sclRef = useRef(new Vector3());
@@ -7595,7 +7537,8 @@ function ParksLayer({
     const trunkWire = trunkWireRef.current;
     const crownWire = crownWireRef.current;
     const crownGlow = crownGlowRef.current;
-    if (trunk && crown && trunkWire && crownWire && crownGlow) {
+    if (treeMatricesDirtyRef.current && trunk && crown && trunkWire && crownWire && crownGlow) {
+      let hasGrowingTree = false;
       const matrix = matrixRef.current;
       const pos = posRef.current;
       const scl = sclRef.current;
@@ -7616,6 +7559,7 @@ function ParksLayer({
         const localDelay = (birth?.localIndex ?? 0) * (RUNTIME_QUALITY_CONFIG.reducedMotion ? 18 : 28);
         const elapsed = treeNowMs - (birthAt + localDelay);
         const riseT = MathUtils.clamp(elapsed / BIRTH_RISE_MS, 0, 1);
+        if (riseT < 1) hasGrowingTree = true;
         const riseScaleY = Math.max(0.0001, easeOutBack(riseT, BIRTH_OVERSHOOT));
         const crownScaleXZ = MathUtils.lerp(0.25, 1, MathUtils.clamp(riseT * 1.15, 0, 1));
         quat.setFromAxisAngle(up, tree.yaw);
@@ -7645,6 +7589,7 @@ function ParksLayer({
         matrix.compose(pos, quat, scl);
         crownGlow.setMatrixAt(i, matrix);
       }
+      treeMatricesDirtyRef.current = hasGrowingTree;
       trunk.instanceMatrix.needsUpdate = true;
       crown.instanceMatrix.needsUpdate = true;
       trunkWire.instanceMatrix.needsUpdate = true;
@@ -8022,17 +7967,19 @@ function TraceStrips({
 }: {
   traces: TraceDatum[];
   focusMode?: boolean;
-  marketPulse?: number;
+  marketPulse?: FrameValue;
   arterial?: boolean;
-  introLifeAlpha?: number;
-  clutter?: number;
+  introLifeAlpha?: FrameValue;
+  clutter?: FrameValue;
 }) {
   const { camera } = useThree();
+  const groupRef = useRef<Group>(null);
+  useRenderBatchGroup(groupRef);
   const glowRefs = useRef<Array<Mesh | null>>([]);
   const coreRefs = useRef<Array<Mesh | null>>([]);
   const scanRefs = useRef<Array<Mesh | null>>([]);
   const focusMixRef = useRef(0);
-  const pulseRef = useRef(marketPulse);
+  const pulseRef = useRef(readFrameValue(marketPulse));
 
   useEffect(() => {
     glowRefs.current.length = traces.length;
@@ -8041,13 +7988,13 @@ function TraceStrips({
   }, [traces.length]);
 
   useEffect(() => {
-    pulseRef.current = marketPulse;
+    pulseRef.current = readFrameValue(marketPulse);
   }, [marketPulse]);
 
   useFrame(({ clock }, delta) => {
     const visCurve = distanceVisibilityCurve(camera.position.length());
     focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 7.5, delta);
-    pulseRef.current = MathUtils.damp(pulseRef.current, marketPulse, MARKET_PULSE_DAMP, delta);
+    pulseRef.current = MathUtils.damp(pulseRef.current, readFrameValue(marketPulse), MARKET_PULSE_DAMP, delta);
     const localPulse = ENABLE_MARKET_PULSE ? pulseRef.current : 0;
     const glowWidthScale = MathUtils.lerp(1, arterial ? 2.75 : 2.4, visCurve);
     const coreWidthScale = MathUtils.lerp(1, arterial ? 2.25 : 1.95, visCurve);
@@ -8064,8 +8011,8 @@ function TraceStrips({
       0,
       arterial ? 0.98 : 0.9
     );
-    const clutterFade = MathUtils.lerp(1, 0.86, MathUtils.clamp(clutter, 0, 1));
-    const introAlpha = MathUtils.clamp(introLifeAlpha, 0, 1);
+    const clutterFade = MathUtils.lerp(1, 0.86, MathUtils.clamp(readFrameValue(clutter), 0, 1));
+    const introAlpha = MathUtils.clamp(readFrameValue(introLifeAlpha), 0, 1);
     const finalGlowOpacity = glowOpacity * clutterFade * introAlpha;
     const finalCoreOpacity = coreOpacity * clutterFade * introAlpha;
     for (let i = 0; i < traces.length; i++) {
@@ -8098,7 +8045,7 @@ function TraceStrips({
   });
 
   return (
-    <group>
+    <group ref={groupRef}>
       {/* Render band 4/4.6: depth-tested traces above ground graphics, below traffic/towers */}
       {traces.map((trace, i) => (
         <group
@@ -8185,8 +8132,8 @@ function TrafficParticles({
 }: {
   particles: TrafficParticleDatum[];
   focusMode?: boolean;
-  introLifeAlpha?: number;
-  clutter?: number;
+  introLifeAlpha?: FrameValue;
+  clutter?: FrameValue;
 }) {
   const { camera } = useThree();
   const bodyRef = useRef<ThreeInstancedMesh>(null);
@@ -8242,7 +8189,7 @@ function TrafficParticles({
   useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime();
     const visCurve = distanceVisibilityCurve(camera.position.length());
-    const introGate = MathUtils.clamp(introLifeAlpha, 0, 1) > 0.01;
+    const introGate = MathUtils.clamp(readFrameValue(introLifeAlpha), 0, 1) > 0.01;
     focusMixRef.current = MathUtils.damp(focusMixRef.current, focusMode ? 1 : 0, 7.5, delta);
     const sizeScale = MathUtils.lerp(1.15, 1.95, visCurve);
     const body = bodyRef.current;
@@ -8355,8 +8302,8 @@ function TrafficParticles({
 
     // Keep traffic readable at wide zoom: stronger glow shell + lights; bodies stay bright (meshBasic).
     const dimScale = MathUtils.lerp(1, FOCUS_TRAFFIC_DIM, focusMixRef.current);
-    const introAlpha = MathUtils.clamp(introLifeAlpha, 0, 1);
-    const clutterFade = MathUtils.lerp(1, 0.88, MathUtils.clamp(clutter, 0, 1));
+    const introAlpha = MathUtils.clamp(readFrameValue(introLifeAlpha), 0, 1);
+    const clutterFade = MathUtils.lerp(1, 0.88, MathUtils.clamp(readFrameValue(clutter), 0, 1));
     const bodyMat = body.material as { color?: Color } | undefined;
     if (bodyMat?.color && !DEBUG_FORCE_TRAFFIC_VIS) {
       bodyMat.color.copy(tempColorA.set('#f4fbff').lerp(tempColorB.set('#43505c'), focusMixRef.current));
@@ -8886,7 +8833,7 @@ function MountainsBackdrop({
 }: {
   cityRadius: number;
   cityScaleMetric: number;
-  introBootAlpha: number;
+  introBootAlpha: FrameValue;
 }) {
   const farCoreRef = useRef<ThreeInstancedMesh>(null);
   const farShoulderRef = useRef<ThreeInstancedMesh>(null);
@@ -8915,6 +8862,7 @@ function MountainsBackdrop({
   const smoothScaleRef = useRef(targetScaleRef.current);
   const revealTimeRef = useRef(0);
   const mountElapsedRef = useRef(0);
+  const appliedShapeRef = useRef({ ring: NaN, scale: NaN });
   const matrixRef = useRef(new Matrix4());
   const quatRef = useRef(new Quaternion());
   const posRef = useRef(new Vector3());
@@ -9090,7 +9038,7 @@ function MountainsBackdrop({
     smoothRingRef.current = MathUtils.damp(smoothRingRef.current, targetRingRef.current, 0.92, delta);
     smoothScaleRef.current = MathUtils.damp(smoothScaleRef.current, targetScaleRef.current, 0.95, delta);
 
-    const introGate = smoothstep01(remapClamped(introBootAlphaRef.current, 0.82, 0.995));
+    const introGate = smoothstep01(remapClamped(readFrameValue(introBootAlphaRef.current), 0.82, 0.995));
     if (introGate > 0.001) {
       revealTimeRef.current += delta * MathUtils.lerp(0.45, 1, introGate);
     } else {
@@ -9115,6 +9063,8 @@ function MountainsBackdrop({
     applyRevealToGroup(farGroupRef.current, farReveal, scale * 0.24, 1.035);
     applyRevealToGroup(midGroupRef.current, midReveal, scale * 0.3, 1.05);
     applyRevealToGroup(peakGroupRef.current, peakReveal, scale * 0.36, 1.06);
+    if (ring === appliedShapeRef.current.ring && scale === appliedShapeRef.current.scale) return;
+    appliedShapeRef.current = { ring, scale };
     const farY = GROUND_DECK_Y - scale * 0.56;
     const midY = GROUND_DECK_Y - scale * 0.6;
     const peakY = GROUND_DECK_Y - scale * 0.62;
@@ -9183,7 +9133,7 @@ function TopBirdFlock({
 }: {
   towers: TowerDatum[];
   cityRadius: number;
-  introLifeAlpha: number;
+  introLifeAlpha: FrameValue;
 }) {
   const { camera, size } = useThree();
   const meshRef = useRef<ThreeInstancedMesh>(null);
@@ -9231,6 +9181,7 @@ function TopBirdFlock({
   const quatRef = useRef(new Quaternion());
   const upRef = useRef(new Vector3(0, 1, 0));
 
+  const columnIndexRef = useRef(new SpatialIndex<number>(16));
   const geometry = useMemo(() => {
     const g = new ConeGeometry(0.16, 0.42, 3, 1);
     g.rotateX(Math.PI * 0.5);
@@ -9319,6 +9270,11 @@ function TopBirdFlock({
       cols.radius[i] = radius;
       cols.height[i] = Math.max(0, tower.height);
     }
+    columnIndexRef.current.clear();
+    for (let c = 0; c < columnsRef.current.count; c++) {
+      columnIndexRef.current.add(c, columnsRef.current.x[c], columnsRef.current.z[c]);
+    }
+
   };
 
   const reseedBird = (idx: number, nowMs: number, keepAngle = false) => {
@@ -9382,7 +9338,7 @@ function TopBirdFlock({
     if (!mesh) return;
     const nowMs = performance.now();
     const nowSec = clock.getElapsedTime();
-    const introVisible = introLifeAlphaRef.current > TOP_BIRD_INTRO_ALPHA_SHOW;
+    const introVisible = readFrameValue(introLifeAlphaRef.current) > TOP_BIRD_INTRO_ALPHA_SHOW;
     const targetCount = introVisible ? targetCountRef.current : 0;
     adjustBudgetRef.current += delta * TOP_BIRD_COUNT_ADJUST_PER_SEC;
     while (adjustBudgetRef.current >= 1) {
@@ -9435,7 +9391,7 @@ function TopBirdFlock({
       let repelZ = 0;
       let altitudeLift = 0;
 
-      for (let c = 0; c < cols.count; c++) {
+      for (const c of columnIndexRef.current.query(x, z, TOP_BIRD_AVOID_RADIUS_MAX)) {
         const dx = x - cols.x[c];
         const dz = z - cols.z[c];
         const avoidR = cols.radius[c];
@@ -9644,15 +9600,15 @@ function useTopGroundIntroBoot() {
   };
 }
 
-function MarketMoodLightRig({ mood = 0.5 }: { mood?: number }) {
+function MarketMoodLightRig({ mood = 0.5 }: { mood?: FrameValue }) {
   const ambientRef = useRef<{ intensity: number; color: Color } | null>(null);
   const hemiRef = useRef<{ intensity: number; color: Color } | null>(null);
   const keyRef = useRef<{ intensity: number; color: Color } | null>(null);
   const fillRef = useRef<{ intensity: number; color: Color } | null>(null);
-  const moodRef = useRef(mood);
+  const moodRef = useRef(readFrameValue(mood));
 
   useFrame((_, delta) => {
-    moodRef.current = MathUtils.damp(moodRef.current, mood, 2.2, delta);
+    moodRef.current = MathUtils.damp(moodRef.current, readFrameValue(mood), 2.2, delta);
     const m = MathUtils.clamp(moodRef.current, 0, 1);
     const breadthSigned = m * 2 - 1;
     const coolTint = tempColorA.set('#9ec6ef');
@@ -9697,7 +9653,7 @@ function MarketMoodLightRig({ mood = 0.5 }: { mood?: number }) {
   );
 }
 
-function SandboxScene({
+const SandboxScene = memo(function SandboxScene({
   towers,
   traces,
   arterialTraces,
@@ -9742,7 +9698,7 @@ function SandboxScene({
   shockwaves: ShockwaveDatum[];
   recordCeremonies: RecordCeremonyDatum[];
   bounds: SandboxBounds;
-  marketMoodTarget: number;
+  marketMoodTarget: FrameValue;
   topFx?: {
     introBootAlpha: number;
     introLifeAlpha: number;
@@ -9781,9 +9737,13 @@ function SandboxScene({
     clutter: 0,
     transitionLoad: 0
   };
+  const motionFx = useMemo(() => ({
+    boot: () => fx.introBootAlpha, life: () => fx.introLifeAlpha,
+    clutter: () => fx.clutter, transition: () => fx.transitionLoad
+  }), [fx]);
   const progressiveLayers = useTopCoinsProgressiveLayers({
     enabled: Boolean(topCoinsRuntimeProfile?.progressiveActivation),
-    introLifeAlpha: fx.introLifeAlpha,
+    introLifeAlpha: motionFx.life,
     activeTowerCount: towers.length
   });
   const renderedTowers = useMemo(() => {
@@ -9879,7 +9839,7 @@ function SandboxScene({
     }
   }, [hoveredTowerSequence]);
 
-  const requestHoverTower = (sequence: number | null) => {
+  const requestHoverTower = useCallback((sequence: number | null) => {
     if (sequence == null) {
       hoverIntentRef.current = null;
       return;
@@ -9887,14 +9847,14 @@ function SandboxScene({
     if (cameraInteractionLocked) return;
     hoverIntentRef.current = sequence;
     hoverLastSeenAtRef.current = performance.now();
-  };
-  const requestSelectTower = (sequence: number) => {
+  }, [cameraInteractionLocked]);
+  const requestSelectTower = useCallback((sequence: number) => {
     if (cameraInteractionLocked) {
       onCinematicFlyoverCancelRequest?.();
       return;
     }
     onSelectTowerChange?.(sequence);
-  };
+  }, [cameraInteractionLocked, onCinematicFlyoverCancelRequest, onSelectTowerChange]);
 
   useEffect(() => {
     let raf = 0;
@@ -9966,6 +9926,7 @@ function SandboxScene({
         gl.setClearColor('#06080c', 1);
       }}
     >
+      <RenderBatches>
       <color attach="background" args={['#06080c']} />
       {ENABLE_CINEMATIC_BACKDROP ? <CinematicBackdrop /> : null}
       {topFx ? (
@@ -9998,12 +9959,12 @@ function SandboxScene({
         bounds={bounds}
         focusMode={focusMode}
         marketPulse={marketMoodTarget}
-        introBootAlpha={groundIntroBootAlpha ?? fx.introBootAlpha}
+        introBootAlpha={groundIntroBootAlpha ?? motionFx.boot}
       />
       <MountainsBackdrop
         cityRadius={bounds.radius}
         cityScaleMetric={mountainScaleMetric}
-        introBootAlpha={groundIntroBootAlpha ?? fx.introBootAlpha}
+        introBootAlpha={groundIntroBootAlpha ?? motionFx.boot}
       />
       {layer2Visible ? <DistrictBoundariesLayer districts={districts} focusMode={focusMode} /> : null}
       {layer2Visible ? <ShockwaveLayer shockwaves={shockwaves} focusMode={focusMode} /> : null}
@@ -10012,20 +9973,20 @@ function SandboxScene({
         traces={tracesRender}
         focusMode={focusMode}
         marketPulse={marketMoodTarget}
-        introLifeAlpha={fx.introLifeAlpha}
-        clutter={fx.clutter}
+        introLifeAlpha={motionFx.life}
+        clutter={motionFx.clutter}
       />
       <TraceStrips
         traces={arterialTracesRender}
         focusMode={focusMode}
         marketPulse={marketMoodTarget}
         arterial
-        introLifeAlpha={fx.introLifeAlpha}
-        clutter={fx.clutter}
+        introLifeAlpha={motionFx.life}
+        clutter={motionFx.clutter}
       />
-      <TrafficParticles particles={trafficRender} focusMode={focusMode} introLifeAlpha={fx.introLifeAlpha} clutter={fx.clutter} />
+      <TrafficParticles particles={trafficRender} focusMode={focusMode} introLifeAlpha={motionFx.life} clutter={motionFx.clutter} />
       {layer2Visible && progressiveLayers.birds ? (
-        <TopBirdFlock towers={renderedTowers} cityRadius={bounds.radius} introLifeAlpha={fx.introLifeAlpha} />
+        <TopBirdFlock towers={renderedTowers} cityRadius={bounds.radius} introLifeAlpha={motionFx.life} />
       ) : null}
       <HoverProjectionTracker tower={hoveredTower} onHudUpdate={onHoverHudUpdate} />
 
@@ -10059,9 +10020,10 @@ function SandboxScene({
       ) : null}
       {layer2Visible ? <RecordCeremonyLayer ceremonies={recordCeremonies} focusMode={focusMode} sceneMaxY={bounds.maxY} /> : null}
       {ENABLE_FAKE_VIGNETTE ? <FakeVignettePlane /> : null}
+      </RenderBatches>
     </Canvas>
   );
-}
+});
 
 export function TopCoinsSkylineSandbox({
   cryptoSelection,
@@ -10091,10 +10053,11 @@ export function TopCoinsSkylineSandbox({
     marketMoodTarget,
     tallestTowerSequence
   } = active;
-  const [, setCameraDebug] = useState<CameraDebugSnapshot>({ camDist: 0, visCurve: 0 });
   const [hoveredTowerSequence, setHoveredTowerSequence] = useState<number | null>(null);
   const [selectedTowerSequence, setSelectedTowerSequence] = useState<number | null>(null);
-  const [hoverHud, setHoverHud] = useState<HoverHudSnapshot>(HOVER_HUD_HIDDEN);
+  const hoverHudStore = useMemo(() => createFrameStore<HoverHudSnapshot>(HOVER_HUD_HIDDEN), []);
+  const setHoverHud = hoverHudStore.set;
+  const hoverHud = hoverHudStore.getSnapshot();
   const [resetCameraSignal, setResetCameraSignal] = useState(0);
   const [zoomInCameraSignal, setZoomInCameraSignal] = useState(0);
   const [zoomOutCameraSignal, setZoomOutCameraSignal] = useState(0);
@@ -10201,9 +10164,8 @@ export function TopCoinsSkylineSandbox({
         onHoverTowerChange={setHoveredTowerSequence}
         onSelectTowerChange={setSelectedTowerSequence}
         onHoverHudUpdate={setHoverHud}
-        onCameraDebug={setCameraDebug}
       />
-      <HoverHudOverlay tower={hoveredTower} hud={hoverHud} />
+      <HoverHudOverlay tower={hoveredTower} hudStore={hoverHudStore} />
       <Web3CitiesUi
         mode={mode}
         cryptoSelection={cryptoSelection}

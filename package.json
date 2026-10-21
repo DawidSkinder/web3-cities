@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "generate:top-coins-snapshot": "node scripts/generate-top-coins-snapshot.mjs"
+    "generate:top-coins-snapshot": "node scripts/generate-top-coins-snapshot.mjs",
+    "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@react-three/fiber": "^8.17.10",
