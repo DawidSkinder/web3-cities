@@ -4,7 +4,7 @@ import type { CryptoCityMode } from '../lib/cityMode';
 import type { CityMode } from '../lib/cityMode';
 import { CRYPTO_CITY_PRESETS } from '../data/cryptoCity/presets';
 import type { UiMetricPanel } from './cityMetrics';
-import web3CitiesLogoUrl from '../../dawidskinder_web3cities_logo_v1.svg';
+import web3CitiesLogoUrl from '../assets/web3cities_logo_2027.svg';
 
 type HelpKey = 'mouse' | 'keyboard' | null;
 const MOBILE_BREAKPOINT_PX = 640;
