@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "2-57/5 * * * *"
+  repository_dispatch:
+    types:
+      - top-coins-loop
   workflow_run:
     workflows:
       - Generate Top Coins Snapshot
